@@ -1,0 +1,146 @@
+"""GPU device resolution and memory management.
+
+Provides a single canonical way to detect the best available torch device
+(CUDA -> MPS -> CPU) and to clear accelerator caches.
+"""
+
+import os
+import platform
+
+import numpy as _np
+import torch
+
+ARM = "arm" in platform.processor() and torch.backends.mps.is_available()
+
+
+def resolve_device(device=None):
+    """Return a ``torch.device`` for *device*, auto-detecting if *None*.
+
+    When *device* is ``None`` the priority order is CUDA -> MPS -> CPU.
+    A string or existing ``torch.device`` is passed through unchanged.
+    """
+    if device is not None:
+        return torch.device(device)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if ARM:
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def empty_cache():
+    """Clear the accelerator memory cache (CUDA or MPS)."""
+    if ARM:
+        torch.mps.empty_cache()
+    else:
+        torch.cuda.empty_cache()
+
+
+def get_device(gpu_number=0):
+    """Test whether a specific GPU device index works.
+
+    Returns ``(device, gpu_available)``. Falls back to CPU if the requested
+    GPU is not available.
+    """
+    try:
+        if gpu_number is None:
+            gpu_number = 0
+        device = torch.device(f'mps:{gpu_number}') if ARM else torch.device(f'cuda:{gpu_number}')
+        _ = torch.zeros([1, 2, 3]).to(device)
+        return device, True
+    except Exception:
+        return torch_CPU, False
+
+
+# Alias kept for backward compatibility.
+use_gpu = get_device
+
+
+def seed_all(seed: int) -> None:
+    """Seed all available GPU devices plus CPU RNG, and enforce deterministic CUDA ops."""
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+# ---------------------------------------------------------------------------
+# Torch tensor utilities (device dispatch, type conversion)
+# ---------------------------------------------------------------------------
+
+def ensure_torch(*arrays, device=None, dtype=None):
+    """Convert numpy arrays or unbatched torch tensors to batched torch tensors.
+
+    Each input is converted to a ``(B, ...)`` tensor on *device*:
+
+    - numpy arrays → ``torch.tensor(...).unsqueeze(0)``
+    - unbatched torch tensors (2D scalar or 3D vector field) → ``.unsqueeze(0)``
+    - already-batched tensors → moved to *device*
+
+    Non-array inputs are passed through unchanged.
+    """
+    if dtype is None:
+        dtype = torch.float32
+    result = []
+    for arr in arrays:
+        if isinstance(arr, _np.ndarray):
+            result.append(torch.tensor(arr, dtype=dtype, device=device).unsqueeze(0))
+        elif isinstance(arr, torch.Tensor):
+            arr = arr.to(device=device, dtype=dtype)
+            is_spatial_unbatched = (arr.ndim == 3 and arr.shape[0] in [2, 3])
+            is_scalar_unbatched = (arr.ndim == 2)
+            if is_spatial_unbatched or is_scalar_unbatched:
+                arr = arr.unsqueeze(0)
+            result.append(arr)
+        else:
+            result.append(arr)
+    return tuple(result)
+
+
+def torch_and(tensors):
+    """Element-wise logical AND across a sequence of boolean tensors.
+
+    Automatically dispatches to the optimal implementation:
+
+    - **CPU**: sequential ``reduce(logical_and, ...)`` (avoids kernel-launch overhead)
+    - **GPU**: single ``torch.all(stack(...), dim=0)`` kernel
+
+    Inputs are broadcast to a common shape before reduction.
+    """
+    from functools import reduce
+    dev = tensors[0].device if tensors else torch.device('cpu')
+
+    broadcasted = torch.broadcast_tensors(*tensors)
+
+    if dev.type == 'cpu':
+        return reduce(torch.logical_and, broadcasted)
+    else:
+        return torch.all(torch.stack(tuple(broadcasted), dim=0), dim=0)
+
+
+def to_device(x, device):
+    """Move *x* to *device*, converting numpy arrays to float32 tensors."""
+    if isinstance(x, torch.Tensor):
+        if device != x.device:
+            return x.to(device)
+        return x
+    return torch.tensor(x, device=device, dtype=torch.float32)
+
+
+def from_device(x):
+    """Detach a tensor and return it as a numpy array."""
+    return x.detach().cpu().numpy()
+
+
+def torch_zoom(img, scale_factor=1.0, dim=2, size=None, mode='bilinear'):
+    """Resize a torch tensor using ``F.interpolate``."""
+    target_size = [int(d * scale_factor) for d in img.shape[-dim:]] if size is None else size
+    return torch.nn.functional.interpolate(img, size=target_size, mode=mode, align_corners=False)
+
+
+# Backward-compatible constants (used extensively in omnirefactor).
+torch_CPU = torch.device("cpu")
+torch_GPU = resolve_device()

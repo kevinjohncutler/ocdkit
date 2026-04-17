@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0", "setuptools_scm>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocdkit"
+dynamic = ["version"]
+description = "Obsessively precise utilities for array manipulation, GPU dispatch, image I/O, morphology, and plotting."
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+    "imagecodecs",
+    "matplotlib",
+    "fastremap",
+    "edt",
+    "torch>=1.12",
+    "dask[array]",
+    "natsort",
+    "numba",
+    "bioio",
+    "bioio-czi",
+    "ncolor>=1.5.1",
+    "cmap",
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["ocdkit"]
+
+[tool.coverage.paths]
+source = [
+    "src/ocdkit",
+    "/Volumes/DataDrive/ocdkit/src/ocdkit",
+    "/home/kcutler/DataDrive/ocdkit/src/ocdkit",
+]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.setuptools_scm]
