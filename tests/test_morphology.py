@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from skimage.segmentation import find_boundaries as skimage_find_boundaries
 
-from ocdkit.morphology import find_boundaries, skeletonize, masks_to_outlines
+from ocdkit.array import find_boundaries, skeletonize, masks_to_outlines
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ class TestMasksToOutlines:
 class TestHysteresisThreshold:
     def test_2d(self):
         import torch
-        from ocdkit.morphology import hysteresis_threshold
+        from ocdkit.array import hysteresis_threshold
         img = torch.zeros((1, 1, 5, 5), dtype=torch.float32)
         img[0, 0, 2, 2] = 1.0
         img[0, 0, 2, 3] = 0.6
@@ -176,7 +176,7 @@ class TestHysteresisThreshold:
         assert not mask[0, 0, 2, 4]   # below low
 
     def test_numpy_input(self):
-        from ocdkit.morphology import hysteresis_threshold
+        from ocdkit.array import hysteresis_threshold
         img = np.zeros((1, 1, 5, 5), dtype=np.float32)
         img[0, 0, 2, 2] = 1.0
         mask = hysteresis_threshold(img, low=0.3, high=0.5)

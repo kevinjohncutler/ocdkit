@@ -1,14 +1,4 @@
-"""
-Spatial primitives for ND neighbor operations, affinity graphs, and contour extraction.
-
-Core functions:
-- ``kernel_setup``: ND hypercube neighbor steps and grouping
-- ``get_neighbors``: neighbor coordinate lookup
-- ``get_neigh_inds``: neighbor index mapping
-- ``masks_to_affinity``: label matrix → affinity graph
-- ``boundary_to_masks``: boundary map → labeled masks
-- ``get_contour``: sort boundaries into cyclic contour paths
-"""
+"""Spatial primitives for ND neighbor operations, affinity graphs, and contour extraction."""
 
 from itertools import product
 
@@ -18,12 +8,8 @@ from skimage import measure
 from skimage.morphology import remove_small_objects
 from skimage.segmentation import expand_labels, find_boundaries as _skimage_find_boundaries
 
-from .result import Result
+from ..io.result import Result
 
-
-# ---------------------------------------------------------------------------
-# Kernel / neighbor primitives
-# ---------------------------------------------------------------------------
 
 def kernel_setup(dim):
     """Get ND neighbor steps, grouped indices, center index, distance factors, and sign.
@@ -142,10 +128,6 @@ def get_neigh_inds(neighbors, coords, shape, background_reflect=False):
     return indexes, neigh_inds, ind_matrix
 
 
-# ---------------------------------------------------------------------------
-# Affinity graph
-# ---------------------------------------------------------------------------
-
 @njit(cache=True, fastmath=True)
 def _get_link_matrix(links_arr, piece_masks, inds, idx, is_link):
     """Mark (i,j) as linked if (a,b) or (b,a) is in links_arr."""
@@ -243,10 +225,6 @@ def boundary_to_masks(boundaries, binary_mask=None, min_size=9,
     bounds = np.logical_or(inner_bounds, outer_bounds)
     return masks, bounds, inner_mask
 
-
-# ---------------------------------------------------------------------------
-# Contour extraction
-# ---------------------------------------------------------------------------
 
 @njit
 def parametrize_contours(steps, labs, unique_L, neigh_inds, step_ok, csum):
@@ -350,10 +328,6 @@ def get_contour(labels, affinity_graph, coords=None, neighbors=None,
 
     return contour_map, contours, unique_L
 
-
-# ---------------------------------------------------------------------------
-# Synthetic ND label generators
-# ---------------------------------------------------------------------------
 
 def nd_grid_hypercube_labels(shape, side, *, center=True, dtype=np.int32):
     """Label an ND array with equal-side hypercubes of edge length *side* pixels.

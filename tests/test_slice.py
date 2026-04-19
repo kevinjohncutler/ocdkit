@@ -2,7 +2,7 @@
 
 import pytest
 
-from ocdkit.slice import get_slice_tuple
+from ocdkit.array import get_slice_tuple
 
 
 class TestGetSliceTuple:

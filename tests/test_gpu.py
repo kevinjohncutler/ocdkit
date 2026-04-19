@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import pytest
 
-from ocdkit.gpu import (
+from ocdkit.utils.gpu import (
     to_device, from_device, torch_zoom,
     ensure_torch, torch_and, empty_cache,
     get_device, resolve_device, seed_all,

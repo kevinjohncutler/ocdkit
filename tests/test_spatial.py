@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from ocdkit.spatial import (
+from ocdkit.array import (
     kernel_setup,
     get_neighbors,
     get_neigh_inds,

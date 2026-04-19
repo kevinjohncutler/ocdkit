@@ -1,8 +1,4 @@
-"""Image registration utilities — phase cross-correlation, shift application.
-
-Includes both skimage-based CPU registration (``cross_reg``) and a torch-based
-GPU phase cross-correlation (``phase_cross_correlation_GPU``).
-"""
+"""Geometric transformations — resizing, registration, shift application."""
 
 from __future__ import annotations
 
@@ -14,8 +10,52 @@ import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
 from scipy.ndimage import shift as im_shift
 from skimage.registration import phase_cross_correlation
+from skimage.transform import resize as skimage_resize
 
-from .gpu import torch_GPU
+from ..utils.gpu import torch_GPU
+
+
+def resize_image(img0, Ly=None, Lx=None, rsz=None, interpolation=1, no_channels=False):
+    """Resize an image array.
+
+    Parameters
+    ----------
+    img0 : ndarray
+        Image of shape ``(Y, X, C)`` or ``(Z, Y, X, C)`` or ``(Z, Y, X)``.
+    Ly, Lx : int, optional
+        Target spatial dimensions. If *None*, computed from *rsz*.
+    rsz : float or list of float, optional
+        Resize factor(s). Used when *Ly* is *None*.
+    interpolation : int
+        0 for nearest-neighbor, 1 for bilinear.
+    no_channels : bool
+        If True, treat the last spatial dim as spatial (not channels).
+    """
+    if Ly is None and rsz is None:
+        raise ValueError('must give size to resize to or factor to use for resizing')
+
+    if Ly is None:
+        if not isinstance(rsz, (list, np.ndarray)):
+            rsz = [rsz, rsz]
+        if no_channels:
+            Ly = int(img0.shape[-2] * rsz[-2])
+            Lx = int(img0.shape[-1] * rsz[-1])
+        else:
+            Ly = int(img0.shape[-3] * rsz[-2])
+            Lx = int(img0.shape[-2] * rsz[-1])
+
+    order = interpolation
+    if (img0.ndim > 2 and no_channels) or (img0.ndim == 4 and not no_channels):
+        if no_channels:
+            imgs = np.zeros((img0.shape[0], Ly, Lx), np.float32)
+        else:
+            imgs = np.zeros((img0.shape[0], Ly, Lx, img0.shape[-1]), np.float32)
+        for i, img in enumerate(img0):
+            imgs[i] = skimage_resize(img, imgs[i].shape, order=order, preserve_range=True).astype(np.float32)
+    else:
+        out_shape = (Ly, Lx) if img0.ndim == 2 else (Ly, Lx, img0.shape[-1])
+        imgs = skimage_resize(img0, out_shape, order=order, preserve_range=True).astype(np.float32)
+    return imgs
 
 
 def shifts_to_slice(shifts, shape, pad=0):

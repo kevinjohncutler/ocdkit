@@ -27,7 +27,7 @@ def vector_contours(fig,ax,mask, crop=None, smooth_factor=5, color = 'r', linewi
     dim = msk.ndim
     shape = msk.shape
 
-    from ..spatial import (
+    from ..array.spatial import (
         kernel_setup, get_neighbors,
         boundary_to_masks, masks_to_affinity, get_contour,
     )

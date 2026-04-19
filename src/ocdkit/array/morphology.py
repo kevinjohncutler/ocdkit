@@ -1,9 +1,4 @@
-"""
-Morphology utilities for labeled images.
-
-Skeletonization and boundary detection that are faster than their
-skimage equivalents for labeled (instance) segmentation masks.
-"""
+"""Morphology utilities — boundaries, skeletonization, outlines, thresholding."""
 
 from .imports import *
 import skimage.morphology

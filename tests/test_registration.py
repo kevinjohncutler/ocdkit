@@ -5,7 +5,7 @@ import torch
 from scipy.ndimage import shift as im_shift
 from scipy.ndimage import center_of_mass
 
-from ocdkit import registration
+from ocdkit.array import transform as registration
 
 
 def _circle_image(shape, center, radius):
