@@ -1,7 +1,6 @@
 """Vector contour rendering for segmentation masks."""
 
-import numpy as np
-import matplotlib.patches as mpatches
+from .imports import *
 import matplotlib.path as mpath
 from matplotlib.collections import PatchCollection
 from scipy.interpolate import splprep, splev

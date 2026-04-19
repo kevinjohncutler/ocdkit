@@ -3,7 +3,7 @@
 import os
 import subprocess
 
-import numpy as np
+from .imports import *
 from scipy import ndimage
 
 from ..array import to_8_bit, to_16_bit

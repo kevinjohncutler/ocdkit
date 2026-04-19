@@ -1,8 +1,6 @@
 """Grid-based image display utilities."""
 
-import numpy as np
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from .imports import *
 
 from .figure import split_list
 from .label import apply_label_backgrounds, recolor_label

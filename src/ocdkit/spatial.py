@@ -12,8 +12,7 @@ Core functions:
 
 from itertools import product
 
-import numpy as np
-import fastremap
+from .imports import *
 from numba import njit, prange
 from skimage import measure
 from skimage.morphology import remove_small_objects

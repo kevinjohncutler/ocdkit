@@ -4,9 +4,7 @@ Provides a consistent interface for operations that work on both
 numpy arrays and PyTorch tensors.
 """
 
-import numpy as np
-import torch
-import dask.array as da
+from .imports import *
 from scipy.ndimage import convolve1d, gaussian_filter
 from skimage.transform import resize as skimage_resize
 

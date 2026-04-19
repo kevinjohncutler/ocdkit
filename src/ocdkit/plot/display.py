@@ -1,6 +1,6 @@
 """Generic image display helpers (axes chrome, multi-image grids)."""
 
-import numpy as np
+from .imports import *
 
 from .figure import figure
 

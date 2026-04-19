@@ -2,9 +2,7 @@
 
 import colorsys
 
-import numpy as np
-import torch
-import dask.array as da
+from .imports import *
 
 from ..array import get_module, safe_divide, normalize99, torch_norm
 

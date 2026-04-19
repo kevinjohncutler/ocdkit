@@ -2,8 +2,7 @@
 
 import inspect
 
-import numpy as np
-import matplotlib as mpl
+from .imports import *
 import ncolor
 from cmap import Colormap
 

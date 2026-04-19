@@ -6,8 +6,7 @@ per-label medoid computation, ND density box localization, and
 centered patch extraction.
 """
 
-import numpy as np
-import torch
+from .imports import *
 import edt as _edt
 from numba import jit
 from scipy.ndimage import binary_dilation, convolve

@@ -1,6 +1,6 @@
 """Matplotlib rcParams and Jupyter environment setup helpers."""
 
-import matplotlib as mpl
+from .imports import *
 
 
 def apply_mpl_defaults():

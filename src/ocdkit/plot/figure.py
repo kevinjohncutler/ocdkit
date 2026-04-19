@@ -1,5 +1,4 @@
-import numpy as np
-from matplotlib.figure import Figure
+from .imports import *
 
 
 def figure(nrow=None, ncol=None, aspect=1, **kwargs):

@@ -5,8 +5,7 @@ Skeletonization and boundary detection that are faster than their
 skimage equivalents for labeled (instance) segmentation masks.
 """
 
-import numpy as np
-import fastremap
+from .imports import *
 import skimage.morphology
 
 from .spatial import kernel_setup

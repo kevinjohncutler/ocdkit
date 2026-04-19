@@ -16,7 +16,7 @@ import shutil
 import tempfile
 from urllib.request import urlopen
 
-import numpy as np
+from .imports import *
 import tifffile
 import imagecodecs
 from natsort import natsorted

@@ -1,8 +1,4 @@
-import numpy as np
-import matplotlib as mpl
-import matplotlib.patches as mpatches
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from .imports import *
 from matplotlib.transforms import Bbox
 from matplotlib.font_manager import FontProperties
 from matplotlib.textpath import TextPath
