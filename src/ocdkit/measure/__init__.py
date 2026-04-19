@@ -1,4 +1,3 @@
-from .bbox import *
-from .diameter import *
-from .medoid import *
-from .metrics import *
+from ..load import enable_submodules
+
+enable_submodules(__name__)

@@ -1,4 +1,3 @@
-from .result import *
-from .path import *
-from .image import *
-from .files import *
+from ..load import enable_submodules
+
+enable_submodules(__name__)
