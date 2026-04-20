@@ -201,37 +201,37 @@ class TestFindbetween:
 
 class TestAdjustFilePath:
     def test_darwin_home_to_volumes(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "Darwin")
         assert adjust_file_path("/home/alice/project") == "/Volumes/project"
 
     def test_linux_volumes_to_home(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "Linux")
         home = os.path.expanduser("~")
         assert adjust_file_path("/Volumes/data").startswith(home)
 
     def test_linux_rewrites_volumes(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "Linux")
-        monkeypatch.setattr(ocdkit_io.os.path, "expanduser", lambda _: "/home/tester")
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(ocdkit_io.path.os.path, "expanduser", lambda _: "/home/tester")
         assert adjust_file_path("/Volumes/datasets/run1") == "/home/tester/datasets/run1"
 
     def test_windows_from_home(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(ocdkit_io.os.path, "expanduser", lambda _: r"C:\Users\Tester")
-        monkeypatch.setattr(ocdkit_io.os.path, "normpath", ntpath.normpath)
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(ocdkit_io.path.os.path, "expanduser", lambda _: r"C:\Users\Tester")
+        monkeypatch.setattr(ocdkit_io.path.os.path, "normpath", ntpath.normpath)
         adjusted = adjust_file_path("/home/alice/project/data.txt")
         expected = ntpath.normpath(r"C:\Users\Tester\project\data.txt")
         assert adjusted == expected
 
     def test_windows_from_volumes(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(ocdkit_io.os.path, "expanduser", lambda _: r"C:\Users\Tester")
-        monkeypatch.setattr(ocdkit_io.os.path, "normpath", ntpath.normpath)
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(ocdkit_io.path.os.path, "expanduser", lambda _: r"C:\Users\Tester")
+        monkeypatch.setattr(ocdkit_io.path.os.path, "normpath", ntpath.normpath)
         adjusted = adjust_file_path("/Volumes/share/results")
         expected = ntpath.normpath(r"C:\Users\Tester\share\results")
         assert adjusted == expected
 
     def test_unknown_os_passthrough(self, monkeypatch):
-        monkeypatch.setattr(ocdkit_io.platform, "system", lambda: "UnknownOS")
+        monkeypatch.setattr(ocdkit_io.path.platform, "system", lambda: "UnknownOS")
         assert adjust_file_path("/custom/path") == "/custom/path"
 
 
