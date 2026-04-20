@@ -18,23 +18,22 @@ import sys
 
 
 def enable_submodules(pkg_name: str, *, include=None, exclude=None) -> None:
-    """Attach ``__all__``, ``__getattr__``, and ``__dir__`` to *pkg_name*.
+    """Discover sub-modules and register their public names on the package.
 
-    Discovers sub-modules via :func:`pkgutil.iter_modules`, then installs
-    a module-level ``__getattr__`` that lazily imports them on first access.
-    Attribute lookups that don't match a sub-module name are forwarded into
-    each sub-module in turn, so ``pkg.some_function`` works even when
-    ``some_function`` lives in ``pkg/_internal.py``.
+    Imports all sub-modules at call time, then copies every public
+    function, class, and non-module attribute into the parent package's
+    namespace.  This makes both ``from pkg import func`` and
+    ``from pkg import *`` work without hand-maintained export lists.
 
     Parameters
     ----------
     pkg_name : str
         Fully-qualified package name (typically ``__name__``).
     include : collection of str, optional
-        If given, only these submodule names are exposed. Mutually exclusive
+        If given, only these submodule names are loaded. Mutually exclusive
         with *exclude*.
     exclude : collection of str, optional
-        If given, these submodule names are hidden from discovery.
+        If given, these submodule names are skipped.
     """
     pkg: ModuleType = sys.modules[pkg_name]
     submods = {info.name for info in pkgutil.iter_modules(pkg.__path__)}
@@ -44,33 +43,22 @@ def enable_submodules(pkg_name: str, *, include=None, exclude=None) -> None:
     elif exclude is not None:
         submods -= set(exclude)
 
-    pkg.__all__ = list(submods)
-
-    def _getattr(name: str):
-        if name in submods:
-            mod = importlib.import_module(f"{pkg_name}.{name}")
-            setattr(pkg, name, mod)
-            return mod
-        for sub in submods:
+    for sub in submods:
+        try:
             mod = importlib.import_module(f"{pkg_name}.{sub}")
-            if hasattr(mod, name):
-                attr = getattr(mod, name)
-                setattr(pkg, name, attr)
-                return attr
-        raise AttributeError(f"module {pkg_name!r} has no attribute {name!r}")
-
-    def _dir():
-        items = set(pkg.__dict__) | submods
-        for sub in submods:
-            try:
-                mod = importlib.import_module(f"{pkg_name}.{sub}")
-            except ImportError:
+        except ImportError:
+            continue
+        setattr(pkg, sub, mod)
+        for name in dir(mod):
+            if name.startswith("_"):
                 continue
-            items.update(n for n in dir(mod) if not n.startswith("_"))
-        return sorted(items)
+            attr = getattr(mod, name)
+            if isinstance(attr, ModuleType):
+                continue
+            if not hasattr(pkg, name):
+                setattr(pkg, name, attr)
 
-    pkg.__getattr__ = _getattr
-    pkg.__dir__ = _dir
+    pkg.__all__ = [n for n in vars(pkg) if not n.startswith("_")]
 
 
 def enable_attr_map(pkg_name: str, attr_map: dict) -> None:
