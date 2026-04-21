@@ -57,6 +57,18 @@ def attach_helpers(cls, modules_or_packages, *, skip_subpackages=True, exclude_m
         )
 
 
+def is_property(func):
+    """Decorator that tags *func* for attachment as a property."""
+    func.__is_property__ = True
+    return func
+
+
+def is_classmethod(func):
+    """Decorator that tags *func* for attachment as a classmethod."""
+    func.__is_classmethod__ = True
+    return func
+
+
 def attach_function_to_object(cls, name, func):
     """Attach *func* to *cls*, honoring decorator tags for properties/classmethods."""
     if isinstance(cls, dict):
