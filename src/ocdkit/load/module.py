@@ -60,6 +60,21 @@ def enable_submodules(pkg_name: str, *, include=None, exclude=None) -> None:
 
     pkg.__all__ = [n for n in vars(pkg) if not n.startswith("_")]
 
+    # Fallback __getattr__ for names not eagerly registered (e.g. private names)
+    def _getattr(name: str):
+        for sub in submods:
+            try:
+                mod = importlib.import_module(f"{pkg_name}.{sub}")
+            except ImportError:
+                continue
+            if hasattr(mod, name):
+                attr = getattr(mod, name)
+                setattr(pkg, name, attr)
+                return attr
+        raise AttributeError(f"module {pkg_name!r} has no attribute {name!r}")
+
+    pkg.__getattr__ = _getattr
+
 
 def enable_attr_map(pkg_name: str, attr_map: dict) -> None:
     """Install lazy attribute loading driven by an explicit name-to-module mapping.
