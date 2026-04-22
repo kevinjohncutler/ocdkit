@@ -3,6 +3,9 @@
 *.py[cod]
 *$py.class
 
+# Local tooling
+.claude/
+
 # C extensions
 *.so
 

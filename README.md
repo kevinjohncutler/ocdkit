@@ -1,6 +1,6 @@
 # ocdkit
 
-Obsessively precise utilities for scientific Python — array manipulation, GPU dispatch, image I/O, spatial operations, morphology, and plotting.
+**Obsessive Coder's Dependency Toolkit** — Python utilities for array manipulation, GPU dispatch, image I/O, spatial operations, morphology, and plotting.
 
 ## Install
 

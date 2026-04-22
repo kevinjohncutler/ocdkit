@@ -1,8 +1,8 @@
 """
-ocdkit — Obsessively precise utilities for scientific Python.
+ocdkit — Obsessive Coder's Dependency Toolkit.
 
-Array manipulation, GPU dispatch, image I/O, morphology, and plotting
-tools shared across projects.
+Python utilities for array manipulation, GPU dispatch, image I/O,
+morphology, and plotting. Designed for use across multiple projects. 
 """
 
 from .load import enable_submodules
