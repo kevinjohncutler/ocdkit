@@ -1,0 +1,111 @@
+name: CI/CD
+
+on:
+  push:
+    tags:
+      - "v*"  # e.g. v1.0, v2.0
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} (Python ${{ matrix.python_version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]  # macos-latest = Apple Silicon (MPS)
+        python_version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed for setuptools_scm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+          cache: pip
+
+      - name: Install package with dev deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            -e . pytest pytest-cov
+
+      - name: Run tests
+        shell: bash
+        env:
+          PYTORCH_ENABLE_MPS_FALLBACK: "1"
+        run: |
+          python -m pytest tests/ \
+            --cov=ocdkit --cov-report=xml --cov-report=term \
+            --junitxml=junit.xml \
+            -v
+
+      - name: Upload coverage & junit artifacts
+        if: matrix.os == 'macos-latest' && matrix.python_version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            coverage.xml
+            junit.xml
+
+  deploy:
+    name: Deploy to PyPI
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine setuptools setuptools_scm wheel
+
+      - name: Build distribution
+        run: python -m build --sdist --wheel
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.TWINE_API_KEY }}
+        run: python -m twine upload dist/*
+
+  badges:
+    name: Build and commit badges
+    runs-on: ubuntu-latest
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download test artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+
+      - name: Install badge dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install 'genbadge[coverage,tests]'
+
+      - name: Generate badges
+        run: |
+          mkdir -p badges
+          genbadge coverage -i coverage.xml -o badges/coverage.svg
+          genbadge tests -i junit.xml -o badges/tests.svg
+
+      - name: Commit badges
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: 'badges/*.svg'
+          message: 'CI: update coverage and test badges'
