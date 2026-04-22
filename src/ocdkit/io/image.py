@@ -92,3 +92,47 @@ def imwrite(filename, arr, **kwargs):
 
     with open(filename, 'wb') as f:
         f.write(encoded)
+
+
+def encode_rgb_image(img, format='png', effort_level=0,
+                     quality_level=90, lossless=True):
+    """Encode an RGB[A] array to a base-64 string for HTML embedding.
+
+    Supports PNG, JPEG, WebP, and JPEG-XL via *imagecodecs*.
+    Float images are assumed [0, 1] and scaled to uint8.
+    """
+    import base64
+
+    if img.dtype in (np.float32, np.float64):
+        img = (img * 255).astype(np.uint8)
+    elif img.dtype != np.uint8:
+        img = img.astype(np.uint8)
+
+    img = np.ascontiguousarray(img)
+
+    fmt = format.lower()
+    alias_map = {
+        "jpeg": "jpg", "jpe": "jpg", "jfif": "jpg",
+        "jpegxl": "jxl", "jxl": "jxl",
+        "png": "png", "webp": "webp",
+    }
+    fmt = alias_map.get(fmt, fmt)
+
+    if fmt == 'jpg':
+        if img.ndim == 3 and img.shape[-1] == 4:
+            raise ValueError("JPEG does not support alpha channel.")
+        buf = imagecodecs.jpeg_encode(img, level=quality_level,
+                                      lossless=(effort_level == 0))
+    elif fmt == 'png':
+        buf = imagecodecs.png_encode(img, level=effort_level)
+    elif fmt == 'webp':
+        buf = imagecodecs.webp_encode(img, level=quality_level,
+                                      lossless=lossless)
+    elif fmt == "jxl":
+        buf = imagecodecs.jpegxl_encode(img, effort=effort_level,
+                                        level=quality_level,
+                                        lossless=lossless)
+    else:
+        raise ValueError(f"Unsupported format {fmt!r}; use 'png', 'jpg', 'webp', or 'jxl'.")
+
+    return base64.b64encode(buf).decode("utf-8")
