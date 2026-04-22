@@ -48,10 +48,10 @@ def adjust_file_path(file_path):
     """
     system = platform.system()
     if system == 'Darwin':
-        return re.sub(r'^/home/\w+', '/Volumes', file_path)
+        return re.sub(r'^/home/\w+', lambda _m: '/Volumes', file_path)
     elif system == 'Linux':
         home_dir = os.path.expanduser('~')
-        return re.sub(r'^/Volumes', home_dir, file_path)
+        return re.sub(r'^/Volumes', lambda _m: home_dir, file_path)
     elif system == 'Windows':
         home_dir = os.path.expanduser('~')
         replace_with_home = lambda _match: home_dir
