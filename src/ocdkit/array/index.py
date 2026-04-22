@@ -212,3 +212,31 @@ def get_slice_tuple(start, stop, shape, axis=None):
         slices[axis] = slice(start, stop, None)
 
     return tuple(slices)
+
+
+def intersect_slices(s1, s2):
+    """Return a slice that is the intersection of *s1* and *s2*.
+
+    ``None`` boundaries are treated as unbounded (``-inf`` / ``+inf``).
+    Steps are unified: the first non-None step wins, defaulting to 1.
+    """
+    import math
+
+    lo1 = -math.inf if s1.start is None else s1.start
+    hi1 = math.inf if s1.stop is None else s1.stop
+    lo2 = -math.inf if s2.start is None else s2.start
+    hi2 = math.inf if s2.stop is None else s2.stop
+
+    new_lo = max(lo1, lo2)
+    new_hi = min(hi1, hi2)
+    if new_hi < new_lo:
+        new_hi = new_lo
+
+    step = s1.step if s1.step is not None else s2.step
+    if step is None:
+        step = 1
+
+    start = None if math.isinf(new_lo) else int(new_lo)
+    stop = None if math.isinf(new_hi) else int(new_hi)
+
+    return slice(start, stop, step)

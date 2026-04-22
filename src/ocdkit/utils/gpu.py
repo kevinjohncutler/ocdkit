@@ -141,6 +141,70 @@ def torch_zoom(img, scale_factor=1.0, dim=2, size=None, mode='bilinear'):
     return torch.nn.functional.interpolate(img, size=target_size, mode=mode, align_corners=False)
 
 
+def as_torch_tensor(arr, device="cpu", dtype=None, non_blocking=False):
+    """Convert an array-like to a :class:`torch.Tensor` with minimal copies.
+
+    Accepts numpy arrays (including memmaps), dask arrays, and existing
+    tensors.  Uses ``torch.from_numpy`` for zero-copy on CPU when possible
+    and silences the read-only memmap warning.
+    """
+    import warnings
+
+    if dtype is None:
+        dtype = torch.float32
+
+    if isinstance(arr, torch.Tensor):
+        return arr.to(device=device, dtype=dtype, non_blocking=non_blocking)
+
+    # Dask → numpy
+    try:
+        import dask.array as da
+        if isinstance(arr, da.Array):
+            arr = arr.compute()
+    except ImportError:
+        pass
+
+    if not isinstance(arr, _np.ndarray):
+        arr = _np.asanyarray(arr)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The given NumPy array is not writable.*",
+            category=UserWarning,
+        )
+        t = torch.from_numpy(arr)
+
+    if t.dtype != dtype:
+        t = t.to(dtype)
+    if str(device) != "cpu":
+        t = t.to(device=device, non_blocking=non_blocking)
+    return t
+
+
+# Numpy ↔ torch dtype comparison
+_DTYPE_CANON = {
+    _np.float16: "f16", _np.float32: "f32", _np.float64: "f64",
+    _np.int8: "i8", _np.int16: "i16", _np.int32: "i32", _np.int64: "i64",
+    _np.uint8: "u8", _np.bool_: "b",
+    torch.float16: "f16", torch.float32: "f32", torch.float64: "f64",
+    torch.int8: "i8", torch.int16: "i16", torch.int32: "i32", torch.int64: "i64",
+    torch.uint8: "u8", torch.bool: "b",
+}
+
+
+def is_same_dtype(dtype1, dtype2):
+    """Check whether *dtype1* and *dtype2* represent the same numeric type.
+
+    Works across numpy dtypes, numpy scalar types, and torch dtypes.
+    """
+    if isinstance(dtype1, _np.dtype):
+        dtype1 = dtype1.type
+    if isinstance(dtype2, _np.dtype):
+        dtype2 = dtype2.type
+    return _DTYPE_CANON.get(dtype1) == _DTYPE_CANON.get(dtype2)
+
+
 # Backward-compatible constants (used extensively in omnirefactor).
 torch_CPU = torch.device("cpu")
 torch_GPU = resolve_device()
