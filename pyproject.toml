@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ocdkit"
 dynamic = ["version"]
-description = "Obsessively precise utilities for array manipulation, GPU dispatch, image I/O, morphology, and plotting."
+description = "Obsessive Coder's Dependency Toolkit — Python utilities for array manipulation, GPU dispatch, image I/O, morphology, and plotting."
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 requires-python = ">=3.9"
