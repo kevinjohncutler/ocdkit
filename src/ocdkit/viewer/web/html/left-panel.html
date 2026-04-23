@@ -1,0 +1,253 @@
+<!-- Extracted from index.html lines 10-73 -->
+
+      <div id="leftPanel" class="side-panel side-panel--left">
+        <div class="panel-section" id="intensityPanel">
+          <div class="panel-header panel-header--image">
+            <div class="control-heading" title="lookup table">Image</div>
+            <div class="kernel-toggle segmented-toggle view-actions-toggle" role="group" aria-label="View controls">
+              <button type="button" id="resetViewButton" class="kernel-option" aria-label="Recenter view" title="Home">
+                <span class="view-icon view-icon-home" aria-hidden="true"></span>
+                <span class="sr-only">Recenter</span>
+              </button>
+              <button type="button" id="rotateLeftButton" class="kernel-option" aria-label="Rotate left 90 degrees" title="Rotate left">
+                <span class="view-icon view-icon-rotate-left" aria-hidden="true"></span>
+                <span class="sr-only">Rotate left</span>
+              </button>
+              <button type="button" id="rotateRightButton" class="kernel-option" aria-label="Rotate right 90 degrees" title="Rotate right">
+                <span class="view-icon view-icon-rotate-right" aria-hidden="true"></span>
+                <span class="sr-only">Rotate right</span>
+              </button>
+            </div>
+            <label class="toggle panel-toggle" title="Show image">
+              <input type="checkbox" id="imageVisibilityToggle" checked />
+              <span class="toggle-switch"></span>
+            </label>
+          </div>
+          <div class="panel-body">
+            <div class="control slider-inline">
+              <span class="control-heading control-heading--lower">file</span>
+              <div class="dropdown dropdown--compact" data-dropdown-id="imageNavigator" data-loop="true" data-count-label="images" data-apply="confirm">
+                <select id="imageNavigator"></select>
+              </div>
+            </div>
+            <div class="image-hover-info" aria-hidden="true">
+              <span id="hoverValueDisplay">Y: --, X: --, Val: --</span>
+              <span id="hoverCoordDisplay"></span>
+            </div>
+            <div class="control">
+              <div class="histogram-surface">
+                <canvas id="histogram" class="histogram" width="220" height="80" data-tooltip-dynamic="true"></canvas>
+                <div id="histogramValueMarker" class="histogram-value-marker" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="control slider-inline">
+              <span class="control-heading control-heading--lower">gamma</span>
+              <div class="slider-row">
+                <div class="slider" data-slider-id="gamma" data-slider-type="single">
+                  <input type="range" id="gamma" min="10" max="600" value="100" />
+                </div>
+                <div class="number-field" data-number-id="gammaInput">
+                  <input type="number" id="gammaInput" min="0.10" max="6.00" step="0.05" value="1.00" />
+                </div>
+              </div>
+            </div>
+            <!-- Image colormap section -->
+            <div class="image-cmap-section" id="imageCmapPanel">
+              <div class="control slider-inline">
+                <span class="control-heading control-heading--lower">cmap</span>
+                <div class="dropdown dropdown--compact dropdown--gradient-preview" data-dropdown-id="imageCmapSelect" data-loop="true">
+                  <select id="imageCmapSelect"></select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="control-heading">Undo / Redo / Save</div>
+          <div class="control history-panel">
+            <div class="history-controls" role="group" aria-label="Undo, Redo, and Recenter">
+              <button type="button" id="undoButton" class="history-button" aria-label="Undo" disabled>
+                <span class="history-icon history-icon-undo" aria-hidden="true"></span>
+                <span class="sr-only">Undo</span>
+              </button>
+              <button type="button" id="redoButton" class="history-button" aria-label="Redo" disabled>
+                <span class="history-icon history-icon-redo" aria-hidden="true"></span>
+                <span class="sr-only">Redo</span>
+              </button>
+              <button type="button" id="saveStateButton" class="history-button" aria-label="Save state">
+                <span class="history-icon history-icon-save" aria-hidden="true"></span>
+                <span class="sr-only">Save</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="panel-section" id="brushPanel">
+          <div class="panel-header panel-header--tools">
+            <div class="control-heading">Tool</div>
+            <div class="kernel-toggle segmented-toggle tool-toggle tool-toggle--compact" role="group" aria-label="Tools" title="Shortcuts: Cmd/Ctrl+1..4">
+              <button type="button" class="tool-stop kernel-option" data-mode="draw" title="Brush (B)">
+                <span class="tool-icon tool-icon-draw" aria-hidden="true"></span>
+                <span class="sr-only">Draw</span>
+              </button>
+              <button type="button" class="tool-stop kernel-option" data-mode="erase" title="Erase (E)">
+                <span class="tool-icon tool-icon-erase" aria-hidden="true"></span>
+                <span class="sr-only">Erase</span>
+              </button>
+              <button type="button" class="tool-stop kernel-option" data-mode="fill" title="Fill (G)">
+                <span class="tool-icon tool-icon-fill" aria-hidden="true"></span>
+                <span class="sr-only">Fill</span>
+              </button>
+              <button type="button" class="tool-stop kernel-option" data-mode="picker" title="Eyedropper (I)">
+                <span class="tool-icon tool-icon-picker" aria-hidden="true"></span>
+                <span class="sr-only">Picker</span>
+              </button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="tool-options tool-options--brush" data-tool="draw,erase">
+              <div class="brush-slider slider-inline">
+                <span class="control-heading control-heading--lower">size</span>
+                <div class="slider-row">
+                  <div class="slider" data-slider-id="brushSizeSlider" data-slider-type="single">
+                    <input type="range" id="brushSizeSlider" min="1" max="25" step="1" value="3" />
+                  </div>
+                  <div class="number-field" data-number-id="brushSizeInput">
+                    <input type="number" id="brushSizeInput" min="1" max="25" step="1" value="3" />
+                  </div>
+                </div>
+              </div>
+              <div class="control label-style-row">
+                <span class="control-heading control-heading--lower">snap</span>
+                <label class="toggle toggle-left" title="Snap exact kernel to pixel grid (on) or interpolate circle onto local grid (off, default)">
+                  <input type="checkbox" id="brushKernelToggle" />
+                  <span class="toggle-switch"></span>
+                </label>
+              </div>
+            </div>
+            <div class="tool-options tool-options--empty" data-tool="fill"></div>
+            <div class="tool-options tool-options--empty" data-tool="picker"></div>
+            <!--
+            <div class="dropdown" data-dropdown-id="brushKernelMode">
+              <select id="brushKernelMode">
+                <option value="smooth">Interpolated (continuous)</option>
+                <option value="snapped">Snapped (integer)</option>
+              </select>
+            </div>
+            -->
+          </div>
+        </div>
+<div class="panel-section label-panel" id="labelStylePanel">
+          <div class="panel-header panel-header--labels">
+            <div class="control-heading">Label</div>
+            <div id="maskStyleToggle" class="kernel-toggle segmented-toggle mask-style-toggle mask-style-toggle--compact" role="group" aria-label="Mask style">
+              <button type="button" class="kernel-option" data-mask-style="outlined" aria-label="Outline+fill masks" title="outline+fill">
+                <span class="mask-style-icon"></span>
+              </button>
+              <button type="button" class="kernel-option" data-mask-style="solid" aria-label="Fill masks" title="fill">
+                <span class="mask-style-icon"></span>
+              </button>
+              <button type="button" class="kernel-option" data-mask-style="outline" aria-label="Outline masks" title="outline">
+                <span class="mask-style-icon"></span>
+              </button>
+              <button type="button" class="kernel-option" data-mask-style="hidden" aria-label="Hide masks" title="hide">
+                <span class="mask-style-icon"></span>
+              </button>
+            </div>
+          </div>
+          <div class="panel-body">
+          <div class="control label-style-row">
+            <span class="control-heading control-heading--lower">alpha</span>
+            <div class="slider-row">
+              <div class="slider" data-slider-id="maskOpacity" data-slider-type="single">
+                <input type="range" id="maskOpacity" min="0" max="1" step="0.01" value="0.8" />
+              </div>
+              <div class="number-field" data-number-id="maskOpacityInput">
+                <input type="number" id="maskOpacityInput" min="0" max="1" step="0.01" value="0.80" />
+              </div>
+            </div>
+          </div>
+          <div class="control label-style-row">
+            <span class="control-heading control-heading--lower">value</span>
+            <div class="label-panel-row label-stepper">
+              <input type="number" id="labelValueInput" min="0" step="1" value="" placeholder="—" />
+              <div class="label-stepper-buttons action-tray action-tray--compact">
+                <button type="button" id="labelStepDown" aria-label="Decrement label">
+                  <span class="label-icon label-icon-decrement" aria-hidden="true"></span>
+                  <span class="sr-only">Decrement</span>
+                </button>
+                <button type="button" id="labelStepUp" aria-label="Increment label">
+                  <span class="label-icon label-icon-increment" aria-hidden="true"></span>
+                  <span class="sr-only">Increment</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- Cmap section (merged into Labels panel) -->
+          <div class="cmap-section" id="cmapPanel">
+            <div class="control slider-inline">
+              <span class="control-heading control-heading--lower">cmap</span>
+              <div class="dropdown dropdown--compact" data-dropdown-id="cmapSelect" data-loop="true">
+                <select id="cmapSelect"></select>
+              </div>
+            </div>
+            <!-- Colormap preview/offset - shown for sinebow-type colormaps -->
+            <div class="cmap-offset-section" id="cmapOffsetSection">
+              <div class="control slider-inline">
+                <span class="control-heading control-heading--lower">offset</span>
+                <div class="slider slider--gradient-track" data-slider-id="cmapHueOffset" data-slider-type="single">
+                  <input type="range" id="cmapHueOffset" min="0" max="100" value="0" />
+                </div>
+              </div>
+            </div>
+            <!-- Colormap preview pill - shown for non-cyclic colormaps (no offset) -->
+            <div class="cmap-preview-section" id="cmapPreviewSection">
+              <div class="cmap-preview-pill" id="cmapPreviewPill"></div>
+            </div>
+            <!-- Ncolor subsection -->
+            <div class="subsection" id="ncolorSubsection">
+              <div class="subsection-header">
+                <span class="control-heading control-heading--lower">ncolor</span>
+                <label class="toggle toggle-left" title="Enable N-color mask display">
+                  <input type="checkbox" id="autoNColorToggle" checked />
+                  <span class="toggle-switch"></span>
+                </label>
+              </div>
+              <div class="ncolor-on">
+                <div class="ncolor-row">
+                  <div class="ncolor-swatches" id="ncolorSwatches" aria-label="N-color palette"></div>
+                  <div class="label-stepper-buttons action-tray action-tray--compact ncolor-stepper">
+                    <button type="button" id="ncolorRemoveColor" aria-label="Remove color">
+                      <span class="label-icon label-icon-decrement" aria-hidden="true"></span>
+                      <span class="sr-only">Remove color</span>
+                    </button>
+                    <button type="button" id="ncolorAddColor" aria-label="Add color">
+                      <span class="label-icon label-icon-increment" aria-hidden="true"></span>
+                      <span class="sr-only">Add color</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <!-- Instance mode controls (shown when Ncolor is off) -->
+              <div class="ncolor-off">
+                <div class="control slider-inline">
+                  <span class="control-heading control-heading--lower">shuffle</span>
+                  <label class="toggle toggle-left" title="Shuffle label colors">
+                    <input type="checkbox" id="labelShuffleToggle" checked />
+                    <span class="toggle-switch"></span>
+                  </label>
+                </div>
+                <div class="control slider-inline">
+                  <span class="control-heading control-heading--lower">seed</span>
+                  <div class="number-field" data-number-id="labelShuffleSeed">
+                    <input type="number" id="labelShuffleSeed" step="1" value="0" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+        <div class="control toggle-group" id="layerVisibilityControls">
+        </div>
+      </div>

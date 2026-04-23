@@ -57,7 +57,16 @@ ocdkit-viewer-gui = "ocdkit.viewer.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"ocdkit.viewer" = ["*.html", "*.css", "*.js"]
+"ocdkit.viewer" = [
+    "*.html",
+    "web/*.html",
+    "web/*.js",
+    "web/css/*.css",
+    "web/html/*.html",
+    "web/js/*.js",
+    "web/js/*.c",
+    "web/icons/*.svg",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
