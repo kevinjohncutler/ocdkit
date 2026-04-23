@@ -27,6 +27,7 @@ dependencies = [
     "ncolor>=1.5.1",
     "cmap",
     "tqdm",
+    "platformdirs",
 ]
 
 [project.optional-dependencies]
