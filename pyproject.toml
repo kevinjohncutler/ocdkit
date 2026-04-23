@@ -43,6 +43,7 @@ desktop = [
 ]
 
 [project.scripts]
+ocdkit = "ocdkit.cli.main:main"
 ocdkit-viewer = "ocdkit.viewer.cli:main"
 
 [project.gui-scripts]
