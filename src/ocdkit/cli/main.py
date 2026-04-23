@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import migrate as _migrate_cmd
 from . import paths as _paths_cmd
 
 
@@ -22,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Subcommand registration — one line per new subcommand.
     _paths_cmd.add_parser(sub)
+    _migrate_cmd.add_parser(sub)
 
     return parser
 

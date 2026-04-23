@@ -278,10 +278,40 @@ def run_desktop(
     snapshot_timeout: float = 4.0,
     eval_js: str | None = None,
     title: str | None = None,
+    icon: str | None = None,
+    app_name: str | None = None,
+    app_identity: Any = None,
 ) -> None:
-    """Launch the viewer in a pywebview desktop window with an embedded uvicorn."""
+    """Launch the viewer in a pywebview desktop window with an embedded uvicorn.
+
+    Parameters
+    ----------
+    app_name:
+        Host application identity for desktop integration — controls the
+        macOS bundle name, Windows ``AppUserModelID``, Linux
+        ``StartupWMClass``, AND the ``platformdirs`` key the viewer uses
+        for any persistent state/cache.  When an embedding launcher (e.g.
+        omnirefactor, hiprpy) calls this function it should pass its own
+        app name so each host stays namespaced.
+
+        Ignored if ``app_identity`` is given.  Defaults to ``"ocdkit-viewer"``
+        when neither is specified.
+
+    app_identity:
+        Fully-specified :class:`ocdkit.desktop.pinning.AppIdentity` for
+        callers that need to customise bundle IDs, icon paths, etc.  Takes
+        precedence over ``app_name``.
+
+    icon:
+        Path to a PNG used as the window/dock icon. Resolution order:
+        explicit ``icon`` → ``OCDKIT_VIEWER_ICON`` env var → ``app_identity``'s
+        icon → auto-generated fallback. Applied only when ``app_identity``
+        is not given.
+    """
     if title:
         os.environ["OCDKIT_VIEWER_TITLE"] = title
+    if icon:
+        os.environ["OCDKIT_VIEWER_ICON"] = str(icon)
     try:
         import webview  # noqa: F401
     except ImportError:
@@ -302,15 +332,30 @@ def run_desktop(
 
     _autoload_plugins(plugins)
 
-    VIEWER_APP = AppIdentity(
-        name="ocdkit-viewer",
-        gui_entry_point="ocdkit-viewer-gui",
-        windows_app_id="ocdkit.Viewer.Launcher",
-        linux_app_id="ocdkit-viewer",
-        macos_bundle_id="com.ocdkit.viewer",
-        description="ocdkit image viewer",
-        categories="Science;Graphics",
-    )
+    # Resolve the source PNG for the dock/window icon. Resolution order:
+    #   1. ``OCDKIT_VIEWER_ICON`` env var (set by ``run_desktop(icon=...)`` or
+    #      by an embedding launcher like ``omnirefactor-gui``).
+    #   2. AppIdentity default (None) → ocdkit.desktop.pinning auto-generates
+    #      a fallback blue circle into the app's local dir.
+    icon_env = os.environ.get("OCDKIT_VIEWER_ICON") or None
+    if icon_env and not Path(icon_env).is_file():
+        logger.warning("OCDKIT_VIEWER_ICON points at missing file: %s", icon_env)
+        icon_env = None
+
+    if app_identity is not None:
+        VIEWER_APP = app_identity
+    else:
+        name = app_name or "ocdkit-viewer"
+        VIEWER_APP = AppIdentity(
+            name=name,
+            gui_entry_point="ocdkit-viewer-gui",
+            windows_app_id=f"{name}.Viewer.Launcher",
+            linux_app_id=name.lower().replace(" ", "-"),
+            macos_bundle_id=f"com.{name.lower().replace(' ', '').replace('-', '')}.viewer",
+            description=f"{name} image viewer",
+            categories="Science;Graphics",
+            icon_png=icon_env,
+        )
     setup_platform(VIEWER_APP)
 
     serve_host = host or "127.0.0.1"
@@ -359,13 +404,20 @@ def run_desktop(
             server_proc.terminate()
         raise
 
-    window_url = f"{scheme}://{serve_host}:{serve_port}/"
+    # ?ui=desktop tells the index renderer to swap body to translucent so the
+    # OS-native vibrancy / blur shows through.
+    window_url = f"{scheme}://{serve_host}:{serve_port}/?ui=desktop"
     print(f"[viewer] desktop UI loading {window_url}", flush=True)
 
     snapshot_target = Path(snapshot_path).expanduser() if snapshot_path else None
     automation_needed = bool(snapshot_target or eval_js)
     loaded_event = threading.Event()
 
+    # macOS gets the native NSVisualEffectView frosted-glass effect via
+    # ``vibrancy=True``. ``transparent=True`` (alpha-capable window) is
+    # required for the body's translucent background to actually show through
+    # to the OS material rather than over a white background. On Windows /
+    # Linux pywebview ignores ``vibrancy``; ``transparent`` is supported.
     window = webview.create_window(
         viewer_title(),
         url=window_url,
@@ -373,6 +425,9 @@ def run_desktop(
         height=768,
         resizable=True,
         hidden=automation_needed,
+        transparent=True,
+        vibrancy=True,
+        background_color="#111111",
     )
 
     def _automation_worker():
@@ -455,6 +510,9 @@ def run_desktop(
                 target=_automation_worker, name="ViewerAutomation", daemon=True
             ).start()
 
+    # Note: ``webview.start(icon=...)`` only does anything on Linux GTK/Qt;
+    # the Cocoa backend ignores it. macOS dock-icon setting is handled inside
+    # ``on_start`` via ``set_window_icon`` → ``NSApplication.setApplicationIconImage_``.
     try:
         webview.start(on_start)
     finally:
