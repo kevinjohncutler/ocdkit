@@ -29,8 +29,35 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+viewer = [
+    "fastapi",
+    "uvicorn[standard]",
+    "imageio",
+]
+desktop = [
+    "pywebview",
+    "pywin32; sys_platform == 'win32'",
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+ocdkit-viewer = "ocdkit.viewer.cli:main"
+
+[project.gui-scripts]
+ocdkit-viewer-gui = "ocdkit.viewer.cli:main"
+
+[project.entry-points."ocdkit.plugins"]
+# Built-in reference plugin — also always-registered at runtime for MVP.
+# Third-party plugins declare their own entries:
+#   [project.entry-points."ocdkit.plugins"]
+#   my_tool = "my_tool.ocdkit_plugin:plugin"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"ocdkit.viewer" = ["*.html", "*.css", "*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
