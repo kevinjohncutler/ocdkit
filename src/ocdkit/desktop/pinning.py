@@ -57,6 +57,7 @@ __all__ = [
     "copy_to_clipboard",
     "is_dark_mode",
     "open_in_terminal",
+    "relaunch_via_bundle",
     "setup_platform",
     "set_window_icon",
     "shell_executable",
@@ -664,8 +665,11 @@ def _create_macos_app_bundle(app: AppIdentity):
     os.makedirs(resources_dir, exist_ok=True)
 
     try:
+        # Forward "$@" so callers can pass args through ``open -a <bundle>
+        # --args ...``.  This is also how ``relaunch_via_bundle`` re-enters
+        # the original Python CLI with its argv intact.
         with open(launcher, "w") as f:
-            f.write(f"#!/bin/bash\nexec \"{target}\"\n")
+            f.write(f'#!/bin/bash\nexec "{target}" "$@"\n')
         os.chmod(launcher, 0o755)
     except Exception:
         return
@@ -746,6 +750,58 @@ def setup_platform(app: AppIdentity):
         _create_linux_desktop_entry(app)
 
 
+def relaunch_via_bundle(app: AppIdentity) -> None:
+    """On macOS, re-exec the current process through ``~/Applications/<name>.app``
+    so LaunchServices associates the PID with the bundle.
+
+    **Why this exists.** The Dock's Icon Services rendering path
+    (native shadow + macOS-26 Liquid Glass tile backplate + auto-synthesised
+    sizes) is only engaged when LaunchServices has associated the running
+    process with a bundle.  That association is established *only* when the
+    bundle is what spawned the process — it survives the launcher script's
+    ``exec``-to-Python, but it never exists if the user ran the
+    ``gui_entry_point`` directly from a terminal.  Terminal launches
+    therefore render with the raw-bitmap path and lose the tile.
+
+    This helper detects the "terminal launch" case and re-execs the process
+    through ``open <bundle> --args <original argv>``.  After the re-exec,
+    the new Python process has the bundle association and the Dock
+    engages Icon Services.
+
+    No-op when:
+
+    * not on macOS,
+    * the bundle doesn't exist (setup_platform hasn't run / gui entry
+      point is missing), or
+    * we're already the bundle-launched process (``sys.argv[0]`` points at
+      the bundle's launcher script).
+
+    Uses :func:`os.execvp` so the current process is replaced — the shell
+    returns promptly (``open`` exits quickly), and the GUI continues to
+    run in a new bundle-associated Python process.
+    """
+    if SYSTEM != "Darwin":
+        return
+    bundle_path = os.path.expanduser(f"~/Applications/{app.name}.app")
+    launcher = os.path.join(bundle_path, "Contents", "MacOS", app.name)
+    if not os.path.exists(launcher):
+        return
+    try:
+        if os.path.realpath(sys.argv[0]) == os.path.realpath(launcher):
+            return  # already launched via bundle
+    except Exception:
+        return
+    # Pass the current argv through -W-free ``open --args ...``. Using
+    # ``open -n`` would force a fresh instance; we don't want that — if the
+    # bundle is already running we'd rather focus the existing window.
+    args = ["open", "-a", bundle_path, "--args", *sys.argv[1:]]
+    try:
+        os.execvp("open", args)
+    except OSError:
+        # Fall through and let the caller continue normally without the tile
+        pass
+
+
 def set_window_icon(app: AppIdentity, *, window_title: str = ""):
     """Set the window/dock icon after the pywebview window is fully created.
 
@@ -761,14 +817,41 @@ def set_window_icon(app: AppIdentity, *, window_title: str = ""):
     src_png = _resolve_source_png(app)
 
     if SYSTEM == "Darwin":
-        # When launched from ~/Applications/<name>.app, LaunchServices already
-        # associates this process with the bundle's .icns — overriding via
-        # setApplicationIconImage_ replaces it with a single-resolution
-        # rasterized copy that the Dock renders differently. Skip the override
-        # when a bundle is present; only fall back to the PNG for direct
-        # terminal launches where no bundle association exists.
+        # The Dock has two icon-rendering paths:
+        #
+        #   * **Icon Services** (private ``NSISIconImageRep`` reps) — gives the
+        #     native look: system shadow, the macOS-26 "Liquid Glass" tile
+        #     backplate, and auto-synthesised sizes 18/24/36/48 alongside the
+        #     bundle's .icns sizes 16/32/128/256/512. Only used when the
+        #     process is associated with a bundle (LaunchServices tracks the
+        #     PID from the bundle launch — survives the launcher's
+        #     ``exec``-to-Python).
+        #
+        #   * **Raw bitmap** (``NSBitmapImageRep``) — used the moment anyone
+        #     calls ``setApplicationIconImage_`` with any ``NSImage``, even
+        #     one built from the bundle's own .icns. Drops tile/shadow
+        #     compositing entirely.
+        #
+        # ``NSISIconImageRep`` is private; you cannot construct one and hand
+        # it back. The ONLY way to keep the native look is to not call
+        # ``setApplicationIconImage_`` at all when the bundle is driving us.
+        # Verified empirically at the macOS AppKit REPL (see
+        # ``docs/pywebview-desktop-integration.md``).
+        #
+        # Guard: detect whether ``sys.argv[0]`` is the bundle's launcher
+        # script — if so we're inside the Icon-Services path, leave it
+        # alone. Otherwise (direct ``gui_entry_point`` shim / terminal
+        # launch, no bundle association) fall back to setApplicationIconImage_
+        # so at least *some* icon shows (no tile, but not Python's icon).
         bundle_path = os.path.expanduser(f"~/Applications/{app.name}.app")
-        if not os.path.exists(bundle_path) and src_png:
+        bundle_launcher = os.path.join(bundle_path, "Contents", "MacOS", app.name)
+        try:
+            launched_from_bundle = (
+                os.path.realpath(sys.argv[0]) == os.path.realpath(bundle_launcher)
+            )
+        except Exception:
+            launched_from_bundle = False
+        if not launched_from_bundle and src_png:
             try:
                 from AppKit import NSApplication, NSImage
                 ns_image = NSImage.alloc().initWithContentsOfFile_(src_png)

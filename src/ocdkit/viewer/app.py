@@ -324,7 +324,8 @@ def run_desktop(
     # Apply Windows dark mode hints *before* importing webview — the flag is
     # locked in during the first WebView2 initialisation. No-op elsewhere.
     from ocdkit.desktop.pinning import (
-        AppIdentity, apply_early_dark_mode, setup_platform, set_window_icon,
+        AppIdentity, apply_early_dark_mode, relaunch_via_bundle,
+        setup_platform, set_window_icon,
     )
     apply_early_dark_mode()
 
@@ -357,6 +358,13 @@ def run_desktop(
             icon_png=icon_env,
         )
     setup_platform(VIEWER_APP)
+
+    # macOS: on terminal launches, re-exec through the bundle so LaunchServices
+    # associates the PID and the Dock uses Icon Services (Liquid Glass tile,
+    # shadow, auto-synthesised sizes). No-op on other platforms and on
+    # bundle-launched processes. See ocdkit.desktop.pinning.relaunch_via_bundle
+    # for the underlying rationale (NSISIconImageRep vs NSBitmapImageRep).
+    relaunch_via_bundle(VIEWER_APP)
 
     serve_host = host or "127.0.0.1"
     serve_port = port if port and port > 0 else _pick_free_port(serve_host)
@@ -413,11 +421,14 @@ def run_desktop(
     automation_needed = bool(snapshot_target or eval_js)
     loaded_event = threading.Event()
 
-    # macOS gets the native NSVisualEffectView frosted-glass effect via
-    # ``vibrancy=True``. ``transparent=True`` (alpha-capable window) is
-    # required for the body's translucent background to actually show through
-    # to the OS material rather than over a white background. On Windows /
-    # Linux pywebview ignores ``vibrancy``; ``transparent`` is supported.
+    # Solid window background that adapts to the OS dark/light appearance.
+    # We don't use ``transparent=True``/``vibrancy=True``: the macOS Cocoa
+    # backend's vibrancy setup is fragile (NSVisualEffectView added as a
+    # webview subview rather than below it) and produces an unstable look
+    # across OS versions. A solid dark/light background gives the same look
+    # as Finder/file-explorer chrome: dark in dark mode, white in light.
+    from ocdkit.desktop.pinning import is_dark_mode
+    bg = "#111111" if is_dark_mode() else "#ffffff"
     window = webview.create_window(
         viewer_title(),
         url=window_url,
@@ -425,9 +436,7 @@ def run_desktop(
         height=768,
         resizable=True,
         hidden=automation_needed,
-        transparent=True,
-        vibrancy=True,
-        background_color="#111111",
+        background_color=bg,
     )
 
     def _automation_worker():
