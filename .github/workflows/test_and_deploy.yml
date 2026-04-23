@@ -90,7 +90,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
 
       - name: Download test artifacts
         uses: actions/download-artifact@v4
