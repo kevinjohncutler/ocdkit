@@ -1,0 +1,379 @@
+
+
+.label-panel {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Override these icon URLs with your preferred assets under /static/icons/ */
+  --label-icon-decrement: url('/static/icons/minus.svg');
+  --label-icon-increment: url('/static/icons/plus.svg');
+  --label-stepper-size: var(--slider-track-height);
+}
+
+.label-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+}
+
+/* Track background + border for the input via parent pseudo-element */
+.label-stepper::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* Width = 100% minus buttons width minus gap */
+  right: calc(var(--toggle-width) + 8px);
+  height: var(--slider-track-height);
+  background: var(--slider-track-bg);
+  border-radius: var(--slider-track-radius);
+  box-shadow: inset 0 0 0 1px var(--slider-track-border);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Accent fill inset to reveal border (inputs can't have ::before) */
+.label-stepper::after {
+  content: '';
+  position: absolute;
+  /* Inset by 1px on all sides to reveal the gray border */
+  left: 1px;
+  top: 1px;
+  /* Width = track width minus 2px (1px inset on each side) */
+  width: calc(100% - var(--toggle-width) - 8px - 2px);
+  height: calc(var(--slider-track-height) - 2px);
+  background: var(--accent-color);
+  border-radius: calc(var(--slider-track-radius) - 1px);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.label-stepper button {
+  width: var(--label-stepper-size);
+  height: var(--label-stepper-size);
+  border-radius: calc(var(--slider-track-height) / 2);
+  border: none;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: var(--panel-text-color);
+  font-size: 0.85rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.label-stepper button:hover,
+.label-stepper button:active {
+  background: var(--accent-color);
+  color: var(--accent-ink, #161616);
+}
+
+.label-stepper input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  height: var(--label-stepper-size);
+  border-radius: calc(var(--slider-track-height) / 2);
+  border: none;
+  /* !important overrides JS inline style - let ::after provide the fill */
+  background: transparent !important;
+  color: var(--accent-ink, #161616);
+  box-shadow: none;
+  padding: 0 12px;
+  font-size: 0.95rem;
+  outline: none;
+  text-align: center;
+  position: relative;
+  z-index: 2; /* Above ::after accent fill */
+}
+
+.label-icon {
+  width: calc(var(--label-stepper-size) * 0.55);
+  height: calc(var(--label-stepper-size) * 0.55);
+  display: inline-block;
+  background-color: currentColor;
+  pointer-events: none;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.label-stepper input[type="number"]:focus {
+  box-shadow: 0 0 0 2px rgba(216, 162, 0, 0.25);
+}
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  --history-icon-undo: url('/static/icons/arrow-back-up.svg');
+  --history-icon-redo: url('/static/icons/arrow-forward-up.svg');
+  --history-icon-home: url('/static/icons/home-2.svg');
+  --history-icon-save: url('/static/icons/download.svg');
+}
+
+.image-nav-panel {
+  --history-icon-prev: url('/static/icons/arrow-back-up.svg');
+  --history-icon-next: url('/static/icons/arrow-forward-up.svg');
+}
+
+.history-controls {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.history-button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: var(--slider-track-height);
+  border-radius: calc(var(--slider-track-height) / 2);
+  background: var(--slider-track-bg);
+  box-shadow: inset 0 0 0 1px var(--slider-track-border);
+  border: none;
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
+  color: var(--panel-text-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.history-button:hover:not([disabled]) {
+  box-shadow: inset 0 0 0 1px var(--accent-hover);
+  background: var(--control-input-hover-surface);
+}
+
+.history-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.history-icon {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  background-color: currentColor;
+  pointer-events: none;
+}
+
+.history-icon-undo {
+  -webkit-mask: var(--history-icon-undo) no-repeat center / contain;
+  mask: var(--history-icon-undo) no-repeat center / contain;
+}
+
+.history-icon-redo {
+  -webkit-mask: var(--history-icon-redo) no-repeat center / contain;
+  mask: var(--history-icon-redo) no-repeat center / contain;
+}
+
+.history-icon-home {
+  -webkit-mask: var(--history-icon-home) no-repeat center / contain;
+  mask: var(--history-icon-home) no-repeat center / contain;
+  display: block;
+  margin: auto;
+}
+
+.history-icon-prev {
+  -webkit-mask: var(--history-icon-prev) no-repeat center / contain;
+  mask: var(--history-icon-prev) no-repeat center / contain;
+}
+
+.history-icon-next {
+  -webkit-mask: var(--history-icon-next) no-repeat center / contain;
+  mask: var(--history-icon-next) no-repeat center / contain;
+}
+
+.label-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+#labelValueInput {
+  -moz-appearance: textfield;
+  appearance: textfield;
+  /* Fill provided by parent .label-stepper pseudo-elements */
+}
+
+#labelValueInput::-webkit-outer-spin-button,
+
+#labelValueInput::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tool-buttons {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.tool-stop {
+  width: 46px;
+  height: 46px;
+  border-radius: calc(var(--slider-track-height) / 2);
+  border: 1px solid var(--slider-track-border);
+  background: transparent;
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--panel-text-color);
+  background: transparent;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.tool-stop[data-active="true"] {
+  border-color: var(--accent-color);
+  color: var(--accent-ink, #161616);
+  background: var(--accent-color);
+  box-shadow: none;
+  transform: none;
+}
+
+.tool-stop:hover {
+  border-color: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.tool-stop:active {
+  transform: translateY(0);
+}
+
+.tool-toggle {
+  /* Override these URLs with your own assets under /static/icons/… */
+  /* --tool-icon-draw: url('data:...'); */
+  --tool-icon-draw: url('/static/icons/pencil.svg');
+  --tool-icon-erase: url('/static/icons/eraser.svg');
+  --tool-icon-fill: url('/static/icons/droplet-half-2.svg');
+  --tool-icon-picker: url('/static/icons/palette.svg');
+}
+
+.tool-icon {
+  width: 24px;
+  height: 24px;
+  display: inline-block;
+  background-color: currentColor;
+  pointer-events: none;
+}
+
+.tool-icon-draw {
+  -webkit-mask: var(--tool-icon-draw) no-repeat center / contain;
+  mask: var(--tool-icon-draw) no-repeat center / contain;
+}
+
+.tool-icon-erase {
+  -webkit-mask: var(--tool-icon-erase) no-repeat center / contain;
+  mask: var(--tool-icon-erase) no-repeat center / contain;
+}
+
+.tool-icon-fill {
+  -webkit-mask: var(--tool-icon-fill) no-repeat center / contain;
+  mask: var(--tool-icon-fill) no-repeat center / contain;
+}
+
+.tool-icon-picker {
+  -webkit-mask: var(--tool-icon-picker) no-repeat center / contain;
+  mask: var(--tool-icon-picker) no-repeat center / contain;
+}
+
+
+/* Saved rotate icon config (rotate-2 / rotate-clockwise-2) for quick revert
+#intensityPanel {
+  --history-icon-rotate-left: url('/static/icons/rotate-rectangle.svg');
+  --history-icon-rotate-right: url('/static/icons/rotate-rectangle.svg');
+}
+
+.history-icon-rotate-left {
+  -webkit-mask: var(--history-icon-rotate-left) no-repeat center / contain;
+  mask: var(--history-icon-rotate-left) no-repeat center / contain;
+  transform: scaleX(-1) rotate(45deg);
+  transform-origin: center;
+  display: block;
+  margin: auto;
+  position: relative;
+  top: 1px;
+}
+
+.history-icon-rotate-right {
+  -webkit-mask: var(--history-icon-rotate-right) no-repeat center / contain;
+  mask: var(--history-icon-rotate-right) no-repeat center / contain;
+  transform: rotate(45deg);
+  transform-origin: center;
+  display: block;
+  margin: auto;
+  position: relative;
+  top: 1px;
+}
+*/
+#intensityPanel {
+  --history-icon-home: url('/static/icons/home-2.svg');
+  --history-icon-rotate-left: url('/static/icons/rotate-rectangle.svg');
+  --history-icon-rotate-right: url('/static/icons/rotate-rectangle.svg');
+}
+
+.history-icon-save {
+  -webkit-mask: var(--history-icon-save) no-repeat center / contain;
+  mask: var(--history-icon-save) no-repeat center / contain;
+}
+
+.history-icon-rotate-left {
+  -webkit-mask: var(--history-icon-rotate-left) no-repeat center / contain;
+  mask: var(--history-icon-rotate-left) no-repeat center / contain;
+  transform: translateY(5%) scaleX(-1) rotate(45deg);
+  transform-origin: center;
+  display: block;
+  margin: auto;
+}
+
+.history-icon-rotate-right {
+  -webkit-mask: var(--history-icon-rotate-right) no-repeat center / contain;
+  mask: var(--history-icon-rotate-right) no-repeat center / contain;
+  transform: translateY(5%) rotate(45deg);
+  transform-origin: center;
+  display: block;
+  margin: auto;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.panel-actions .history-button {
+  flex: 0 0 auto;
+  width: var(--slider-track-height);
+  height: var(--slider-track-height);
+  padding: 0;
+  background: transparent;
+}
+
+.panel-actions .history-button:hover:not([disabled]),
+.panel-actions .history-button:active {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: var(--accent-ink, #161616);
+}
+
+
+

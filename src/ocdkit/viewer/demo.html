@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ocdkit.viewer (Phase A demo)</title>
+  <style>
+    :root { color-scheme: light dark; --pad: 12px; }
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 0; display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+    aside { padding: var(--pad); border-right: 1px solid #8884; overflow-y: auto; }
+    main { padding: var(--pad); display: flex; flex-direction: column; gap: var(--pad); overflow: hidden; }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    h2 { font-size: 12px; text-transform: uppercase; opacity: 0.7; margin: 16px 0 8px; }
+    label { display: block; font-size: 12px; margin-top: 8px; }
+    label > span { display: block; opacity: 0.85; margin-bottom: 2px; }
+    input[type=range], input[type=number], select, input[type=text], input[type=color] { width: 100%; box-sizing: border-box; }
+    .value { font-variant-numeric: tabular-nums; opacity: 0.7; font-size: 11px; }
+    button { margin-top: 12px; padding: 6px 10px; font-size: 13px; }
+    canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated; border: 1px solid #8884; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .muted { opacity: 0.6; font-size: 11px; }
+    pre { font-size: 10px; max-height: 120px; overflow: auto; background: #8881; padding: 6px; }
+  </style>
+</head>
+<body>
+<aside>
+  <h1>ocdkit.viewer — Phase A</h1>
+  <div class="muted">Plugin contract demo. Phase B brings the full editor frontend.</div>
+
+  <h2>Plugin</h2>
+  <select id="plugin-select"></select>
+  <div class="muted" id="plugin-meta"></div>
+
+  <div id="pane"></div>
+
+  <h2>Image</h2>
+  <input type="file" id="file-input" accept="image/*" />
+  <button id="run-btn" disabled>Segment</button>
+  <div class="muted" id="status"></div>
+</aside>
+
+<main>
+  <div class="row"><strong>Image</strong><span class="muted" id="img-info"></span></div>
+  <canvas id="img-canvas"></canvas>
+  <div class="row"><strong>Mask</strong><span class="muted" id="mask-info"></span></div>
+  <canvas id="mask-canvas"></canvas>
+  <pre id="response"></pre>
+</main>
+
+<script>
+"use strict";
+let currentPlugin = null;
+let currentImageB64 = null;
+let currentImage = null;
+
+const $ = (sel) => document.querySelector(sel);
+const setStatus = (msg) => { $("#status").textContent = msg; };
+
+async function loadPlugins() {
+  const r = await fetch("/api/plugins");
+  const data = await r.json();
+  const sel = $("#plugin-select");
+  sel.innerHTML = "";
+  for (const p of data.plugins) {
+    const opt = document.createElement("option");
+    opt.value = p.name;
+    opt.textContent = `${p.name} (${p.version})`;
+    sel.appendChild(opt);
+  }
+  if (data.plugins.length) {
+    selectPlugin(data.plugins[0].name);
+  } else {
+    $("#pane").innerHTML = '<div class="muted">No plugins registered. Pass --plugin module:attr or install a plugin.</div>';
+  }
+}
+
+async function selectPlugin(name) {
+  const r = await fetch(`/api/plugins/${encodeURIComponent(name)}`);
+  currentPlugin = await r.json();
+  $("#plugin-meta").textContent = currentPlugin.description || "";
+  renderPane();
+  updateRunButton();
+}
+
+function renderPane() {
+  const pane = $("#pane");
+  pane.innerHTML = "";
+  const groups = new Map();
+  for (const w of currentPlugin.widgets) {
+    const key = w.group || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(w);
+  }
+  for (const [groupName, widgets] of groups) {
+    if (groupName) {
+      const h = document.createElement("h2");
+      h.textContent = groupName;
+      pane.appendChild(h);
+    }
+    for (const w of widgets) pane.appendChild(renderWidget(w));
+  }
+  applyVisibility();
+}
+
+function renderWidget(w) {
+  const wrapper = document.createElement("label");
+  wrapper.dataset.name = w.name;
+  if (w.visibleWhen) wrapper.dataset.visibleWhen = JSON.stringify(w.visibleWhen);
+  const labelText = document.createElement("span");
+  labelText.textContent = w.label;
+  wrapper.appendChild(labelText);
+
+  let input;
+  if (w.kind === "slider" || w.kind === "slider_log") {
+    input = document.createElement("input");
+    input.type = "range";
+    input.min = w.min; input.max = w.max; input.step = w.step ?? 0.01;
+    input.value = w.default;
+    const valSpan = document.createElement("span");
+    valSpan.className = "value"; valSpan.textContent = w.default;
+    input.addEventListener("input", () => { valSpan.textContent = input.value; applyVisibility(); });
+    wrapper.appendChild(input);
+    wrapper.appendChild(valSpan);
+  } else if (w.kind === "number") {
+    input = document.createElement("input");
+    input.type = "number";
+    input.min = w.min; input.max = w.max; input.step = w.step ?? 1; input.value = w.default;
+    input.addEventListener("input", applyVisibility);
+    wrapper.appendChild(input);
+  } else if (w.kind === "toggle") {
+    input = document.createElement("input");
+    input.type = "checkbox"; input.checked = !!w.default;
+    input.addEventListener("change", applyVisibility);
+    wrapper.appendChild(input);
+  } else if (w.kind === "dropdown") {
+    input = document.createElement("select");
+    for (const c of w.choices) {
+      const opt = document.createElement("option");
+      opt.value = c; opt.textContent = c;
+      if (c === w.default) opt.selected = true;
+      input.appendChild(opt);
+    }
+    input.addEventListener("change", applyVisibility);
+    wrapper.appendChild(input);
+  } else if (w.kind === "color") {
+    input = document.createElement("input");
+    input.type = "color"; input.value = w.default;
+    wrapper.appendChild(input);
+  } else {
+    input = document.createElement("input");
+    input.type = "text"; input.value = w.default ?? "";
+    wrapper.appendChild(input);
+  }
+  input.dataset.widgetName = w.name;
+  input.dataset.widgetKind = w.kind;
+  if (w.help) wrapper.title = w.help;
+  return wrapper;
+}
+
+function readParams() {
+  const params = {};
+  for (const el of document.querySelectorAll("[data-widget-name]")) {
+    const name = el.dataset.widgetName;
+    const kind = el.dataset.widgetKind;
+    if (kind === "toggle") params[name] = el.checked;
+    else if (kind === "number" || kind === "slider" || kind === "slider_log") params[name] = parseFloat(el.value);
+    else params[name] = el.value;
+  }
+  return params;
+}
+
+function applyVisibility() {
+  const params = readParams();
+  for (const wrap of document.querySelectorAll("[data-visible-when]")) {
+    const cond = JSON.parse(wrap.dataset.visibleWhen);
+    let visible = true;
+    for (const [k, v] of Object.entries(cond)) {
+      if (params[k] !== v) { visible = false; break; }
+    }
+    wrap.style.display = visible ? "" : "none";
+  }
+}
+
+function updateRunButton() {
+  $("#run-btn").disabled = !(currentPlugin && currentImageB64);
+}
+
+$("#plugin-select").addEventListener("change", (e) => selectPlugin(e.target.value));
+
+$("#file-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    currentImageB64 = reader.result;
+    const img = new Image();
+    img.onload = () => {
+      currentImage = img;
+      const canvas = $("#img-canvas");
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      $("#img-info").textContent = `${img.naturalWidth}×${img.naturalHeight}`;
+      updateRunButton();
+    };
+    img.src = currentImageB64;
+  };
+  reader.readAsDataURL(file);
+});
+
+$("#run-btn").addEventListener("click", async () => {
+  if (!currentPlugin || !currentImageB64) return;
+  setStatus("Running…");
+  const t0 = performance.now();
+  const r = await fetch(`/api/plugins/${encodeURIComponent(currentPlugin.name)}/segment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: currentImageB64, params: readParams() })
+  });
+  const data = await r.json();
+  const elapsed = (performance.now() - t0).toFixed(0);
+  if (!r.ok) {
+    setStatus(`Error: ${data.error || r.statusText}`);
+    $("#response").textContent = JSON.stringify(data, null, 2);
+    return;
+  }
+  setStatus(`Done in ${elapsed} ms (server ${data.elapsedMs} ms)`);
+  $("#response").textContent = JSON.stringify({ ...data, mask: { ...data.mask, data: `<${data.mask.data.length} chars>` } }, null, 2);
+  drawMask(data.mask);
+});
+
+function drawMask(maskInfo) {
+  const { width, height, data, maxLabel } = maskInfo;
+  const raw = atob(data);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  const labels = new Int32Array(buf.buffer);
+  const canvas = $("#mask-canvas");
+  canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  const out = ctx.createImageData(width, height);
+  const palette = [[0,0,0,0],[255,90,90,180],[90,180,255,180],[120,255,120,180],[255,180,90,180],[200,120,255,180],[255,120,200,180],[120,255,200,180]];
+  for (let i = 0; i < labels.length; i++) {
+    const v = labels[i];
+    const c = palette[v % palette.length];
+    out.data[4*i+0] = c[0]; out.data[4*i+1] = c[1]; out.data[4*i+2] = c[2]; out.data[4*i+3] = c[3];
+  }
+  ctx.putImageData(out, 0, 0);
+  $("#mask-info").textContent = `${width}×${height}, ${maxLabel} labels`;
+}
+
+loadPlugins().catch((err) => { setStatus(`Failed to load plugins: ${err}`); });
+</script>
+</body>
+</html>

@@ -6,6 +6,10 @@
 # Local tooling
 .claude/
 
+# Editor / NAS junk
+*.bak
+.!*
+
 # C extensions
 *.so
 

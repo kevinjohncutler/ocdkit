@@ -1,9 +1,13 @@
 include README.md
 include LICENSE
 recursive-include src *.py
+recursive-include src/ocdkit/viewer/web *.html *.css *.js *.svg *.c
 recursive-include tests *.py
 recursive-include tests/fixtures *
+prune src/ocdkit/viewer/web/icons/_unused
 prune tests/__pycache__
 prune **/__pycache__
 global-exclude ._*
 global-exclude .DS_Store
+global-exclude *.bak
+global-exclude .!*
