@@ -396,7 +396,11 @@ def run_server(
         )
         raise SystemExit(1)
 
-    print(f"[viewer] active plugin: {ACTIVE_PLUGIN.name() or '(none)'}", flush=True)
+    # Use current() (which auto-selects a default), not name() — name() returns
+    # the raw stored value which is None at startup before discovery has set
+    # anything, leading to misleading "(none)" log on a fully-functional setup.
+    _active = ACTIVE_PLUGIN.current()
+    print(f"[viewer] active plugin: {_active.name if _active else '(none)'}", flush=True)
     print(f"[viewer] registered: {REGISTRY.names() or '(none)'}", flush=True)
 
     # When TLS is on, listen on a single public port that demuxes HTTPS vs HTTP:
@@ -404,14 +408,13 @@ def run_server(
     # Goal: end users type one URL; if browser warning blocks them, switching
     # to plain http:// on the same port lands them on the install page.
     if ssl_cert and ssl_key:
-        if reload:
-            print("[viewer] WARNING: --reload not yet supported with --https-auto; "
-                  "running without reload.", flush=True)
         https_internal = _pick_free_port()
         http_internal = _pick_free_port()
-        # HTTP install backend in a daemon thread
+        # Demuxer + trust sidecar live in the supervisor process (this one).
+        # When uvicorn reloads, it spawns/kills the worker process — our
+        # daemon threads here keep forwarding to whatever port the worker
+        # binds (they reconnect each new TCP request).
         start_trust_setup_sidecar("127.0.0.1", http_internal)
-        # Public-facing demuxer
         start_https_demuxer(
             host, port,
             https_backend_port=https_internal,
@@ -419,15 +422,26 @@ def run_server(
         )
         print(f"[viewer] serving at https://{host}:{port} (and http:// for trust install)",
               flush=True)
-        # Main HTTPS uvicorn (blocks); demuxer routes external port → here
-        uvicorn.run(
-            create_app(),
+        uvicorn_kwargs: dict[str, Any] = dict(
             host="127.0.0.1",
             port=https_internal,
             ssl_certfile=ssl_cert,
             ssl_keyfile=ssl_key,
             log_level="info",
         )
+        if reload:
+            reload_dirs = [str(Path(__file__).resolve().parent)]
+            if WEB_DIR.exists():
+                reload_dirs.append(str(WEB_DIR))
+            uvicorn.run(
+                "ocdkit.viewer.app:create_app",
+                factory=True,
+                reload=True,
+                reload_dirs=reload_dirs,
+                **uvicorn_kwargs,
+            )
+        else:
+            uvicorn.run(create_app(), **uvicorn_kwargs)
         return
 
     print(f"[viewer] serving at http://{host}:{port}", flush=True)
@@ -500,6 +514,13 @@ def run_desktop(
         os.environ["OCDKIT_VIEWER_TITLE"] = title
     if icon:
         os.environ["OCDKIT_VIEWER_ICON"] = str(icon)
+
+    # Reload spawns a uvicorn reloader subprocess that survives the parent's
+    # ``os._exit(0)``. Incompatible with --snapshot / --eval-js where the
+    # caller (CI / tests) waits for the parent to exit. Force-disable.
+    if reload and (snapshot_path or eval_js):
+        reload = False
+
     try:
         import webview  # noqa: F401
     except ImportError:
