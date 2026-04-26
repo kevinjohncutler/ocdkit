@@ -7,7 +7,8 @@ morphology, and plotting. Designed for use across multiple projects.
 
 from .load import enable_submodules
 
-# Exclude ``__main__`` from auto-discovery: it's a ``python -m ocdkit`` entry
-# point, not a package submodule, and eager import here would trigger a
-# double-execution warning when Python later runs it as ``__main__``.
-enable_submodules(__name__, exclude=["__main__"])
+# Top-level: lazy. Sub-packages (ocdkit.array, ocdkit.io, ocdkit.plot, …) load
+# only when accessed, keeping bare ``import ocdkit`` near-instant.
+# ``__main__`` is excluded because it's a ``python -m ocdkit`` entry point,
+# not a sub-module — eager import would trigger a double-execution warning.
+enable_submodules(__name__, exclude=["__main__"], expose=False)

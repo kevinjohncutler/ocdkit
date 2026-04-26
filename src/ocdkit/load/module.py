@@ -17,23 +17,45 @@ import pkgutil
 import sys
 
 
-def enable_submodules(pkg_name: str, *, include=None, exclude=None) -> None:
-    """Discover sub-modules and register their public names on the package.
+def enable_submodules(
+    pkg_name: str,
+    *,
+    include=None,
+    exclude=None,
+    expose: bool = True,
+) -> None:
+    """Discover sub-modules and expose them on the package.
 
-    Imports all sub-modules at call time, then copies every public
-    function, class, and non-module attribute into the parent package's
-    namespace.  This makes both ``from pkg import func`` and
-    ``from pkg import *`` work without hand-maintained export lists.
+    Default mode (``expose=True``) eagerly imports each sub-module and
+    promotes its public non-module attributes onto the parent. Suitable
+    for gateway sub-packages that re-export their sub-modules' functions
+    (``from foo import some_func`` and ``from foo import *`` semantics).
+    This matches the historical behavior.
+
+    ``expose=False`` is fully lazy (PEP 562): sub-modules are *not*
+    imported at call time, only their names are enumerated. Each
+    sub-module loads on first attribute access via ``__getattr__``.
+    ``import pkg`` becomes near-instant. Use for *top-level* packages
+    (``ocdkit``, ``omnipose``) where the cost of eagerly loading every
+    sub-package's transitive dependencies (torch, numba, …) on bare
+    ``import pkg`` is unacceptable.
+
+    ``__all__`` lists sub-module names (lazy mode) or sub-module names
+    plus promoted attributes (expose mode), suitable for ``from pkg
+    import *`` and ``dir(pkg)``.
 
     Parameters
     ----------
     pkg_name : str
         Fully-qualified package name (typically ``__name__``).
     include : collection of str, optional
-        If given, only these submodule names are loaded. Mutually exclusive
-        with *exclude*.
+        If given, only these sub-module names are exposed. Mutually
+        exclusive with *exclude*.
     exclude : collection of str, optional
-        If given, these submodule names are skipped.
+        If given, these sub-module names are skipped.
+    expose : bool, default True
+        If True (default), eagerly load and promote sub-module attrs.
+        If False, defer all sub-module loading until first access.
     """
     pkg: ModuleType = sys.modules[pkg_name]
     submods = {info.name for info in pkgutil.iter_modules(pkg.__path__)}
@@ -43,25 +65,37 @@ def enable_submodules(pkg_name: str, *, include=None, exclude=None) -> None:
     elif exclude is not None:
         submods -= set(exclude)
 
-    for sub in submods:
-        try:
-            mod = importlib.import_module(f"{pkg_name}.{sub}")
-        except ImportError:
-            continue
-        setattr(pkg, sub, mod)
-        for name in dir(mod):
-            if name.startswith("_"):
+    promoted: set = set()
+    if expose:
+        for sub in sorted(submods):
+            try:
+                mod = importlib.import_module(f"{pkg_name}.{sub}")
+            except ImportError:
                 continue
-            attr = getattr(mod, name)
-            if isinstance(attr, ModuleType):
-                continue
-            if not hasattr(pkg, name):
+            setattr(pkg, sub, mod)
+            for name in dir(mod):
+                if name.startswith("_"):
+                    continue
+                if hasattr(pkg, name):
+                    continue
+                attr = getattr(mod, name)
+                if isinstance(attr, ModuleType):
+                    continue
                 setattr(pkg, name, attr)
+                promoted.add(name)
 
-    pkg.__all__ = [n for n in vars(pkg) if not n.startswith("_")]
+    pkg.__all__ = sorted(submods | promoted)
 
-    # Fallback __getattr__ for names not eagerly registered (e.g. private names)
     def _getattr(name: str):
+        # Direct sub-module access: load that one only and cache.
+        if name in submods:
+            mod = importlib.import_module(f"{pkg_name}.{name}")
+            setattr(pkg, name, mod)
+            return mod
+        # Fallback: scan sub-modules for the attribute. Catches private
+        # names and module-typed attrs (e.g. stdlib ``platform``) that
+        # the eager pass skips. Sub-modules are already loaded under
+        # ``expose=True``, so this scan is just dict lookups.
         for sub in submods:
             try:
                 mod = importlib.import_module(f"{pkg_name}.{sub}")
