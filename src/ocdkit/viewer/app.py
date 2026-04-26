@@ -148,7 +148,7 @@ def create_app() -> "Any":
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
-    from .routers import index, log, mask, plugin, segment, session_routes, system
+    from .routers import index, log, mask, plugin, segment, session_routes, system, trust
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -191,6 +191,7 @@ def create_app() -> "Any":
     app.include_router(segment.router, tags=["segment"])
     app.include_router(plugin.router, tags=["plugin"])
     app.include_router(mask.router, tags=["mask"])
+    app.include_router(trust.router)
 
     return app
 
@@ -198,6 +199,130 @@ def create_app() -> "Any":
 # -----------------------------------------------------------------------------
 # Server / desktop launchers
 # -----------------------------------------------------------------------------
+
+
+def start_trust_setup_sidecar(host: str, port: int) -> None:
+    """Start a tiny HTTP server that only serves /trust/* routes.
+
+    Runs in a daemon thread so the main server owns the lifecycle. Users hit
+    this over plain HTTP (no TLS warning) to download the root CA before
+    their OS trusts our HTTPS cert. Safe to call from any app embedding an
+    HTTPS server (hiprpy, omnipose, bare FastAPI, etc.).
+    """
+    import uvicorn as _uvicorn
+    from fastapi import FastAPI
+    from fastapi.responses import RedirectResponse
+    from .routers import trust as _trust
+
+    setup_app = FastAPI(
+        title="ocdkit.viewer — trust install",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+
+    @setup_app.get("/")
+    def _root():  # type: ignore[no-untyped-def]
+        return RedirectResponse("/trust/install")
+
+    setup_app.include_router(_trust.router)
+
+    def _serve() -> None:
+        cfg = _uvicorn.Config(
+            setup_app, host=host, port=port, log_level="warning",
+            access_log=False,
+        )
+        server = _uvicorn.Server(cfg)
+        try:
+            server.run()
+        except Exception as exc:
+            print(f"[viewer] trust sidecar stopped: {exc}", flush=True)
+
+    threading.Thread(target=_serve, daemon=True, name="ocdkit-trust-setup").start()
+
+
+def start_https_demuxer(
+    host: str,
+    port: int,
+    *,
+    https_backend_port: int,
+    http_backend_port: int,
+) -> None:
+    """Start a TCP demultiplexer that listens on a single public port.
+
+    Sniffs the first byte of each incoming connection:
+      - ``0x16`` (TLS Client Hello) → routes to the HTTPS backend
+      - anything else (HTTP method like 'G', 'P', 'H', ...) → HTTP backend
+
+    Runs in a daemon thread with its own asyncio event loop. Both backends
+    must be uvicorn instances bound to ``127.0.0.1:<backend_port>``.
+    """
+    import asyncio as _asyncio
+
+    async def _proxy(src, dst):
+        try:
+            while True:
+                buf = await src.read(8192)
+                if not buf:
+                    break
+                dst.write(buf)
+                await dst.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                dst.close()
+            except Exception:
+                pass
+
+    async def _handle(reader, writer):
+        try:
+            first = await _asyncio.wait_for(reader.read(1), timeout=10.0)
+            if not first:
+                writer.close()
+                return
+            backend_port = https_backend_port if first == b"\x16" else http_backend_port
+            try:
+                br, bw = await _asyncio.open_connection("127.0.0.1", backend_port)
+            except Exception:
+                writer.close()
+                return
+            bw.write(first)
+            await bw.drain()
+            await _asyncio.gather(
+                _proxy(reader, bw),
+                _proxy(br, writer),
+                return_exceptions=True,
+            )
+        except _asyncio.TimeoutError:
+            try:
+                writer.close()
+            except Exception:
+                pass
+        except Exception:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    def _runner() -> None:
+        loop = _asyncio.new_event_loop()
+        _asyncio.set_event_loop(loop)
+        try:
+            server = loop.run_until_complete(
+                _asyncio.start_server(_handle, host, port)
+            )
+            try:
+                loop.run_until_complete(server.serve_forever())
+            finally:
+                server.close()
+                loop.run_until_complete(server.wait_closed())
+        except Exception as exc:
+            print(f"[viewer] demuxer stopped: {exc}", flush=True)
+        finally:
+            loop.close()
+
+    threading.Thread(target=_runner, daemon=True, name="ocdkit-demuxer").start()
 
 
 def run_server(
@@ -208,9 +333,19 @@ def run_server(
     ssl_key: str | None = None,
     reload: bool = False,
     https_dev: bool = False,
+    https_auto: str | list[str] | bool = False,
+    tls_config: dict | None = None,
     plugins: list[str] | None = None,
     title: str | None = None,
 ) -> None:
+    """Launch the FastAPI viewer over HTTP or HTTPS.
+
+    For HTTPS via your private step-ca (see :mod:`ocdkit.tls`), pass
+    ``https_auto=True`` (or a hostname / list of hostnames) together with
+    ``tls_config={"ca_url": ..., "provisioner": ..., "provisioner_password_file": ...}``.
+    Apps embedding the viewer (hiprpy, omnipose, etc.) should ship their own
+    ``tls_config`` rather than relying on a shared global file.
+    """
     if title:
         os.environ["OCDKIT_VIEWER_TITLE"] = title
     _autoload_plugins(plugins)
@@ -225,6 +360,33 @@ def run_server(
             print(f"[viewer] dev cert provision failed: {exc}", flush=True)
             ssl_cert = ssl_key = None
 
+    if https_auto and not (ssl_cert and ssl_key):
+        from .. import tls as _tls
+        hostnames = None if https_auto is True else https_auto
+        # Default: use LocalCA (pure-Python, no external infra). Pass tls_config=
+        # to override (e.g. shared step-ca via ca_url+provisioner+...).
+        kwargs = dict(tls_config) if tls_config else {}
+        try:
+            ssl_cert, ssl_key = _tls.ensure_cert(hostnames, **kwargs)
+            cert_path_obj = Path(ssl_cert)
+            cert_name = cert_path_obj.stem  # e.g. "mac-studio"
+            print(f"[viewer] auto-provisioned TLS cert for "
+                  f"{hostnames or cert_name}: {ssl_cert}", flush=True)
+        except _tls.TLSConfigError as exc:
+            print(f"[viewer] --https-auto failed: {exc}", flush=True)
+            raise SystemExit(1)
+
+        # Tell the install banner what origins to probe so it can hide itself
+        # automatically once the CA is trusted (works even in incognito).
+        try:
+            from . import assets as _assets
+            sans = _tls._resolve_hostnames(hostnames, kwargs.get("hostmap_path"))
+            _assets.set_trust_probe_origins(
+                [f"https://{n}:{port}" for n in sans]
+            )
+        except Exception as exc:
+            print(f"[viewer] could not set trust probe origins: {exc}", flush=True)
+
     try:
         import uvicorn
     except ImportError:
@@ -234,11 +396,41 @@ def run_server(
         )
         raise SystemExit(1)
 
-    scheme = "https" if (ssl_cert and ssl_key) else "http"
-    print(f"[viewer] serving at {scheme}://{host}:{port}", flush=True)
     print(f"[viewer] active plugin: {ACTIVE_PLUGIN.name() or '(none)'}", flush=True)
     print(f"[viewer] registered: {REGISTRY.names() or '(none)'}", flush=True)
 
+    # When TLS is on, listen on a single public port that demuxes HTTPS vs HTTP:
+    #   https:// hits the viewer; http:// hits the trust install page.
+    # Goal: end users type one URL; if browser warning blocks them, switching
+    # to plain http:// on the same port lands them on the install page.
+    if ssl_cert and ssl_key:
+        if reload:
+            print("[viewer] WARNING: --reload not yet supported with --https-auto; "
+                  "running without reload.", flush=True)
+        https_internal = _pick_free_port()
+        http_internal = _pick_free_port()
+        # HTTP install backend in a daemon thread
+        start_trust_setup_sidecar("127.0.0.1", http_internal)
+        # Public-facing demuxer
+        start_https_demuxer(
+            host, port,
+            https_backend_port=https_internal,
+            http_backend_port=http_internal,
+        )
+        print(f"[viewer] serving at https://{host}:{port} (and http:// for trust install)",
+              flush=True)
+        # Main HTTPS uvicorn (blocks); demuxer routes external port → here
+        uvicorn.run(
+            create_app(),
+            host="127.0.0.1",
+            port=https_internal,
+            ssl_certfile=ssl_cert,
+            ssl_keyfile=ssl_key,
+            log_level="info",
+        )
+        return
+
+    print(f"[viewer] serving at http://{host}:{port}", flush=True)
     if reload:
         reload_dirs = [str(Path(__file__).resolve().parent)]
         if WEB_DIR.exists():
@@ -250,8 +442,6 @@ def run_server(
             port=port,
             reload=True,
             reload_dirs=reload_dirs,
-            ssl_certfile=ssl_cert,
-            ssl_keyfile=ssl_key,
             log_level="info",
         )
         return
@@ -260,8 +450,6 @@ def run_server(
         create_app(),
         host=host,
         port=port,
-        ssl_certfile=ssl_cert,
-        ssl_keyfile=ssl_key,
         log_level="info",
     )
 
@@ -364,7 +552,11 @@ def run_desktop(
     # shadow, auto-synthesised sizes). No-op on other platforms and on
     # bundle-launched processes. See ocdkit.desktop.pinning.relaunch_via_bundle
     # for the underlying rationale (NSISIconImageRep vs NSBitmapImageRep).
-    relaunch_via_bundle(VIEWER_APP)
+    #
+    # Skip in automation mode: ``os.execvp`` detaches the process so stdout is
+    # lost and the caller (CI / snapshot tests) can't capture results.
+    if not (snapshot_path or eval_js):
+        relaunch_via_bundle(VIEWER_APP)
 
     serve_host = host or "127.0.0.1"
     serve_port = port if port and port > 0 else _pick_free_port(serve_host)

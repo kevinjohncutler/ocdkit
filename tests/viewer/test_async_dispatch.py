@@ -80,6 +80,11 @@ def test_event_loop_stays_responsive_during_segmentation(slow_client):
                 "seg_status": seg_resp.status_code,
             }
 
+    # Newer starlette TestClient uses anyio under the hood, which leaves a
+    # running event loop on the calling thread by the time the fixture
+    # yields. ``asyncio.run`` refuses to nest. Allow nesting.
+    import nest_asyncio
+    nest_asyncio.apply()
     result = asyncio.run(_runner())
     assert result["list_status"] == 200
     assert result["seg_status"] == 200
