@@ -25,6 +25,7 @@ WidgetKind = Literal[
     "number",        # plain number input
     "toggle",        # boolean checkbox / switch
     "dropdown",      # single-select from `choices`
+    "segmented",     # single-select rendered as an icon button group
     "text",          # free-form text input
     "file",          # file path picker
     "color",         # hex color picker
@@ -72,6 +73,18 @@ class WidgetSpec:
     # conditional visibility: this widget shows only when other params match
     # e.g. {"use_advanced": True} — multiple keys are AND-ed
     visible_when: Optional[Mapping[str, Any]] = None
+    # cosmetic / layout overrides — host renders the prebuilt widget for `kind`
+    # and uses these only to customize its appearance / placement
+    icon: Optional[str] = None       # icon identifier (host-defined library or data URL)
+    accent: Optional[str] = None     # CSS color string (e.g. "#4ea3ff"), overrides --accent-color
+    placement: Optional[int] = None  # explicit sort key within group (default: declaration order)
+    # segmented widgets only — per-choice icons (CSS class name or unicode glyph)
+    choice_icons: Optional[Mapping[str, str]] = None
+    # Toggle widgets only — render this toggle as a clickable chevron in the
+    # group's heading instead of as its own row. Click on the heading flips
+    # the value; other widgets in the same group with
+    # `visible_when={<this widget name>: True}` collapse/expand accordingly.
+    as_header: Optional[bool] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable dict for the frontend."""
@@ -81,12 +94,16 @@ class WidgetSpec:
             "kind": self.kind,
             "default": self.default,
         }
-        for attr in ("min", "max", "step", "help", "group"):
+        for attr in ("min", "max", "step", "help", "group", "icon", "accent", "placement"):
             value = getattr(self, attr)
             if value is not None:
                 out[attr] = value
+        if self.as_header is not None:
+            out["asHeader"] = bool(self.as_header)
         if self.choices is not None:
             out["choices"] = list(self.choices)
+        if self.choice_icons is not None:
+            out["choiceIcons"] = dict(self.choice_icons)
         if self.visible_when is not None:
             out["visibleWhen"] = dict(self.visible_when)
         return out
@@ -114,9 +131,9 @@ def _validate_widget(w: WidgetSpec) -> None:
             raise ValueError(
                 f"WidgetSpec({w.name}, kind=slider_log) requires min > 0"
             )
-    if w.kind == "dropdown":
+    if w.kind in ("dropdown", "segmented"):
         if not w.choices:
-            raise ValueError(f"WidgetSpec({w.name}, kind=dropdown) requires choices")
+            raise ValueError(f"WidgetSpec({w.name}, kind={w.kind}) requires choices")
         if w.default not in w.choices:
             raise ValueError(
                 f"WidgetSpec({w.name}) default {w.default!r} not in choices"
@@ -130,7 +147,7 @@ class SegmentationPlugin:
     """A registered segmentation tool.
 
     Required:
-        name: stable plugin id (used in URLs, e.g. "omnipose").
+        name: stable plugin id (used in URLs, e.g. "threshold").
         version: plugin version string.
         widgets: ordered list of user-facing parameter specs.
         run: ``(image, params) -> mask`` — see contract below.
@@ -168,6 +185,16 @@ class SegmentationPlugin:
     clear_cache: Optional[ClearCacheCallable] = None
     resegment: Optional[ResegmentCallable] = None
     relabel_from_affinity: Optional[RelabelFromAffinityCallable] = None
+    # Optional list of `extras` keys this plugin can produce in run() output.
+    # Drives which host-managed display toggles (Affinity Graph / Flow / etc.)
+    # appear in the panel. Toggles for declared keys show always but stay
+    # disabled until the matching extras payload actually arrives.
+    display_overlays: Sequence[str] = ()
+    # CSS selector for the element that should host the chasing-outline progress
+    # animation while inference is running. Empty string means "host default"
+    # (the segmentation panel root). Plugins can pass e.g. "#segmentButton" to
+    # scope the animation to the button.
+    progress_target: str = ""
     description: str = ""
     homepage: str = ""
 
@@ -199,6 +226,8 @@ class SegmentationPlugin:
             "homepage": self.homepage,
             "widgets": [w.to_dict() for w in self.widgets],
             "models": list(self.load_models()) if self.load_models else [],
+            "displayOverlays": list(self.display_overlays),
+            "progressTarget": self.progress_target,
             "capabilities": {
                 "warmup": self.warmup is not None,
                 "set_use_gpu": self.set_use_gpu is not None,

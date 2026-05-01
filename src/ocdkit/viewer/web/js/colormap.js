@@ -1,4 +1,4 @@
-(function initOmniColormap(global) {
+(function initViewerColormap(global) {
   'use strict';
 
   // ── Constants ──────────────────────────────────────────────────────────────
@@ -206,15 +206,31 @@
     return Math.floor(seededRandom(mix) * 1e9);
   }
 
+  // Palette tile size for shuffle=off. Labels 1..N tile the colormap with
+  // stride 1/N; label N+1 wraps back to the start (cyclic) or clamps to the
+  // endpoint (non-cyclic). Chosen small enough to give visual distinction for
+  // typical segmentation counts without needing to track a maxLabel.
+  const RAW_PALETTE_TILE = 50;
+
   /**
    * Get color fraction (0-1) for a label. Pure version.
+   *
+   * Shuffle off: label N maps to position (N-1)/TILE along the colormap —
+   * a fixed stride, no dependence on how many other labels exist. Adjacent
+   * labels sit adjacent on the colormap; labels above TILE wrap.
+   *
+   * Shuffle on: seeded hash, stable per label for a given seed.
    */
-  function getLabelColorFraction(label, shuffle, seed, maxLabel) {
-    const max = Math.max(maxLabel, 2);
-    if (!shuffle) {
-      return ((label - 1) % max) / (max - 1);
+  function getLabelColorFraction(label, shuffle, seed, isCyclic, hueOffset) {
+    if (shuffle) {
+      return seededRandom(getLabelShuffleKey(label, shuffle, seed));
     }
-    return seededRandom(getLabelShuffleKey(label, shuffle, seed));
+    if (isCyclic) {
+      const raw = (label - 1) / RAW_PALETTE_TILE + (hueOffset || 0);
+      return ((raw % 1) + 1) % 1;
+    }
+    const t = ((label - 1) % RAW_PALETTE_TILE) / (RAW_PALETTE_TILE - 1);
+    return Math.min(Math.max(t, 0), 1);
   }
 
   /**
@@ -233,9 +249,10 @@
   /**
    * Get colormap color for a label. Pure version — accepts colormap state as params.
    */
-  function getColormapColor(label, colormap, shuffle, seed, maxLabel) {
+  function getColormapColor(label, colormap, shuffle, seed, hueOffset) {
     if (label <= 0) return null;
-    const t = getLabelColorFraction(label, shuffle, seed, maxLabel);
+    const isCyclic = colormapHasOffset(colormap);
+    const t = getLabelColorFraction(label, shuffle, seed, isCyclic, hueOffset);
     return getColormapColorAtT(t, colormap);
   }
 
@@ -357,7 +374,7 @@
     }
     for (var j = 0; j < size; j += 1) {
       var rgb2 = j === 0 ? [0, 0, 0]
-        : (getColormapColor(j, opts.colormap, opts.shuffle, opts.seed, opts.maxLabel) || [0, 0, 0]);
+        : (getColormapColor(j, opts.colormap, opts.shuffle, opts.seed, opts.hueOffset) || [0, 0, 0]);
       var base2 = j * 4;
       data[base2] = rgb2[0] || 0;
       data[base2 + 1] = rgb2[1] || 0;
@@ -402,7 +419,7 @@
 
   // ── Export ─────────────────────────────────────────────────────────────────
 
-  var api = global.OmniColormap || {};
+  var api = global.ViewerColormap || {};
   Object.assign(api, {
     // Constants
     PALETTE_TEXTURE_SIZE: PALETTE_TEXTURE_SIZE,
@@ -440,6 +457,6 @@
     // Utility
     collectLabelsFromMask: collectLabelsFromMask,
   });
-  global.OmniColormap = api;
+  global.ViewerColormap = api;
 
 })(typeof window !== 'undefined' ? window : globalThis);

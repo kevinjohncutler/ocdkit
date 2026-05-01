@@ -1,4 +1,4 @@
-(function initOmniHistory(global) {
+(function initViewerHistory(global) {
   'use strict';
 
   const state = {
@@ -119,7 +119,7 @@
     return state.redo;
   }
 
-  global.OmniHistory = Object.assign({}, global.OmniHistory, {
+  global.ViewerHistory = Object.assign({}, global.ViewerHistory, {
     init,
     push,
     undo,

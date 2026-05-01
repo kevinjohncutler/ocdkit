@@ -1,3 +1,3 @@
 from ..load import enable_submodules
 
-enable_submodules(__name__)
+enable_submodules(__name__, expose=True)

@@ -9,7 +9,7 @@ Plugins register themselves either:
 Example ``pyproject.toml``::
 
     [project.entry-points."ocdkit.plugins"]
-    omnipose = "omnipose.ocdkit_plugin:plugin"
+    my_tool = "my_tool.ocdkit_plugin:plugin"
 """
 
 from __future__ import annotations

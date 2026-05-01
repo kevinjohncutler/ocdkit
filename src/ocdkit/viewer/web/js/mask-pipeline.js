@@ -170,7 +170,7 @@
     };
   }
 
-  const api = global.OmniMaskPipeline || {};
+  const api = global.ViewerMaskPipeline || {};
   api.createMaskPipeline = createMaskPipeline;
-  global.OmniMaskPipeline = api;
+  global.ViewerMaskPipeline = api;
 })(typeof window !== 'undefined' ? window : globalThis);

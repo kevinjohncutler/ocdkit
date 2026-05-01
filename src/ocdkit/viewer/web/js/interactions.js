@@ -1,4 +1,4 @@
-(function initOmniInteractions(global) {
+(function initViewerInteractions(global) {
   'use strict';
 
   const state = {
@@ -68,7 +68,7 @@
 
   function ctx() {
     if (!state.ctx) {
-      throw new Error('OmniInteractions.init must be called before use');
+      throw new Error('ViewerInteractions.init must be called before use');
     }
     return state.ctx;
   }
@@ -357,7 +357,7 @@
     }
   }
 
-  const api = global.OmniInteractions || {};
+  const api = global.ViewerInteractions || {};
   Object.assign(api, {
     init,
     getHoverPoint,
@@ -375,5 +375,5 @@
     resetGestureScheduling,
     applyPendingGestureUpdate,
   });
-  global.OmniInteractions = api;
+  global.ViewerInteractions = api;
 })(typeof window !== 'undefined' ? window : globalThis);

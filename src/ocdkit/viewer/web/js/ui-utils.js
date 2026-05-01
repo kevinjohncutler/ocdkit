@@ -1,7 +1,7 @@
 /**
- * OmniUI — Pure DOM helpers, widget registration, and UI utilities.
+ * ViewerUI — Pure DOM helpers, widget registration, and UI utilities.
  *
- * Exports to window.OmniUI following the existing IIFE + classic script pattern.
+ * Exports to window.ViewerUI following the existing IIFE + classic script pattern.
  * No ES modules — PyWebView breaks with type="module".
  */
 (function (global) {
@@ -733,6 +733,35 @@
     entry.menu.style.minWidth = '100%';
   }
 
+  // Rounded equilateral triangle, apex pointing right (rotate via CSS to
+  // re-aim). Shared by collapsible headings and dropdown toggles so the
+  // glyph stays consistent across the UI. `currentColor` honors the host's
+  // text color, so accent overrides keep working.
+  function makeChevron(opts) {
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '-1.15 -1.15 2.3 2.3');
+    svg.setAttribute('width', '0.85em');
+    svg.setAttribute('height', '0.85em');
+    svg.setAttribute('aria-hidden', 'true');
+    if (opts && opts.className) svg.classList.add(opts.className);
+    svg.style.transition = 'transform 0.18s ease, color 0.12s ease';
+    svg.style.transformOrigin = '50% 50%';
+    svg.style.opacity = '0.85';
+    svg.style.flex = '0 0 auto';
+    svg.style.verticalAlign = 'middle';
+    svg.style.overflow = 'visible';
+    var tri = document.createElementNS(ns, 'path');
+    tri.setAttribute('d', 'M 1 0 L -0.5 -0.866 L -0.5 0.866 Z');
+    tri.setAttribute('fill', 'currentColor');
+    tri.setAttribute('stroke', 'currentColor');
+    tri.setAttribute('stroke-width', '0.28');
+    tri.setAttribute('stroke-linejoin', 'round');
+    tri.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(tri);
+    return svg;
+  }
+
   function registerDropdown(root) {
     var select = root.querySelector('select');
     if (!select) {
@@ -762,6 +791,7 @@
     var labelSpan = document.createElement('span');
     labelSpan.className = 'dropdown-label';
     button.appendChild(labelSpan);
+    button.appendChild(makeChevron({ className: 'dropdown-toggle-chevron' }));
     var menu = document.createElement('div');
     menu.className = 'dropdown-menu';
     menu.setAttribute('role', 'listbox');
@@ -861,34 +891,37 @@
       return item;
     };
 
+    // Sticky-bottom action items: any option whose value starts with `__`
+    // (sentinel) is rendered as an `.dropdown-add` row at the bottom of the
+    // menu, regardless of loop windowing. Used for "+ Add model…",
+    // "Open image file…", "Open image folder…", etc.
+    var isAction = function (opt) { return typeof opt.value === 'string' && opt.value.indexOf('__') === 0; };
+
     var buildMenu = function () {
       menu.innerHTML = '';
       var opts = entry.options || [];
       var loopEnabled = Boolean(entry.loop && entry.loop.mode === 'loop');
       if (loopEnabled && opts.length) {
-        var loopOptions = opts.filter(function (opt) { return !['__add__', '__open_folder__'].includes(opt.value); });
-        var addOption = opts.find(function (opt) { return opt.value === '__add__'; });
-        var openFolderOption = opts.find(function (opt) { return opt.value === '__open_folder__'; });
+        var loopOptions = opts.filter(function (opt) { return !isAction(opt); });
+        var actionOptions = opts.filter(isAction);
         var size = entry.loop.size || 5;
-        var half = Math.floor(size / 2);
         var total = loopOptions.length;
+        // Don't render the same item more than once when total < window size.
+        var visibleCount = Math.min(size, total);
+        var half = Math.floor(visibleCount / 2);
         var currentIndex = Math.max(0, loopOptions.findIndex(function (opt) { return opt.value === select.value; }));
         for (var i = -half; i <= half; i += 1) {
+          if ((i + half) >= visibleCount) break;
           var idx = total > 0 ? (currentIndex + i + total) % total : 0;
           var opt = loopOptions[idx];
           if (!opt) continue;
           menu.appendChild(buildOption(opt));
         }
-        if (addOption) {
-          var addRow = buildOption(addOption);
-          addRow.classList.add('dropdown-add');
-          menu.appendChild(addRow);
-        }
-        if (openFolderOption) {
-          var openRow = buildOption(openFolderOption);
-          openRow.classList.add('dropdown-add');
-          menu.appendChild(openRow);
-        }
+        actionOptions.forEach(function (action) {
+          var actionRow = buildOption(action);
+          actionRow.classList.add('dropdown-add');
+          menu.appendChild(actionRow);
+        });
         var footer = document.createElement('div');
         footer.className = 'dropdown-footer';
         var count = document.createElement('span');
@@ -907,15 +940,22 @@
         footer.appendChild(toggleBtn);
         menu.appendChild(footer);
       } else {
-        opts.forEach(function (opt) {
+        var fullLoopOptions = opts.filter(function (opt) { return !isAction(opt); });
+        var fullActionOptions = opts.filter(isAction);
+        fullLoopOptions.forEach(function (opt) {
           menu.appendChild(buildOption(opt));
+        });
+        fullActionOptions.forEach(function (action) {
+          var actionRow = buildOption(action);
+          actionRow.classList.add('dropdown-add');
+          menu.appendChild(actionRow);
         });
         if (entry.loop) {
           var footer2 = document.createElement('div');
           footer2.className = 'dropdown-footer';
           var count2 = document.createElement('span');
           count2.className = 'dropdown-count';
-          count2.textContent = opts.filter(function (opt) { return !['__add__', '__open_folder__'].includes(opt.value); }).length + ' ' + entry.countLabel;
+          count2.textContent = fullLoopOptions.length + ' ' + entry.countLabel;
           var toggleBtn2 = document.createElement('button');
           toggleBtn2.type = 'button';
           toggleBtn2.className = 'dropdown-expand';
@@ -935,7 +975,7 @@
 
     var shiftSelection = function (delta) {
       if (!entry.loop || entry.loop.mode !== 'loop') return;
-      var loopOptions = entry.options.filter(function (opt) { return !['__add__', '__open_folder__'].includes(opt.value); });
+      var loopOptions = entry.options.filter(function (opt) { return !isAction(opt); });
       if (!loopOptions.length) return;
       var currentIndex = Math.max(0, loopOptions.findIndex(function (opt) { return opt.value === select.value; }));
       var nextIndex = (currentIndex + delta + loopOptions.length) % loopOptions.length;
@@ -1122,6 +1162,14 @@
   // ---------------------------------------------------------------------------
 
   var tooltipState = null;
+  // Optional resolver consulted before the dataset.tooltip lookup. The tooltip
+  // editor registers one to surface user overrides at hover-time without
+  // mutating any element's data-tooltip (keeping the canonical string intact
+  // even when other code paths set/refresh it).
+  var tooltipResolver = null;
+  function setTooltipResolver(fn) {
+    tooltipResolver = (typeof fn === 'function') ? fn : null;
+  }
 
   function initTooltips() {
     if (tooltipState) {
@@ -1152,6 +1200,10 @@
 
     var getTooltipText = function (el) {
       if (!el) return '';
+      // Tooltip editor (when active) returns an override string; treat
+      // anything else (null/undefined/empty) as no override.
+      var override = tooltipResolver ? tooltipResolver(el) : null;
+      if (typeof override === 'string' && override.length) return override;
       var existing = el.dataset.tooltip;
       if (existing) return existing;
       var title = el.getAttribute('title');
@@ -1357,7 +1409,11 @@
 
     // Tooltip system
     initTooltips: initTooltips,
+    setTooltipResolver: setTooltipResolver,
+
+    // Shared rounded-chevron SVG (used by collapsible headings and dropdowns).
+    makeChevron: makeChevron,
   };
 
-  global.OmniUI = api;
+  global.ViewerUI = api;
 })(window);

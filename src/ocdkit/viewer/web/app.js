@@ -16,81 +16,81 @@ const initialBrushRadius = CONFIG.brushRadius ?? 6;
 const sessionId = CONFIG.sessionId || null;
 let currentImagePath = CONFIG.imagePath || null;
 let currentImageName = CONFIG.imageName || null;
-let localStateKey = `OMNI_VIEWER_STATE:${CONFIG.imagePath || CONFIG.imageName || 'default'}`;
+let localStateKey = `VIEWER_STATE:${CONFIG.imagePath || CONFIG.imageName || 'default'}`;
 
-const OmniColormap = window.OmniColormap;
-const OmniUI = window.OmniUI;
-const OmniState = window.OmniState;
-const OmniFileNav = window.OmniFileNav;
+const ViewerColormap = window.ViewerColormap;
+const ViewerUI = window.ViewerUI;
+const ViewerState = window.ViewerState;
+const ViewerFileNav = window.ViewerFileNav;
 
 // Module delegates – imported here to avoid TDZ (const is not hoisted like function)
-const IMAGE_COLORMAPS = OmniColormap.IMAGE_COLORMAPS;
-const PALETTE_TEXTURE_SIZE = OmniColormap.PALETTE_TEXTURE_SIZE;
-const DEFAULT_NCOLOR_COUNT = OmniColormap.DEFAULT_NCOLOR_COUNT;
-const isIOSDevice = OmniUI.isIOSDevice;
-const isSafariWebKit = OmniUI.isSafariWebKit;
-const rgbToCss = OmniUI.rgbToCss;
-const parseCssColor = OmniUI.parseCssColor;
-const readableTextColor = OmniUI.readableTextColor;
-const lightenRgb = OmniUI.lightenRgb;
-const svgCursorUrl = OmniUI.svgCursorUrl;
-const buildDotCursorCss = OmniUI.buildDotCursorCss;
-const stateDebugLog = OmniState.stateDebugLog;
-const scheduleStateSave = OmniState.scheduleStateSave;
-const saveViewerState = OmniState.saveViewerState;
-const requestImageChange = OmniFileNav.requestImageChange;
-const selectImageFolder = OmniFileNav.selectImageFolder;
-const selectImageFile = OmniFileNav.selectImageFile;
-const openImageFolder = OmniFileNav.openImageFolder;
-const openImageByPath = OmniFileNav.openImageByPath;
-const navigateDirectory = OmniFileNav.navigateDirectory;
-const clamp = OmniUI.clamp;
-const truncateFilename = OmniUI.truncateFilename;
-const pointerPercent = OmniUI.pointerPercent;
-const valueToPercent = OmniUI.valueToPercent;
-const percentToValue = OmniUI.percentToValue;
-const updateNativeRangeFill = OmniUI.updateNativeRangeFill;
-const registerSlider = OmniUI.registerSlider;
-const refreshSlider = OmniUI.refreshSlider;
-const attachNumberInputStepper = OmniUI.attachNumberInputStepper;
-const closeDropdown = OmniUI.closeDropdown;
-const openDropdown = OmniUI.openDropdown;
-const toggleDropdown = OmniUI.toggleDropdown;
-const positionDropdown = OmniUI.positionDropdown;
-const registerDropdown = OmniUI.registerDropdown;
-const refreshDropdown = OmniUI.refreshDropdown;
-const LABEL_COLORMAPS = OmniColormap.LABEL_COLORMAPS;
-const setPanelCollapsed = OmniUI.setPanelCollapsed;
-const decodeBase64ToUint8 = OmniState.decodeBase64ToUint8;
-const base64FromUint32 = OmniState.base64FromUint32;
-const uint32FromBase64 = OmniState.uint32FromBase64;
-const base64FromUint8Array = OmniState.base64FromUint8Array;
-const encodeHistoryField = OmniState.encodeHistoryField;
-const decodeHistoryField = OmniState.decodeHistoryField;
-const normalizeAngle = OmniUI.normalizeAngle;
-const suppressDoubleTapZoom = OmniUI.suppressDoubleTapZoom;
-const flashButton = OmniUI.flashButton;
-const base64FromUint8 = OmniState.base64FromUint8;
-const sinebowColor = OmniColormap.sinebowColor;
-const rgbToHex = OmniColormap.rgbToHex;
-const hexToRgb = OmniColormap.hexToRgb;
-const hslToRgb = OmniColormap.hslToRgb;
-const interpolateStops = OmniColormap.interpolateStops;
-const seededRandom = OmniColormap.seededRandom;
-const hashColorForLabel = OmniColormap.hashColorForLabel;
-const COLORMAP_STOPS = OmniColormap.COLORMAP_STOPS;
-const generateImageCmapLut = OmniColormap.generateImageCmapLut;
-const IMAGE_CMAP_LUT_SIZE = OmniColormap.IMAGE_CMAP_LUT_SIZE;
-const generateSinebowPalette = OmniColormap.generateSinebowPalette;
-const collectLabelsFromMask = OmniColormap.collectLabelsFromMask;
-const showConfirmDialog = OmniUI.showConfirmDialog;
-const initTooltips = OmniUI.initTooltips;
-const formatBytes = OmniUI.formatBytes;
-const generateColormapGradient = OmniColormap.generateColormapGradient;
+const IMAGE_COLORMAPS = ViewerColormap.IMAGE_COLORMAPS;
+const PALETTE_TEXTURE_SIZE = ViewerColormap.PALETTE_TEXTURE_SIZE;
+const DEFAULT_NCOLOR_COUNT = ViewerColormap.DEFAULT_NCOLOR_COUNT;
+const isIOSDevice = ViewerUI.isIOSDevice;
+const isSafariWebKit = ViewerUI.isSafariWebKit;
+const rgbToCss = ViewerUI.rgbToCss;
+const parseCssColor = ViewerUI.parseCssColor;
+const readableTextColor = ViewerUI.readableTextColor;
+const lightenRgb = ViewerUI.lightenRgb;
+const svgCursorUrl = ViewerUI.svgCursorUrl;
+const buildDotCursorCss = ViewerUI.buildDotCursorCss;
+const stateDebugLog = ViewerState.stateDebugLog;
+const scheduleStateSave = ViewerState.scheduleStateSave;
+const saveViewerState = ViewerState.saveViewerState;
+const requestImageChange = ViewerFileNav.requestImageChange;
+const selectImageFolder = ViewerFileNav.selectImageFolder;
+const selectImageFile = ViewerFileNav.selectImageFile;
+const openImageFolder = ViewerFileNav.openImageFolder;
+const openImageByPath = ViewerFileNav.openImageByPath;
+const navigateDirectory = ViewerFileNav.navigateDirectory;
+const clamp = ViewerUI.clamp;
+const truncateFilename = ViewerUI.truncateFilename;
+const pointerPercent = ViewerUI.pointerPercent;
+const valueToPercent = ViewerUI.valueToPercent;
+const percentToValue = ViewerUI.percentToValue;
+const updateNativeRangeFill = ViewerUI.updateNativeRangeFill;
+const registerSlider = ViewerUI.registerSlider;
+const refreshSlider = ViewerUI.refreshSlider;
+const attachNumberInputStepper = ViewerUI.attachNumberInputStepper;
+const closeDropdown = ViewerUI.closeDropdown;
+const openDropdown = ViewerUI.openDropdown;
+const toggleDropdown = ViewerUI.toggleDropdown;
+const positionDropdown = ViewerUI.positionDropdown;
+const registerDropdown = ViewerUI.registerDropdown;
+const refreshDropdown = ViewerUI.refreshDropdown;
+const LABEL_COLORMAPS = ViewerColormap.LABEL_COLORMAPS;
+const setPanelCollapsed = ViewerUI.setPanelCollapsed;
+const decodeBase64ToUint8 = ViewerState.decodeBase64ToUint8;
+const base64FromUint32 = ViewerState.base64FromUint32;
+const uint32FromBase64 = ViewerState.uint32FromBase64;
+const base64FromUint8Array = ViewerState.base64FromUint8Array;
+const encodeHistoryField = ViewerState.encodeHistoryField;
+const decodeHistoryField = ViewerState.decodeHistoryField;
+const normalizeAngle = ViewerUI.normalizeAngle;
+const suppressDoubleTapZoom = ViewerUI.suppressDoubleTapZoom;
+const flashButton = ViewerUI.flashButton;
+const base64FromUint8 = ViewerState.base64FromUint8;
+const sinebowColor = ViewerColormap.sinebowColor;
+const rgbToHex = ViewerColormap.rgbToHex;
+const hexToRgb = ViewerColormap.hexToRgb;
+const hslToRgb = ViewerColormap.hslToRgb;
+const interpolateStops = ViewerColormap.interpolateStops;
+const seededRandom = ViewerColormap.seededRandom;
+const hashColorForLabel = ViewerColormap.hashColorForLabel;
+const COLORMAP_STOPS = ViewerColormap.COLORMAP_STOPS;
+const generateImageCmapLut = ViewerColormap.generateImageCmapLut;
+const IMAGE_CMAP_LUT_SIZE = ViewerColormap.IMAGE_CMAP_LUT_SIZE;
+const generateSinebowPalette = ViewerColormap.generateSinebowPalette;
+const collectLabelsFromMask = ViewerColormap.collectLabelsFromMask;
+const showConfirmDialog = ViewerUI.showConfirmDialog;
+const initTooltips = ViewerUI.initTooltips;
+const formatBytes = ViewerUI.formatBytes;
+const generateColormapGradient = ViewerColormap.generateColormapGradient;
 
 
 function loadLocalViewerState() {
-  return OmniState.loadLocalViewerState(localStateKey);
+  return ViewerState.loadLocalViewerState(localStateKey);
 }
 let directoryEntries = Array.isArray(CONFIG.directoryEntries) ? CONFIG.directoryEntries : [];
 let directoryIndex = typeof CONFIG.directoryIndex === 'number' ? CONFIG.directoryIndex : null;
@@ -138,28 +138,28 @@ const DEBUG_STATE_SAVE = Boolean(
   ?? false,
 );
 if (typeof window !== 'undefined') {
-  window.__OMNI_FILL_DEBUG__ = DEBUG_FILL_PERF;
+  window.__VIEWER_FILL_DEBUG__ = DEBUG_FILL_PERF;
   const hasConfigForceGrid = Object.prototype.hasOwnProperty.call(CONFIG, 'debugForceGridMask');
-  const hasWindowForceGrid = Object.prototype.hasOwnProperty.call(window, '__OMNI_FORCE_GRID_MASK__');
+  const hasWindowForceGrid = Object.prototype.hasOwnProperty.call(window, '__VIEWER_FORCE_GRID_MASK__');
   const forceGridMask = hasConfigForceGrid
     ? Boolean(CONFIG.debugForceGridMask)
-    : (hasWindowForceGrid ? Boolean(window.__OMNI_FORCE_GRID_MASK__) : false);
-  window.__OMNI_FORCE_GRID_MASK__ = forceGridMask;
+    : (hasWindowForceGrid ? Boolean(window.__VIEWER_FORCE_GRID_MASK__) : false);
+  window.__VIEWER_FORCE_GRID_MASK__ = forceGridMask;
   if (ENABLE_MASK_PIPELINE_V2) {
-    window.__OMNI_MASK_PIPELINE_V2__ = true;
+    window.__VIEWER_MASK_PIPELINE_V2__ = true;
   }
   if (DEBUG_STATE_SAVE) {
-    window.__OMNI_SAVE_DEBUG__ = true;
+    window.__VIEWER_SAVE_DEBUG__ = true;
   }
 }
 
-const OmniPointer = window.OmniPointer || {};
-const POINTER_OPTIONS = OmniPointer.POINTER_OPTIONS;
-const createPointerState = typeof OmniPointer.createPointerState === 'function'
-  ? OmniPointer.createPointerState
+const ViewerPointer = window.ViewerPointer || {};
+const POINTER_OPTIONS = ViewerPointer.POINTER_OPTIONS;
+const createPointerState = typeof ViewerPointer.createPointerState === 'function'
+  ? ViewerPointer.createPointerState
   : null;
 if (!POINTER_OPTIONS || !createPointerState) {
-  throw new Error('OmniPointer helpers missing; ensure /static/js/pointer-state.js loads before app.js');
+  throw new Error('ViewerPointer helpers missing; ensure /static/js/pointer-state.js loads before app.js');
 }
 
 const RAD_TO_DEG = 180 / Math.PI;
@@ -349,6 +349,22 @@ function getViewportSize() {
 }
 
 
+let accentLiveTimer = null;
+function markAccentLive() {
+  // Flag the document so layout.css suppresses background/color transitions
+  // during rapid accent updates (slider drag). Debounced so a one-shot
+  // change snaps too, but hover/click animations resume ~140ms after the
+  // last accent update — well past any pointerup.
+  const root = document.documentElement;
+  if (!root) return;
+  root.classList.add('accent-live');
+  if (accentLiveTimer) clearTimeout(accentLiveTimer);
+  accentLiveTimer = setTimeout(() => {
+    root.classList.remove('accent-live');
+    accentLiveTimer = null;
+  }, 140);
+}
+
 function updateAccentColorsFromRgb(rgb) {
   if (!rootStyleWrite || !Array.isArray(rgb) || rgb.length < 3) {
     return;
@@ -356,13 +372,14 @@ function updateAccentColorsFromRgb(rgb) {
   const base = rgbToCss(rgb);
   const hover = rgbToCss(lightenRgb(rgb));
   const ink = readableTextColor(rgb);
+  markAccentLive();
   rootStyleWrite.setProperty('--accent-color', base);
   rootStyleWrite.setProperty('--accent-hover', hover);
   rootStyleWrite.setProperty('--accent-ink', ink);
   accentColor = base;
   // Persist accent for instant restore on reload (avoids yellow flash)
   try {
-    localStorage.setItem('__omni_accent', JSON.stringify({ c: base, h: hover, k: ink }));
+    localStorage.setItem('__viewer_accent', JSON.stringify({ c: base, h: hover, k: ink }));
   } catch (_) {}
   if (typeof renderHistogram === 'function') {
     renderHistogram();
@@ -373,6 +390,7 @@ function resetAccentColors() {
   if (!rootStyleWrite) {
     return;
   }
+  markAccentLive();
   rootStyleWrite.setProperty('--accent-color', accentColorDefault);
   rootStyleWrite.setProperty('--accent-hover', accentHoverDefault);
   const parsed = parseCssColor(accentColorDefault);
@@ -380,7 +398,7 @@ function resetAccentColors() {
     rootStyleWrite.setProperty('--accent-ink', readableTextColor(parsed));
   }
   accentColor = accentColorDefault;
-  try { localStorage.removeItem('__omni_accent'); } catch (_) {}
+  try { localStorage.removeItem('__viewer_accent'); } catch (_) {}
   if (typeof renderHistogram === 'function') {
     renderHistogram();
   }
@@ -622,7 +640,7 @@ function applyMaskRedrawImmediate() {
 }
 
 
-OmniFileNav.init({
+ViewerFileNav.init({
   getSessionId: function () { return sessionId; },
   saveBeforeNavigate: function () { return saveViewerState({ immediate: true }); },
   onReinitialize: function (config) { reinitializeForNewImage(config); },
@@ -631,7 +649,7 @@ OmniFileNav.init({
 let _dragAndDropReady = false;
 function setupDragAndDrop() {
   if (_dragAndDropReady) { return; }
-  OmniFileNav.setupDragAndDrop(viewer, dropOverlay);
+  ViewerFileNav.setupDragAndDrop(viewer, dropOverlay);
   _dragAndDropReady = true;
 }
 
@@ -1856,13 +1874,13 @@ function setLoadingOverlay() {}
 
 function hideLoadingOverlay() {}
 
-const OmniLog = window.OmniLog || {};
-const log = typeof OmniLog.log === 'function' ? OmniLog.log : () => {};
-const flushLogs = typeof OmniLog.flushLogs === 'function' ? OmniLog.flushLogs : () => {};
-const scheduleLogFlush = typeof OmniLog.scheduleLogFlush === 'function' ? OmniLog.scheduleLogFlush : () => {};
-const setPywebviewReady = typeof OmniLog.setPywebviewReady === 'function' ? OmniLog.setPywebviewReady : () => {};
-const clearLogQueue = typeof OmniLog.clearQueue === 'function' ? OmniLog.clearQueue : () => {};
-const OmniHistory = window.OmniHistory || {};
+const ViewerLog = window.ViewerLog || {};
+const log = typeof ViewerLog.log === 'function' ? ViewerLog.log : () => {};
+const flushLogs = typeof ViewerLog.flushLogs === 'function' ? ViewerLog.flushLogs : () => {};
+const scheduleLogFlush = typeof ViewerLog.scheduleLogFlush === 'function' ? ViewerLog.scheduleLogFlush : () => {};
+const setPywebviewReady = typeof ViewerLog.setPywebviewReady === 'function' ? ViewerLog.setPywebviewReady : () => {};
+const clearLogQueue = typeof ViewerLog.clearQueue === 'function' ? ViewerLog.clearQueue : () => {};
+const ViewerHistory = window.ViewerHistory || {};
 let loggedPixelSample = false;
 let drawLogCount = 0;
 const SEGMENTATION_UPDATE_DELAY = 180;
@@ -1871,6 +1889,10 @@ let pendingMaskRebuild = false;
 let canRebuildMask = false;
 // Queue for segmentation payloads that arrive while painting; applied after stroke completes
 let pendingSegmentationPayload = null;
+// Default ON: the affinity graph is the headline omnipose visualization, so
+// it auto-shows after a segment. The host-rendered `#affinityGraphToggle`
+// must reflect this — `DISPLAY_TOGGLES` in plugin-panel.js declares
+// `defaultOn: true` for this toggle so its initial checkbox state matches.
 let showAffinityGraph = true;
 let affinityGraphInfo = null;
 let affinityGraphNeedsLocalRebuild = false;
@@ -1900,7 +1922,7 @@ function handleWindowBlur() {
   gestureState = null;
   wheelRotationBuffer = 0;
   clearHoverPreview();
-  OmniUI.closeOpenDropdown();
+  ViewerUI.closeOpenDropdown();
 }
 
 document.addEventListener('mouseleave', (evt) => {
@@ -2098,7 +2120,7 @@ if (brushKernelModeSelect) {
 }
 
 window.addEventListener('resize', () => {
-  OmniUI.repositionOpenDropdown();
+  ViewerUI.repositionOpenDropdown();
 });
 
 const gammaSlider = document.getElementById('gamma');
@@ -2120,8 +2142,10 @@ const leftPanelEl = document.getElementById('leftPanel');
 const sidebarEl = document.getElementById('sidebar');
 const maskVisibility = document.getElementById('maskVisibility');
 const toolInfo = document.getElementById('toolInfo');
-const segmentButton = document.getElementById('segmentButton');
-const segmentStatus = document.getElementById('segmentStatus');
+// Both elements live inside the dynamic plugin panel — they don't exist at
+// script-load time. Use `let` and re-resolve in the use sites below.
+let segmentButton = document.getElementById('segmentButton');
+let segmentStatus = document.getElementById('segmentStatus');
 const clearMasksButton = document.getElementById('clearMasksButton');
 const clearCacheButton = document.getElementById('clearCacheButton');
 const colorMode = document.getElementById('colorMode');
@@ -2156,12 +2180,22 @@ const segModeToggle = document.getElementById('segModeToggle');
 const segModeButtons = segModeToggle
   ? Array.from(segModeToggle.querySelectorAll('.kernel-option'))
   : [];
-const affinityGraphToggle = document.getElementById('affinityGraphToggle');
-const flowOverlayToggle = document.getElementById('flowOverlayToggle');
-const distanceOverlayToggle = document.getElementById('distanceOverlayToggle');
-const pointsOverlayToggle = document.getElementById('pointsOverlayToggle');
-const vectorOverlayToggle = document.getElementById('vectorOverlayToggle');
-const vectorOverlayRow = document.getElementById('vectorOverlayRow');
+// Display-overlay toggles are injected by ViewerPluginPanel after the
+// plugin manifest loads — re-resolve at use time, not at script load.
+let affinityGraphToggle = document.getElementById('affinityGraphToggle');
+let flowOverlayToggle = document.getElementById('flowOverlayToggle');
+let distanceOverlayToggle = document.getElementById('distanceOverlayToggle');
+let pointsOverlayToggle = document.getElementById('pointsOverlayToggle');
+let vectorOverlayToggle = document.getElementById('vectorOverlayToggle');
+let vectorOverlayRow = document.getElementById('vectorOverlayRow');
+function _resolveOverlayToggles() {
+  if (!affinityGraphToggle) affinityGraphToggle = document.getElementById('affinityGraphToggle');
+  if (!flowOverlayToggle) flowOverlayToggle = document.getElementById('flowOverlayToggle');
+  if (!distanceOverlayToggle) distanceOverlayToggle = document.getElementById('distanceOverlayToggle');
+  if (!pointsOverlayToggle) pointsOverlayToggle = document.getElementById('pointsOverlayToggle');
+  if (!vectorOverlayToggle) vectorOverlayToggle = document.getElementById('vectorOverlayToggle');
+  if (!vectorOverlayRow) vectorOverlayRow = document.getElementById('vectorOverlayRow');
+}
 const imageVisibilityToggle = document.getElementById('imageVisibilityToggle');
 const maskVisibilityToggle = document.getElementById('maskVisibilityToggle');
 const intensityPanel = document.getElementById('intensityPanel');
@@ -2191,7 +2225,10 @@ const brushKernelToggle = document.getElementById('brushKernelToggle');
 const systemRamEl = document.getElementById('systemRam');
 const systemCpuEl = document.getElementById('systemCpu');
 const systemGpuEl = document.getElementById('systemGpu');
-const useGpuToggle = document.getElementById('useGpuToggle');
+const systemGpuLabelEl = document.getElementById('systemGpuLabel');
+// `useGpuToggle` is now a plugin-declared widget under Advanced Options
+// (not a fixed element in sidebar.html). Resolve at use-time.
+let useGpuToggle = document.getElementById('useGpuToggle');
 const maskStyleToggle = document.getElementById('maskStyleToggle');
 const maskStyleButtons = maskStyleToggle
   ? Array.from(maskStyleToggle.querySelectorAll('.kernel-option'))
@@ -2297,14 +2334,14 @@ setupImageNavigator();
 
 
 function setupImageNavigator() {
-  OmniFileNav.setupImageNavigator({
+  ViewerFileNav.setupImageNavigator({
     imageNavigator: imageNavigator,
     directoryEntries: directoryEntries,
     currentImageName: currentImageName,
     currentImagePath: currentImagePath,
     truncateFilename: truncateFilename,
     refreshDropdown: refreshDropdown,
-    getDropdown: OmniUI.getDropdown,
+    getDropdown: ViewerUI.getDropdown,
   });
 }
 
@@ -2320,14 +2357,14 @@ attachNumberInputStepper(gammaInput, (delta) => {
 });
 
 const HISTORY_LIMIT = 200;
-if (typeof OmniHistory.init === 'function') {
+if (typeof ViewerHistory.init === 'function') {
   try {
-    OmniHistory.init({ limit: HISTORY_LIMIT });
+    ViewerHistory.init({ limit: HISTORY_LIMIT });
   } catch (err) {
-    console.warn('OmniHistory init failed', err);
+    console.warn('ViewerHistory init failed', err);
   }
 }
-OmniState.init({
+ViewerState.init({
   debugStateSave: DEBUG_STATE_SAVE,
   log: typeof log === 'function' ? log : null,
   collectViewerState: function () { return collectViewerState(); },
@@ -2335,11 +2372,11 @@ OmniState.init({
   getSessionId: function () { return sessionId; },
   getCurrentImagePath: function () { return currentImagePath; },
 });
-const undoStack = typeof OmniHistory.getUndoStack === 'function'
-  ? OmniHistory.getUndoStack()
+const undoStack = typeof ViewerHistory.getUndoStack === 'function'
+  ? ViewerHistory.getUndoStack()
   : [];
-const redoStack = typeof OmniHistory.getRedoStack === 'function'
-  ? OmniHistory.getRedoStack()
+const redoStack = typeof ViewerHistory.getRedoStack === 'function'
+  ? ViewerHistory.getRedoStack()
   : [];
 const viewState = { scale: 1.0, offsetX: 0.0, offsetY: 0.0, rotation: 0.0 };
 let maskVisible = true;
@@ -2438,10 +2475,10 @@ let pendingBrushDoubleTap = null;
 const BRUSH_DOUBLE_TAP_MAX_INTERVAL_MOUSE_MS = 220;
 const BRUSH_DOUBLE_TAP_MAX_INTERVAL_STYLUS_MS = 420;
 const BRUSH_DOUBLE_TAP_MAX_POINTER_DISTANCE = 24;
-window.OmniBrush = window.OmniBrush || {};
-const brushApi = window.OmniBrush;
-window.OmniPainting = window.OmniPainting || {};
-const paintingApi = window.OmniPainting;
+window.ViewerBrush = window.ViewerBrush || {};
+const brushApi = window.ViewerBrush;
+window.ViewerPainting = window.ViewerPainting || {};
+const paintingApi = window.ViewerPainting;
 if (typeof brushApi.init === 'function') {
   try {
     brushApi.init({
@@ -2464,7 +2501,7 @@ if (typeof brushApi.init === 'function') {
       getTouchPointers: () => touchPointers,
     });
   } catch (err) {
-    console.warn('OmniBrush init failed', err);
+    console.warn('ViewerBrush init failed', err);
   }
 }
 const paintingInitOptions = {
@@ -2603,7 +2640,7 @@ function logDebugGridStatus(reason) {
 }
 
 function ensureDebugGridBootstrap() {
-  if (!window.__OMNI_FORCE_GRID_MASK__ || debugGridBootstrapped) {
+  if (!window.__VIEWER_FORCE_GRID_MASK__ || debugGridBootstrapped) {
     return;
   }
   if (!paintingApi || typeof paintingApi.__debugGetState !== 'function') {
@@ -2687,7 +2724,7 @@ function applyPaintingInit() {
       ensureDebugGridBootstrap();
     }
   } catch (err) {
-    console.warn('OmniPainting init failed', err);
+    console.warn('ViewerPainting init failed', err);
   }
   return paintingInitApplied;
 }
@@ -2711,9 +2748,9 @@ if (!applyPaintingInit()) {
 if (typeof window !== 'undefined') {
   window.__VIEWER_DEBUG__ = window.__VIEWER_DEBUG__ || {};
   window.__VIEWER_DEBUG__.walkGridFill = async function walkGridFill(options = {}) {
-    const painting = window.OmniPainting;
+    const painting = window.ViewerPainting;
     if (!painting || typeof painting.__debugGetState !== 'function') {
-      throw new Error('OmniPainting debug state unavailable');
+      throw new Error('ViewerPainting debug state unavailable');
     }
     const state = painting.__debugGetState();
     const ctx = state.ctx;
@@ -2853,10 +2890,10 @@ if (typeof window !== 'undefined') {
     return results;
   };
 }
-window.OmniInteractions = window.OmniInteractions || {};
-const interactionsApi = window.OmniInteractions;
+window.ViewerInteractions = window.ViewerInteractions || {};
+const interactionsApi = window.ViewerInteractions;
 if (!interactionsApi || typeof interactionsApi.init !== 'function') {
-  console.warn('OmniInteractions helpers missing; ensure /static/js/interactions.js loads before app.js');
+  console.warn('ViewerInteractions helpers missing; ensure /static/js/interactions.js loads before app.js');
 }
 let pinchState = null;
 let panPointerId = null;
@@ -3074,14 +3111,14 @@ function updateMaskLabel() {
 
 function updateHistoryButtons() {
   if (undoButton) {
-    const count = (typeof OmniHistory.getUndoCount === 'function')
-      ? OmniHistory.getUndoCount()
+    const count = (typeof ViewerHistory.getUndoCount === 'function')
+      ? ViewerHistory.getUndoCount()
       : 0;
     undoButton.disabled = count === 0;
   }
   if (redoButton) {
-    const count = (typeof OmniHistory.getRedoCount === 'function')
-      ? OmniHistory.getRedoCount()
+    const count = (typeof ViewerHistory.getRedoCount === 'function')
+      ? ViewerHistory.getRedoCount()
       : 0;
     redoButton.disabled = count === 0;
   }
@@ -3550,8 +3587,8 @@ function setImageVisible(value, { silent = false } = {}) {
 }
 
 function pushHistory(indices, before, after) {
-  if (typeof OmniHistory.push === 'function') {
-    OmniHistory.push(indices, before, after);
+  if (typeof ViewerHistory.push === 'function') {
+    ViewerHistory.push(indices, before, after);
   }
   updateHistoryButtons();
 }
@@ -3603,7 +3640,7 @@ function applyHistoryEntry(entry, useAfter) {
 }
 
 function undo() {
-  const entry = (typeof OmniHistory.undo === 'function') ? OmniHistory.undo() : null;
+  const entry = (typeof ViewerHistory.undo === 'function') ? ViewerHistory.undo() : null;
   if (!entry) {
     return;
   }
@@ -3633,7 +3670,7 @@ function undo() {
 }
 
 function redo() {
-  const entry = (typeof OmniHistory.redo === 'function') ? OmniHistory.redo() : null;
+  const entry = (typeof ViewerHistory.redo === 'function') ? ViewerHistory.redo() : null;
   if (!entry) {
     return;
   }
@@ -3704,10 +3741,10 @@ function performClearMasks({ recordHistory = true } = {}) {
   clearColorCaches();
   clearAffinityGraphData();
   applyPointsPayload(null);
-  if (window.__OMNI_FORCE_GRID_MASK__ && window.OmniPainting
-    && typeof window.OmniPainting.__debugApplyGridIfNeeded === 'function') {
+  if (window.__VIEWER_FORCE_GRID_MASK__ && window.ViewerPainting
+    && typeof window.ViewerPainting.__debugApplyGridIfNeeded === 'function') {
     try {
-      window.OmniPainting.__debugApplyGridIfNeeded(true);
+      window.ViewerPainting.__debugApplyGridIfNeeded(true);
     } catch (err) {
       console.warn('debug grid reapply after clear masks failed', err);
     }
@@ -3930,9 +3967,9 @@ function redrawMaskCanvas() {
 
 
 function serializeHistoryState() {
-  if (typeof OmniHistory.serialize === 'function') {
+  if (typeof ViewerHistory.serialize === 'function') {
     try {
-      return OmniHistory.serialize(encodeHistoryField);
+      return ViewerHistory.serialize(encodeHistoryField);
     } catch (err) {
       console.warn('serializeHistoryState failed', err);
     }
@@ -3941,17 +3978,17 @@ function serializeHistoryState() {
 }
 
 function restoreHistoryState(serialized, expectedLength) {
-  if (typeof OmniHistory.restore === 'function') {
+  if (typeof ViewerHistory.restore === 'function') {
     try {
-      OmniHistory.restore(serialized || {}, decodeHistoryField, expectedLength);
+      ViewerHistory.restore(serialized || {}, decodeHistoryField, expectedLength);
       updateHistoryButtons();
       return;
     } catch (err) {
       console.warn('restoreHistoryState failed', err);
     }
   }
-  if (typeof OmniHistory.clear === 'function') {
-    OmniHistory.clear();
+  if (typeof ViewerHistory.clear === 'function') {
+    ViewerHistory.clear();
   }
   updateHistoryButtons();
 }
@@ -4022,7 +4059,7 @@ function restoreViewerState(saved) {
   if (!saved || typeof saved !== 'object') {
     return;
   }
-  OmniState.setRestoringState(true);
+  ViewerState.setRestoringState(true);
   try {
     const expectedLength = maskValues.length;
     if (saved.mask) {
@@ -4035,9 +4072,9 @@ function restoreViewerState(saved) {
       maskValues.fill(0);
       maskHasNonZero = false;
     }
-    if (window.OmniPainting && typeof window.OmniPainting.__debugApplyGridIfNeeded === 'function') {
+    if (window.ViewerPainting && typeof window.ViewerPainting.__debugApplyGridIfNeeded === 'function') {
       try {
-        window.OmniPainting.__debugApplyGridIfNeeded(false);
+        window.ViewerPainting.__debugApplyGridIfNeeded(false);
       } catch (err) {
         console.warn('debug grid reapply after restore failed', err);
       }
@@ -4262,7 +4299,13 @@ function restoreViewerState(saved) {
     updateImageCmapTexture();
     if (labelShuffleToggle) labelShuffleToggle.checked = labelShuffle;
     if (labelShuffleSeedInput) labelShuffleSeedInput.value = String(labelShuffleSeed);
-    if (ncolorHueOffsetSlider) ncolorHueOffsetSlider.value = Math.round(nColorHueOffset * 100);
+    if (ncolorHueOffsetSlider) {
+      ncolorHueOffsetSlider.value = Math.round(nColorHueOffset * 100);
+      // The cmapHueOffset slider uses a custom CSS fill track driven by
+      // refreshSlider — setting .value alone moves the native thumb but
+      // leaves the filled portion at its old width (default: leftmost).
+      refreshSlider('cmapHueOffset');
+    }
     updateLabelShuffleControls();
     // Invalidate shuffle permutation cache since seed may have changed
     shufflePermutation = null;
@@ -4281,7 +4324,7 @@ function restoreViewerState(saved) {
     updateToolButtons();
     markAffinityGeometryDirty();
   } finally {
-    OmniState.setRestoringState(false);
+    ViewerState.setRestoringState(false);
   }
   // Apply saved affinity graph if not already applied (e.g., when not in affinity seg mode)
   if (savedAffinityGraphPayload && savedAffinityGraphPayload.encoded && affinityGraphSource === 'none') {
@@ -4305,7 +4348,7 @@ function restoreViewerState(saved) {
   applyMaskRedrawImmediate();
   draw();
   scheduleAffinityRebuildIfStale('restore');
-  OmniState.resetSaveState();
+  ViewerState.resetSaveState();
   stateDebugLog('restore reset sequences');
   updateImageInfo();
 }
@@ -6821,7 +6864,7 @@ function draw() {
   }
   if (!webglUnavailableNotified) {
     webglUnavailableNotified = true;
-    console.error('WebGL2 pipeline unavailable; OmniPose viewer requires WebGL2.');
+    console.error('WebGL2 pipeline unavailable; viewer requires WebGL2.');
     setLoadingOverlay('WebGL2 rendering unavailable. Please enable WebGL2 support and reload.', true);
   }
 }
@@ -7291,27 +7334,27 @@ function applyGamma(gamma) {
   setGamma(gamma, { emit: true });
 }
 
-// ── Colormap delegates (pure functions from OmniColormap) ────────────────
+// ── Colormap delegates (pure functions from ViewerColormap) ────────────────
 
 // State-dependent colormap wrappers (inject current state into pure module functions)
 function getColormapColorAtT(t, cmap) {
-  return OmniColormap.getColormapColorAtT(t, cmap || labelColormap);
+  return ViewerColormap.getColormapColorAtT(t, cmap || labelColormap);
 }
 function generateNColorSwatches(count, offset) {
   const hueOffset = offset !== null && offset !== undefined ? offset : nColorHueOffset;
-  return OmniColormap.generateNColorSwatches(count, hueOffset, labelColormap);
+  return ViewerColormap.generateNColorSwatches(count, hueOffset, labelColormap);
 }
 function ensureNColorPaletteLength(targetCount) {
-  return OmniColormap.ensureNColorPaletteLength(targetCount, nColorPaletteColors, DEFAULT_NCOLOR_COUNT, labelColormap);
+  return ViewerColormap.ensureNColorPaletteLength(targetCount, nColorPaletteColors, DEFAULT_NCOLOR_COUNT, labelColormap);
 }
 function getLabelShuffleKey(label) {
-  return OmniColormap.getLabelShuffleKey(label, labelShuffle, labelShuffleSeed);
+  return ViewerColormap.getLabelShuffleKey(label, labelShuffle, labelShuffleSeed);
 }
 function getImageCmapTypeValue() {
-  return OmniColormap.getImageCmapTypeValue(imageColormap);
+  return ViewerColormap.getImageCmapTypeValue(imageColormap);
 }
 function colormapHasOffset(cmapValue) {
-  return OmniColormap.colormapHasOffset(cmapValue);
+  return ViewerColormap.colormapHasOffset(cmapValue);
 }
 
 /**
@@ -7347,10 +7390,15 @@ function updateImageCmapTexture() {
 
 // State-dependent colormap wrappers (continued)
 function getLabelColorFraction(label) {
-  return OmniColormap.getLabelColorFraction(label, labelShuffle, labelShuffleSeed, currentMaxLabel);
+  return ViewerColormap.getLabelColorFraction(
+    label, labelShuffle, labelShuffleSeed,
+    ViewerColormap.colormapHasOffset(labelColormap), nColorHueOffset,
+  );
 }
 function getColormapColor(label) {
-  return OmniColormap.getColormapColor(label, labelColormap, labelShuffle, labelShuffleSeed, currentMaxLabel);
+  return ViewerColormap.getColormapColor(
+    label, labelColormap, labelShuffle, labelShuffleSeed, nColorHueOffset,
+  );
 }
 
 /**
@@ -7377,7 +7425,7 @@ function buildShufflePermutation() {
   if (shufflePermutation && shufflePermutationSize === currentMaxLabel && shufflePermutationSeed === seed) {
     return shufflePermutation;
   }
-  shufflePermutation = OmniColormap.buildShufflePermutation(currentMaxLabel, seed);
+  shufflePermutation = ViewerColormap.buildShufflePermutation(currentMaxLabel, seed);
   shufflePermutationSize = currentMaxLabel;
   shufflePermutationSeed = seed;
   return shufflePermutation;
@@ -7858,16 +7906,16 @@ function handleBrushDoubleTapOnDown(evt, pointer, world) {
   brushTapHistory[type] = now;
   brushTapLastPos[type] = pointerPos;
   if (!lastTime || (now - lastTime) > maxInterval) {
-    brushTapUndoBaseline = typeof OmniHistory.getUndoCount === 'function'
-      ? OmniHistory.getUndoCount()
+    brushTapUndoBaseline = typeof ViewerHistory.getUndoCount === 'function'
+      ? ViewerHistory.getUndoCount()
       : null;
     return null;
   }
   if (lastPos) {
     const dp = Math.hypot(pointerPos.x - lastPos.x, pointerPos.y - lastPos.y);
     if (dp > BRUSH_DOUBLE_TAP_MAX_POINTER_DISTANCE) {
-      brushTapUndoBaseline = typeof OmniHistory.getUndoCount === 'function'
-        ? OmniHistory.getUndoCount()
+      brushTapUndoBaseline = typeof ViewerHistory.getUndoCount === 'function'
+        ? ViewerHistory.getUndoCount()
         : null;
       return null;
     }
@@ -7968,14 +8016,14 @@ function setNColorPaletteColors(colors, { render = true, schedule = true } = {})
 }
 
 function buildPaletteTextureData() {
-  return OmniColormap.buildPaletteTextureData({
+  return ViewerColormap.buildPaletteTextureData({
     nColorActive: nColorActive,
     paletteColors: nColorPaletteColors,
     defaultCount: DEFAULT_NCOLOR_COUNT,
     colormap: labelColormap,
     shuffle: labelShuffle,
     seed: labelShuffleSeed,
-    maxLabel: currentMaxLabel,
+    hueOffset: nColorHueOffset,
   });
 }
 
@@ -8180,15 +8228,17 @@ function toggleColorMode() {
 // buildLinksFromCurrentGraph removed: we keep a single connectivity source based on raw labels only
 
 function getSegmentationSettingsPayload() {
-  const payload = {
-    mask_threshold: Number(maskThreshold.toFixed(2)),
-    flow_threshold: Number(flowThreshold.toFixed(2)),
-    cluster: Boolean(clusterEnabled),
-    affinity_seg: Boolean(affinitySegEnabled),
-    niter: niterAuto ? null : (niter | 0),
-    model: segmentationModel,
-    use_gpu: useGpuToggle ? Boolean(useGpuToggle.checked) : false,
-  };
+  // Source params from the active plugin's dynamically-rendered widgets.
+  // Falls back to {} when no plugin is loaded (panel is absent from DOM).
+  const payload = {};
+  if (typeof ViewerPluginPanel !== 'undefined') {
+    Object.assign(payload, ViewerPluginPanel.getParams());
+    const model = ViewerPluginPanel.getModel();
+    if (model) payload.model = model;
+  }
+  if (useGpuToggle && ViewerPluginPanel && ViewerPluginPanel.hasCapability('set_use_gpu')) {
+    payload.use_gpu = Boolean(useGpuToggle.checked);
+  }
   if (customSegmentationModelPath) {
     payload.model_path = customSegmentationModelPath;
   }
@@ -8338,6 +8388,14 @@ function updateOverlayImages(payload) {
   if (!payload) {
     return;
   }
+  // Reveal/hide host-rendered overlay toggles based on which extras keys
+  // came back in this segment response. Re-resolve the toggle DOM refs in
+  // case ViewerPluginPanel just (re)mounted them.
+  if (typeof ViewerPluginPanel !== 'undefined'
+      && typeof ViewerPluginPanel.setOverlayAvailability === 'function') {
+    ViewerPluginPanel.setOverlayAvailability(payload);
+  }
+  _resolveOverlayToggles();
   if (Object.prototype.hasOwnProperty.call(payload, 'flowOverlay')) {
     setOverlayImage('flow', payload.flowOverlay);
   }
@@ -8437,6 +8495,7 @@ function setOverlayImage(kind, dataUrl) {
 }
 
 function setSegmentStatus(message, isError = false) {
+  if (!segmentStatus) segmentStatus = document.getElementById('segmentStatus');
   if (!segmentStatus) {
     return;
   }
@@ -8950,6 +9009,7 @@ async function requestSegmentation() {
 
 
 function setSegmentButtonLoading(active) {
+  if (!segmentButton) segmentButton = document.getElementById('segmentButton');
   if (!segmentButton) {
     return;
   }
@@ -8961,13 +9021,22 @@ function setSegmentButtonLoading(active) {
 }
 
 async function runSegmentation() {
-  if (!segmentButton || isSegmenting) {
+  if (!segmentButton) segmentButton = document.getElementById('segmentButton');
+  if (isSegmenting) {
     return;
   }
   isSegmenting = true;
   segmentButton.disabled = true;
   setSegmentButtonLoading(true);
   setSegmentStatus('');
+  // Plugin-declared progress target (defaults to #segmentationPanel). The
+  // chasing-outline animation runs only here, NOT in triggerMaskRebuild —
+  // slider-driven recomputation reuses cached predictions and shouldn't
+  // imply a full inference cycle to the user.
+  const progressTarget = (window.ViewerPluginPanel
+    && window.ViewerPluginPanel.getProgressTarget
+    && window.ViewerPluginPanel.getProgressTarget()) || null;
+  if (progressTarget) progressTarget.classList.add('is-progress-running');
   try {
     const raw = await requestSegmentation();
     const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -8997,6 +9066,7 @@ async function runSegmentation() {
     isSegmenting = false;
     segmentButton.disabled = false;
     setSegmentButtonLoading(false);
+    if (progressTarget) progressTarget.classList.remove('is-progress-running');
     if (pendingMaskRebuild && segmentationUpdateTimer === null && canRebuildMask) {
       triggerMaskRebuild().catch((error) => {
         console.error(error);
@@ -9469,6 +9539,45 @@ function hideContextMenu() {
   contextMenuBackdrop = null;
 }
 
+function _ctxItem(label, onClick, opts) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'omni-context-item';
+  btn.textContent = label;
+  if (opts && opts.disabled) btn.disabled = true;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function _ctxSeparator() {
+  const sep = document.createElement('div');
+  sep.className = 'omni-context-separator';
+  return sep;
+}
+
+function _ctxHeader(label) {
+  const h = document.createElement('div');
+  h.className = 'omni-context-header';
+  h.textContent = label;
+  return h;
+}
+
+async function _selectPlugin(name) {
+  try {
+    const r = await fetch('/api/plugin/select', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    if (!r.ok) throw new Error('select failed: ' + r.status);
+    // Reload so the panel renders fresh widgets for the new plugin.
+    window.location.reload();
+  } catch (e) {
+    console.error('[plugin] select failed:', e);
+    alert('Failed to switch plugin: ' + e.message);
+  }
+}
+
 function showContextMenu(x, y) {
   hideContextMenu();
   const backdrop = document.createElement('div');
@@ -9476,15 +9585,39 @@ function showContextMenu(x, y) {
   backdrop.addEventListener('pointerdown', hideContextMenu);
   const menu = document.createElement('div');
   menu.className = 'omni-context-menu';
-  const item = document.createElement('button');
-  item.type = 'button';
-  item.className = 'omni-context-item';
-  item.textContent = 'Clear Cache & Reload';
-  item.addEventListener('click', () => {
+
+  menu.appendChild(_ctxItem('Clear Cache & Reload', () => {
     hideContextMenu();
     clearCacheAndReload();
+  }));
+
+  // Plugin picker — fetched async so menu opens fast; populates once /api/plugins resolves
+  const pluginHeader = _ctxHeader('Loading plugins…');
+  menu.appendChild(_ctxSeparator());
+  menu.appendChild(pluginHeader);
+
+  fetch('/api/plugins').then(r => r.json()).then(data => {
+    const plugins = (data && data.plugins) || [];
+    const active = data && data.active;
+    pluginHeader.textContent = 'Segmentation plugin';
+    if (plugins.length === 0) {
+      menu.appendChild(_ctxItem('(none registered)', () => {}, {disabled: true}));
+      return;
+    }
+    plugins.forEach(p => {
+      const isActive = p.name === active;
+      const label = (isActive ? '✓ ' : '    ') + p.name;
+      const item = _ctxItem(label, () => {
+        hideContextMenu();
+        if (!isActive) _selectPlugin(p.name);
+      });
+      menu.appendChild(item);
+    });
+  }).catch(e => {
+    pluginHeader.textContent = 'Plugins (failed to load)';
+    console.error('[plugin-menu]', e);
   });
-  menu.appendChild(item);
+
   document.body.appendChild(backdrop);
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
@@ -9540,7 +9673,7 @@ function maybeUndoLastStrokeAtPoint(world, label) {
   if (!world || !Number.isFinite(world.x) || !Number.isFinite(world.y)) {
     return false;
   }
-  const stack = (typeof OmniHistory.getUndoStack === 'function') ? OmniHistory.getUndoStack() : null;
+  const stack = (typeof ViewerHistory.getUndoStack === 'function') ? ViewerHistory.getUndoStack() : null;
   if (!stack || !stack.length) {
     return false;
   }
@@ -9559,7 +9692,7 @@ function maybeUndoLastStrokeAtPoint(world, label) {
       if (want !== null && (after[i] | 0) !== want) {
         return false;
       }
-      const popped = (typeof OmniHistory.undo === 'function') ? OmniHistory.undo() : null;
+      const popped = (typeof ViewerHistory.undo === 'function') ? ViewerHistory.undo() : null;
       if (!popped) {
         return false;
       }
@@ -9642,8 +9775,8 @@ window.addEventListener('keydown', (evt) => {
   }
   const key = evt.key.toLowerCase();
   const modifier = evt.ctrlKey || evt.metaKey;
-  if (key === 'escape' && OmniUI.getOpenDropdownId()) {
-    OmniUI.closeOpenDropdown();
+  if (key === 'escape' && ViewerUI.getOpenDropdownId()) {
+    ViewerUI.closeOpenDropdown();
     evt.preventDefault();
     return;
   }
@@ -9847,8 +9980,8 @@ function initialize() {
       maskValues.fill(0);
       outlineState.fill(0);
       maskHasNonZero = false;
-      if (typeof OmniHistory.clear === 'function') {
-        OmniHistory.clear();
+      if (typeof ViewerHistory.clear === 'function') {
+        ViewerHistory.clear();
       }
       needsMaskRedraw = true;
       updateHistoryButtons();
@@ -9880,7 +10013,7 @@ function initialize() {
 }
 
 // ---------------------------------------------------------------------------
-// In-place image swap — called by OmniFileNav when the server returns config
+// In-place image swap — called by ViewerFileNav when the server returns config
 // ---------------------------------------------------------------------------
 function reinitializeForNewImage(config) {
   if (!config) {
@@ -9897,7 +10030,7 @@ function reinitializeForNewImage(config) {
   imageDataUrl = config.imageUrl || config.imageDataUrl || '';
   currentImagePath = config.imagePath || null;
   currentImageName = config.imageName || null;
-  localStateKey = `OMNI_VIEWER_STATE:${config.imagePath || config.imageName || 'default'}`;
+  localStateKey = `VIEWER_STATE:${config.imagePath || config.imageName || 'default'}`;
   directoryEntries = Array.isArray(config.directoryEntries) ? config.directoryEntries : [];
   directoryIndex = typeof config.directoryIndex === 'number' ? config.directoryIndex : null;
   directoryPath = config.directoryPath || null;
@@ -9912,7 +10045,7 @@ function reinitializeForNewImage(config) {
     ?? config.ncolorMask
     ?? false,
   );
-  savedViewerState = config.savedViewerState || OmniState.loadLocalViewerState(localStateKey);
+  savedViewerState = config.savedViewerState || ViewerState.loadLocalViewerState(localStateKey);
 
   // 2. Resize offscreen + mask canvases
   const px = imgWidth * imgHeight;
@@ -9943,7 +10076,7 @@ function reinitializeForNewImage(config) {
   needsMaskRedraw = false;
 
   // 5. Clear history, nColor, affinity state
-  if (typeof OmniHistory.clear === 'function') { OmniHistory.clear(); }
+  if (typeof ViewerHistory.clear === 'function') { ViewerHistory.clear(); }
   nColorValues = null;
   nColorInstanceMask = null;
   nColorLabelToGroup.clear();
@@ -9977,7 +10110,7 @@ function reinitializeForNewImage(config) {
   // 10. Run existing initialize() — handles image load, histogram, state restore, draw
   initialize();
 }
-window.__omni_reinitialize = reinitializeForNewImage;
+window.__viewer_reinitialize = reinitializeForNewImage;
 
 window.addEventListener('resize', resizeCanvas);
 let orientationResizePending = false;
@@ -10056,15 +10189,19 @@ updateBrushControls();
 updateColorModeLabel();
 if (autoNColorToggle) autoNColorToggle.checked = nColorActive;
 updateHoverInfo(null);
-if (segmentButton) {
-  segmentButton.addEventListener('click', () => {
-    runSegmentation();
-  });
-}
-if (clearMasksButton) {
-  clearMasksButton.addEventListener('click', (evt) => {
-    const skip = Boolean(evt && (evt.metaKey || evt.ctrlKey));
-    promptClearMasks({ skipConfirm: skip });
+// Buttons (#segmentButton, #clearMasksButton) are injected later by
+// ViewerPluginPanel after /api/plugins resolves — bind via delegation on
+// #sidebar so we don't depend on element existence at script-load time.
+if (sidebarEl) {
+  sidebarEl.addEventListener('click', (evt) => {
+    const t = evt.target instanceof Element ? evt.target.closest('button') : null;
+    if (!t) return;
+    if (t.id === 'segmentButton') {
+      runSegmentation();
+    } else if (t.id === 'clearMasksButton') {
+      const skip = Boolean(evt.metaKey || evt.ctrlKey);
+      promptClearMasks({ skipConfirm: skip });
+    }
   });
 }
 if (clearCacheButton) {
@@ -10076,7 +10213,7 @@ if (clearCacheButton) {
       if (typeof window !== 'undefined' && window.localStorage) {
         const storageKeys = Object.keys(window.localStorage);
         storageKeys
-          .filter((key) => key.startsWith('OMNI') || key.includes('omnipose'))
+          .filter((key) => key.startsWith('VIEWER') || key.startsWith('__viewer') || key.includes('viewer'))
           .forEach((key) => {
             try {
               window.localStorage.removeItem(key);
@@ -10223,78 +10360,85 @@ if (affinityToggle) {
     scheduleStateSave();
   });
 }
-if (affinityGraphToggle) {
-  affinityGraphToggle.addEventListener('change', (evt) => {
-    showAffinityGraph = Boolean(evt.target.checked);
-    debugAffinity('[affinity] toggle ' + (showAffinityGraph ? 'on' : 'off'));
-    if (showAffinityGraph && affinityGraphNeedsLocalRebuild) {
-      rebuildLocalAffinityGraph();
-    }
-    if (webglOverlay && webglOverlay.enabled) {
-      const needsBuild = showAffinityGraph
-        && webglOverlay.needsGeometryRebuild
-        && affinityGraphInfo
-        && affinityGraphInfo.width > 0
-        && affinityGraphInfo.height > 0;
-      if (needsBuild) {
-        ensureWebglGeometry(affinityGraphInfo.width, affinityGraphInfo.height);
+// Overlay toggles live in the dynamic plugin panel, so the elements don't
+// exist at script-load time. Use change-event delegation on #sidebar — this
+// fires regardless of when the inputs are inserted.
+if (sidebarEl) {
+  sidebarEl.addEventListener('change', (evt) => {
+    const t = evt.target;
+    if (!t || t.nodeName !== 'INPUT' || t.type !== 'checkbox') return;
+    switch (t.id) {
+      case 'affinityGraphToggle': {
+        showAffinityGraph = Boolean(t.checked);
+        debugAffinity('[affinity] toggle ' + (showAffinityGraph ? 'on' : 'off'));
+        if (showAffinityGraph && affinityGraphNeedsLocalRebuild) {
+          rebuildLocalAffinityGraph();
+        }
+        if (webglOverlay && webglOverlay.enabled) {
+          const needsBuild = showAffinityGraph
+            && webglOverlay.needsGeometryRebuild
+            && affinityGraphInfo
+            && affinityGraphInfo.width > 0
+            && affinityGraphInfo.height > 0;
+          if (needsBuild) {
+            ensureWebglGeometry(affinityGraphInfo.width, affinityGraphInfo.height);
+          }
+          updateOverlayVisibility();
+        }
+        scheduleDraw();
+        scheduleStateSave();
+        break;
       }
-      updateOverlayVisibility();
+      case 'flowOverlayToggle': {
+        if (!flowOverlayImage || !flowOverlayImage.complete) {
+          t.checked = false;
+          showFlowOverlay = false;
+          return;
+        }
+        showFlowOverlay = t.checked;
+        draw();
+        scheduleStateSave();
+        break;
+      }
+      case 'distanceOverlayToggle': {
+        if (!distanceOverlayImage || !distanceOverlayImage.complete) {
+          t.checked = false;
+          showDistanceOverlay = false;
+          return;
+        }
+        showDistanceOverlay = t.checked;
+        draw();
+        scheduleStateSave();
+        break;
+      }
+      case 'pointsOverlayToggle': {
+        if (!pointsOverlayInfo || !webglOverlay || !webglOverlay.pointsCount) {
+          t.checked = false;
+          showPointsOverlay = false;
+          updateOverlayVisibility();
+          return;
+        }
+        showPointsOverlay = t.checked;
+        updateOverlayVisibility();
+        draw();
+        scheduleStateSave();
+        break;
+      }
+      case 'vectorOverlayToggle': {
+        if (!vectorOverlayData || !vectorOverlayData.vertexCount || !affinitySegEnabled) {
+          showVectorOverlay = false;
+          updateVectorOverlayVisibility();
+          return;
+        }
+        vectorOverlayPreferred = Boolean(t.checked);
+        showVectorOverlay = vectorOverlayPreferred;
+        updateVectorOverlayVisibility();
+        draw();
+        scheduleStateSave();
+        break;
+      }
+      default: break;
     }
-    scheduleDraw();
-    scheduleStateSave();
-  });
-}
-if (flowOverlayToggle) {
-  flowOverlayToggle.addEventListener('change', (evt) => {
-    if (!flowOverlayImage || !flowOverlayImage.complete) {
-      flowOverlayToggle.checked = false;
-      showFlowOverlay = false;
-      return;
-    }
-    showFlowOverlay = evt.target.checked;
-    draw();
-    scheduleStateSave();
-  });
-}
-if (distanceOverlayToggle) {
-  distanceOverlayToggle.addEventListener('change', (evt) => {
-    if (!distanceOverlayImage || !distanceOverlayImage.complete) {
-      distanceOverlayToggle.checked = false;
-      showDistanceOverlay = false;
-      return;
-    }
-    showDistanceOverlay = evt.target.checked;
-    draw();
-    scheduleStateSave();
-  });
-}
-if (pointsOverlayToggle) {
-  pointsOverlayToggle.addEventListener('change', (evt) => {
-    if (!pointsOverlayInfo || !webglOverlay || !webglOverlay.pointsCount) {
-      pointsOverlayToggle.checked = false;
-      showPointsOverlay = false;
-      updateOverlayVisibility();
-      return;
-    }
-    showPointsOverlay = evt.target.checked;
-    updateOverlayVisibility();
-    draw();
-    scheduleStateSave();
-  });
-}
-if (vectorOverlayToggle) {
-  vectorOverlayToggle.addEventListener('change', (evt) => {
-    if (!vectorOverlayData || !vectorOverlayData.vertexCount || !affinitySegEnabled) {
-      showVectorOverlay = false;
-      updateVectorOverlayVisibility();
-      return;
-    }
-    vectorOverlayPreferred = Boolean(evt.target.checked);
-    showVectorOverlay = vectorOverlayPreferred;
-    updateVectorOverlayVisibility();
-    draw();
-    scheduleStateSave();
   });
 }
 if (imageVisibilityToggle) {
@@ -10337,23 +10481,74 @@ function updateSystemInfo(info) {
       : '--';
   }
   if (systemCpuEl) {
-    const cores = Number(info.cpu_cores) || 0;
-    systemCpuEl.textContent = cores > 0 ? `${cores} cores` : '--';
+    // Visible: brand only (single line, ellipsis if it overflows).
+    // Tooltip: full raw brand + physical/logical cores + max clock — the
+    // detail lives in `title` so the row stays one line at all panel widths.
+    const physCores = Number(info.cpu_cores_physical) || 0;
+    const logCores  = Number(info.cpu_cores_logical || info.cpu_cores) || 0;
+    const cores = physCores > 0 ? physCores : logCores;
+    const label = info.cpu_label || info.cpu_brand_raw || '';
+    if (label) {
+      systemCpuEl.textContent = label;
+    } else if (cores > 0) {
+      systemCpuEl.textContent = `${cores} cores`;
+    } else {
+      systemCpuEl.textContent = '--';
+    }
+    const tipParts = [];
+    if (info.cpu_brand_raw) tipParts.push(info.cpu_brand_raw);
+    if (physCores > 0) {
+      tipParts.push(physCores + ' cores'
+        + (logCores > physCores ? ' (' + logCores + ' threads)' : ''));
+    } else if (logCores > 0) {
+      tipParts.push(logCores + ' threads');
+    }
+    if (info.cpu_max_mhz && info.cpu_max_mhz > 0) {
+      tipParts.push((info.cpu_max_mhz / 1000).toFixed(1) + ' GHz max');
+    }
+    systemCpuEl.dataset.tooltip = tipParts.join('\n');
   }
   if (systemGpuEl) {
+    const ok = Boolean(info.gpu_torch_ok != null ? info.gpu_torch_ok : info.gpu_available);
     if (info.gpu_available) {
-      const label = info.gpu_label
+      // Server pre-shortens via _shorten_gpu_name. Append memory if known.
+      let label = info.gpu_label
         || (info.gpu_backend ? String(info.gpu_backend).toUpperCase() : null)
         || info.gpu_name
         || 'GPU available';
+      const mem = Number(info.gpu_memory_bytes) || 0;
+      if (mem > 0 && !/\d+\s*GB/i.test(label)) {
+        const gb = Math.round(mem / 1024 / 1024 / 1024);
+        if (gb > 0) label = `${label} ${gb} GB`;
+      }
       systemGpuEl.textContent = label;
+      // Tooltip: full raw vendor string + backend + torch status.
+      const gpuTip = [];
+      if (info.gpu_name) gpuTip.push(info.gpu_name);
+      if (info.gpu_backend) gpuTip.push(String(info.gpu_backend).toUpperCase());
+      if (mem > 0) {
+        gpuTip.push((mem / 1024 / 1024 / 1024).toFixed(1) + ' GB');
+      }
+      systemGpuEl.dataset.tooltip = gpuTip.join('\n');
     } else {
       systemGpuEl.textContent = 'Not available';
+      systemGpuEl.dataset.tooltip = 'Torch could not reach a GPU device';
+    }
+    // Inline ✔ lives next to the "GPU" label on the left side of the row.
+    if (systemGpuLabelEl) {
+      systemGpuLabelEl.dataset.state = ok ? 'ok' : 'off';
+      systemGpuLabelEl.dataset.tooltip = ok ? 'Torch can use GPU' : 'Torch cannot reach a GPU';
     }
   }
+  // The Use-GPU toggle is now a plugin widget rendered inside the
+  // segmentation panel. Re-resolve it because plugin-panel may have
+  // (re)mounted it after the system-info fetch.
+  if (!useGpuToggle) useGpuToggle = document.getElementById('useGpuToggle');
   if (useGpuToggle) {
     useGpuToggle.disabled = !info.gpu_available;
-    useGpuToggle.checked = Boolean(info.use_gpu && info.gpu_available);
+    if (typeof info.use_gpu === 'boolean') {
+      useGpuToggle.checked = Boolean(info.use_gpu && info.gpu_available);
+    }
   }
 }
 
@@ -10414,7 +10609,7 @@ function initCmapSelect() {
   });
   cmapSelect.value = labelColormap;
   // Update dropdown entry's options array (it was empty at registration time)
-  const dropdownEntry = OmniUI.getDropdown('cmapSelect');
+  const dropdownEntry = ViewerUI.getDropdown('cmapSelect');
   if (dropdownEntry) {
     dropdownEntry.options = LABEL_COLORMAPS.map(e => ({ value: e.value, label: e.label }));
   }
@@ -10510,7 +10705,7 @@ function initImageCmapSelect() {
   });
   imageCmapSelect.value = imageColormap;
   // Update dropdown entry's options array
-  const dropdownEntry = OmniUI.getDropdown('imageCmapSelect');
+  const dropdownEntry = ViewerUI.getDropdown('imageCmapSelect');
   if (dropdownEntry) {
     dropdownEntry.options = IMAGE_COLORMAPS.map(e => ({ value: e.value, label: e.label }));
   }
@@ -10553,7 +10748,7 @@ function initSegmentationModelSelect() {
     addOption.textContent = 'Add model...';
     segmentationModelSelect.appendChild(addOption);
   }
-  const dropdownEntry = OmniUI.getDropdown('segmentationModel');
+  const dropdownEntry = ViewerUI.getDropdown('segmentationModel');
   if (dropdownEntry) {
     dropdownEntry.options = Array.from(segmentationModelSelect.options).map((opt) => ({
       value: opt.value,
@@ -10693,6 +10888,11 @@ if (cmapHueOffsetSlider) {
     } else {
       redrawMaskCanvas();
     }
+    // Re-derive the accent CSS variables from the CURRENT label's new color —
+    // without this the label-input color updates (its background is set by
+    // this same function) but the global accent (--accent-color / buttons /
+    // sliders) stays stuck at whatever the label was BEFORE the hue shift.
+    updateLabelControls();
     draw();
     scheduleStateSave();
   });
@@ -10716,6 +10916,11 @@ if (labelShuffleToggle) {
       }
       draw();
     }
+    // Resync accent color — shuffle changes the current label's on-screen
+    // color, so the global UI accent must be re-derived. Same reason as the
+    // hue-offset handler: ``updateLabelControls()`` drives
+    // ``updateAccentColorsFromRgb(...)`` off the current label's palette entry.
+    updateLabelControls();
     scheduleStateSave();
   });
 }
@@ -10739,6 +10944,7 @@ if (labelShuffleSeedInput) {
       }
       draw();
     }
+    updateLabelControls();  // resync accent (see shuffle-toggle handler)
     scheduleStateSave();
   };
   labelShuffleSeedInput.addEventListener('change', applySeed);
@@ -10748,25 +10954,9 @@ if (labelShuffleSeedInput) {
     }
   });
 }
-if (useGpuToggle) {
-  useGpuToggle.addEventListener('change', async (evt) => {
-    const wantsGpu = Boolean(evt.target.checked);
-    try {
-      const res = await fetch('/api/use_gpu', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ use_gpu: wantsGpu }),
-      });
-      if (!res.ok) {
-        throw new Error('request failed');
-      }
-      const info = await res.json();
-      updateSystemInfo(info);
-    } catch (err) {
-      useGpuToggle.checked = !wantsGpu;
-    }
-  });
-}
+// Use-GPU toggle now lives inside the dynamic plugin panel (Advanced
+// Options group) and rides the standard /api/segment params payload — no
+// dedicated handler here. Its value flows through getSegmentationSettingsPayload.
 if (maskStyleButtons && maskStyleButtons.length) {
   maskStyleButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -10901,7 +11091,7 @@ if (typeof window !== 'undefined') {
     outlineDirtyRegionsPreview: outlineDirtyRegions.slice(0, 6),
   });
   window.__VIEWER_DEBUG__.collectFillDiagnostics = (index = null) => {
-    const painting = window.OmniPainting;
+    const painting = window.ViewerPainting;
     const state = painting && typeof painting.__debugGetState === 'function'
       ? painting.__debugGetState()
       : null;
@@ -10912,8 +11102,8 @@ if (typeof window !== 'undefined') {
     const maskValue = (ctx && Number.isFinite(startIdx) && startIdx >= 0 && startIdx < ctx.maskValues.length)
       ? ctx.maskValues[startIdx] | 0
       : null;
-    const undoStack = window.OmniHistory && typeof window.OmniHistory.getUndoStack === 'function'
-      ? window.OmniHistory.getUndoStack()
+    const undoStack = window.ViewerHistory && typeof window.ViewerHistory.getUndoStack === 'function'
+      ? window.ViewerHistory.getUndoStack()
       : [];
     const latestUndo = undoStack && undoStack.length ? undoStack[undoStack.length - 1] : null;
     const report = {
@@ -10929,7 +11119,7 @@ if (typeof window !== 'undefined') {
         : null,
       counters: window.__VIEWER_DEBUG__.getCounters ? window.__VIEWER_DEBUG__.getCounters() : null,
       uploadState: window.__VIEWER_DEBUG__.getMaskUploadState ? window.__VIEWER_DEBUG__.getMaskUploadState() : null,
-      forceGridMask: Boolean(window.__OMNI_FORCE_GRID_MASK__),
+      forceGridMask: Boolean(window.__VIEWER_FORCE_GRID_MASK__),
     dirtyTracker: Object.assign({}, DEBUG_DIRTY_TRACKER),
     ctxFlags: ctx
       ? {
@@ -11177,7 +11367,7 @@ async function clearCacheAndReload() {
     if (typeof window !== 'undefined' && window.localStorage) {
       const storageKeys = Object.keys(window.localStorage);
       storageKeys
-        .filter((key) => key.startsWith('OMNI') || key.includes('omnipose'))
+        .filter((key) => key.startsWith('VIEWER') || key.startsWith('__viewer') || key.includes('viewer'))
         .forEach((key) => {
           try {
             window.localStorage.removeItem(key);
@@ -11202,3 +11392,24 @@ async function clearCacheAndReload() {
 }
 
 // Clear cache button removed; now available via context menu
+
+// Build the segmentation panel from the active plugin's WidgetSpec list.
+// If no plugin is registered, no panel is inserted into the DOM.
+if (typeof ViewerPluginPanel !== 'undefined') {
+  ViewerPluginPanel.init().then(() => {
+    // Live re-trigger: any widget change (slider drag, toggle flip, segmented
+    // selection) immediately schedules a debounced re-segment. For plugins
+    // that declare a `resegment` capability (e.g. omnipose) this routes
+    // through /api/resegment and reuses the cached network predictions —
+    // only the cheap reconstruction step runs, so the UI stays responsive.
+    ViewerPluginPanel.onParamsChanged(() => {
+      try {
+        scheduleMaskRebuild({ interactive: true });
+      } catch (err) {
+        console.warn('[plugin-panel] onParamsChanged → scheduleMaskRebuild', err);
+      }
+    });
+  }).catch((err) => {
+    console.warn('[plugin-panel] init failed', err);
+  });
+}

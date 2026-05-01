@@ -1,4 +1,4 @@
-(function initOmniLogging(global) {
+(function initViewerLogging(global) {
   'use strict';
 
   const state = {
@@ -138,7 +138,7 @@
     },
   };
 
-  global.OmniLog = Object.assign({}, global.OmniLog, api);
+  global.ViewerLog = Object.assign({}, global.ViewerLog, api);
 
   const pollId = global.setInterval(() => {
     if (state.pywebviewReady) {

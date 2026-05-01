@@ -50,6 +50,9 @@ def _decode_data_url_image(data_url_or_b64: str) -> np.ndarray:
 
 @router.get("/plugins")
 def api_list_plugins() -> dict:
+    # Trigger auto-select if nothing is active yet, so the picker UI sees a
+    # default highlighted on first open.
+    ACTIVE_PLUGIN.current()
     return {
         "plugins": [p.manifest() for p in REGISTRY.all()],
         "active": ACTIVE_PLUGIN.name(),
@@ -81,6 +84,15 @@ def api_plugin_warmup(
     plugin: SegmentationPlugin = Depends(require_plugin_capability("warmup")),
 ) -> OkBody:
     plugin.warmup(payload.model)
+    return OkBody()
+
+
+@router.post("/plugin/clear_cache", response_model=OkBody)
+def api_plugin_clear_cache(
+    plugin: SegmentationPlugin = Depends(require_plugin_capability("clear_cache")),
+) -> OkBody:
+    plugin.clear_cache()
+    ACTIVE_PLUGIN.reset_cache()
     return OkBody()
 
 

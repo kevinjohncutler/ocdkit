@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy",
     "scipy",
-    "scikit-image",
+    "scikit-image>=0.26",
     "tifffile",
     "imagecodecs",
     "matplotlib",
@@ -22,12 +22,12 @@ dependencies = [
     "dask[array]",
     "natsort",
     "numba",
-    "bioio",
-    "bioio-czi",
+    "aicspylibczi",
     "ncolor>=1.5.1",
     "cmap",
     "tqdm",
     "platformdirs",
+    "cryptography",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +35,7 @@ viewer = [
     "fastapi",
     "uvicorn[standard]",
     "imageio",
+    "python-multipart",  # required for /api/upload_image (browser-side image picker)
 ]
 desktop = [
     "pywebview",

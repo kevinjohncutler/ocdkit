@@ -209,9 +209,12 @@ def boundary_to_masks(boundaries, binary_mask=None, min_size=9,
         else:
             inner_mask = np.zeros_like(boundaries, dtype=bool)
     else:
+        # skimage >= 0.26 deprecated `min_size` (strictly less than) in favour
+        # of `max_size` (less than or equal).  Translate to preserve behaviour:
+        # min_size=N removed sizes 1..N-1; max_size=N-1 does the same.
         inner_mask = remove_small_objects(
             measure.label((1 - boundaries) * binary_mask, connectivity=connectivity),
-            min_size=min_size,
+            max_size=max(min_size - 1, 0),
         )
 
     # expand_labels propagates dtype; ensure integer for label arithmetic

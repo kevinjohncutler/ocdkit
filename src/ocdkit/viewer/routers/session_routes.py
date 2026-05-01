@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import Response
 
 from ..dependencies import get_session_state
@@ -21,6 +22,11 @@ from ..schemas import (
 from ..session import SESSION_MANAGER, SessionState
 
 router = APIRouter(prefix="/api")
+
+# Per-process scratch directory for uploaded images. Lives until the process
+# exits (uvicorn reload re-creates one). Avoids shipping client-side bytes
+# to a permanent location.
+_UPLOAD_DIR = Path(tempfile.mkdtemp(prefix="ocdkit_upload_"))
 
 
 # ----- helpers ------------------------------------------------------------
@@ -119,6 +125,25 @@ def api_select_image_file(
     if not path_obj.exists() or not path_obj.is_file():
         raise NotFound("file_not_found")
     SESSION_MANAGER.set_image(state, path_obj)
+    config = SESSION_MANAGER.build_config(state, embed_image=False)
+    return {"ok": True, "config": config}
+
+
+@router.post("/upload_image")
+async def api_upload_image(
+    sessionId: str = Form(...),
+    file: UploadFile = File(...),
+) -> dict:
+    """Accept a browser-uploaded image, save it to scratch, open it as the
+    current image. Used by the client-side file picker so remote viewers
+    work without a server-side native dialog (which needs a display)."""
+    state = SESSION_MANAGER.get_or_create(sessionId)
+    suffix = Path(file.filename or "upload.tif").suffix or ".tif"
+    safe_stem = Path(file.filename or "upload").stem.replace("/", "_")
+    target = _UPLOAD_DIR / f"{safe_stem}{suffix}"
+    data = await file.read()
+    target.write_bytes(data)
+    SESSION_MANAGER.set_image(state, target)
     config = SESSION_MANAGER.build_config(state, embed_image=False)
     return {"ok": True, "config": config}
 

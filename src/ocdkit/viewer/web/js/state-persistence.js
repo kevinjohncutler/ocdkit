@@ -1,7 +1,7 @@
 /**
- * OmniState — State persistence, binary encoding helpers, and debug logging.
+ * ViewerState — State persistence, binary encoding helpers, and debug logging.
  *
- * Exports to window.OmniState following the existing IIFE + classic script pattern.
+ * Exports to window.ViewerState following the existing IIFE + classic script pattern.
  * No ES modules — PyWebView breaks with type="module".
  */
 (function (global) {
@@ -110,8 +110,8 @@
     if (_debugStateSaveFlag) {
       return true;
     }
-    if (typeof window !== 'undefined' && window.__OMNI_SAVE_DEBUG__) {
-      return Boolean(window.__OMNI_SAVE_DEBUG__);
+    if (typeof window !== 'undefined' && window.__VIEWER_SAVE_DEBUG__) {
+      return Boolean(window.__VIEWER_SAVE_DEBUG__);
     }
     return false;
   }
@@ -375,5 +375,5 @@
     resetSaveState: resetSaveState,
   };
 
-  global.OmniState = api;
+  global.ViewerState = api;
 })(window);
