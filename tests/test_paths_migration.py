@@ -12,13 +12,18 @@ from ocdkit.utils.paths import migrate_legacy_dotfolder
 
 @pytest.fixture
 def iso_home(tmp_path, monkeypatch):
-    """Redirect Home AND platformdirs-user_data to a clean temp dir."""
+    """Redirect Home AND platformdirs-user_data to a clean temp dir.
+
+    Patching ``Path.home`` directly is portable: on Windows, ``Path.home()``
+    reads ``USERPROFILE``/``HOMEDRIVE``/``HOMEPATH`` rather than ``HOME``,
+    so just setting ``HOME`` doesn't redirect it.
+    """
     fake_home = tmp_path / "home"
     fake_data = tmp_path / "data"
     fake_home.mkdir()
     fake_data.mkdir()
 
-    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setattr(
         paths_mod.platformdirs, "user_data_dir",
         lambda app, appauthor=False: str(fake_data / app),
