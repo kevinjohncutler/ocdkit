@@ -23,7 +23,7 @@ def _add_common_plugin_arg(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="MODULE:ATTR",
-        help="Extra plugin to load (e.g. omnipose.ocdkit_plugin:plugin). "
+        help="Extra plugin to load (e.g. my_pkg.ocdkit_plugin:plugin). "
         "Repeatable. Entry-point plugins are auto-discovered separately.",
     )
     parser.add_argument(
@@ -47,11 +47,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--ssl-cert", default=None)
     serve.add_argument("--ssl-key", default=None)
-    serve.add_argument("--reload", action="store_true")
+    serve.add_argument(
+        "--reload", dest="reload", action=argparse.BooleanOptionalAction, default=True,
+        help="Watch source files and auto-reload (default: enabled). Use --no-reload to disable.",
+    )
     serve.add_argument(
         "--https-dev",
         action="store_true",
         help="Provision a temporary self-signed localhost cert (requires openssl).",
+    )
+    serve.add_argument(
+        "--https-auto",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="HOSTS",
+        help="Request a trusted cert from your configured step-ca (see ocdkit.tls). "
+             "Optional comma-separated hostnames override; default uses the machine's hostname.",
     )
     _add_common_plugin_arg(serve)
 
@@ -61,7 +73,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     desktop.add_argument("--port", type=int, default=0, help="0 = auto-pick a free port")
     desktop.add_argument("--ssl-cert", default=None)
     desktop.add_argument("--ssl-key", default=None)
-    desktop.add_argument("--reload", action="store_true")
+    desktop.add_argument(
+        "--reload", dest="reload", action=argparse.BooleanOptionalAction, default=True,
+        help="Watch source files and auto-reload (default: enabled). Use --no-reload to disable.",
+    )
     desktop.add_argument(
         "--snapshot",
         metavar="PNG_PATH",
@@ -89,6 +104,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command in (None, "serve"):
         from .app import run_server
+        https_auto = getattr(args, "https_auto", False)
+        if isinstance(https_auto, str):
+            https_auto = [h.strip() for h in https_auto.split(",") if h.strip()]
         run_server(
             host=getattr(args, "host", "0.0.0.0"),
             port=getattr(args, "port", 8765),
@@ -96,6 +114,7 @@ def main(argv: list[str] | None = None) -> None:
             ssl_key=getattr(args, "ssl_key", None),
             reload=getattr(args, "reload", False),
             https_dev=getattr(args, "https_dev", False),
+            https_auto=https_auto,
             plugins=getattr(args, "plugin", None) or [],
             title=getattr(args, "title", None),
         )

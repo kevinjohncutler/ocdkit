@@ -786,14 +786,24 @@ def relaunch_via_bundle(app: AppIdentity) -> None:
     launcher = os.path.join(bundle_path, "Contents", "MacOS", app.name)
     if not os.path.exists(launcher):
         return
+    # Primary detection: LaunchServices sets ``__CFBundleIdentifier`` on every
+    # bundle-launched process, and it survives the launcher script's
+    # ``exec``-to-Python. Without this check, wrapper-script launchers (like
+    # ``#!/bin/bash; exec gui_entry_point``) cause ``sys.argv[0]`` to become
+    # the entry-point path instead of the launcher path, and the secondary
+    # argv-based check below never succeeds — infinite ``open -a`` loop.
+    if os.environ.get("__CFBundleIdentifier") == app.macos_bundle_id:
+        return
+    # Secondary detection: argv[0] literally matches the bundle launcher
+    # (works when the launcher *is* the Python entry, with no wrapper).
     try:
         if os.path.realpath(sys.argv[0]) == os.path.realpath(launcher):
-            return  # already launched via bundle
+            return
     except Exception:
         return
-    # Pass the current argv through -W-free ``open --args ...``. Using
-    # ``open -n`` would force a fresh instance; we don't want that — if the
-    # bundle is already running we'd rather focus the existing window.
+    # Pass the current argv through ``open --args ...``. Using ``open -n``
+    # would force a fresh instance; we don't want that — if the bundle is
+    # already running we'd rather focus the existing window.
     args = ["open", "-a", bundle_path, "--args", *sys.argv[1:]]
     try:
         os.execvp("open", args)

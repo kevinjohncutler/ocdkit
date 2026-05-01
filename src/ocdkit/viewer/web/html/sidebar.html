@@ -1,102 +1,13 @@
 <!-- Extracted from index.html lines 80-202 -->
 
       <div id="sidebar" class="side-panel side-panel--right">
-                        
-                <div class="panel-section" id="segmentationPanel">
-          <div class="control">
-            <div class="control-heading">Omnipose Model</div>
-            <div class="dropdown" data-dropdown-id="segmentationModel" data-loop="true" data-count-label="models" data-tooltip-disabled="true">
-              <select id="segmentationModel"></select>
-            </div>
-            <input type="file" id="segmentationModelFile" accept=".pth,.pt,.onnx,.ckpt" style="display:none" />
-          </div>
-          <div class="control-heading">Parameters</div>
-          <div class="control slider-inline">
-            <span class="control-heading control-heading--lower">niter</span>
-            <div class="slider-row">
-              <div class="slider" data-slider-id="niter" data-slider-type="single">
-                <input type="range" id="niterSlider" min="-1" max="400" step="1" value="-1" />
-              </div>
-              <div class="number-field" data-number-id="niterInput">
-                <input type="text" id="niterInput" min="-1" max="400" step="1" value="auto" />
-              </div>
-            </div>
-          </div>
-          <div class="control slider-inline">
-            <span class="control-heading control-heading--lower">mask</span>
-            <div class="slider-row">
-              <div class="slider" data-slider-id="maskThreshold" data-slider-type="single">
-                <input type="range" id="maskThresholdSlider" min="-5" max="5" step="0.1" value="-2" />
-              </div>
-              <div class="number-field" data-number-id="maskThresholdInput">
-                <input type="number" id="maskThresholdInput" min="-5" max="5" step="0.1" value="-2.0" />
-              </div>
-            </div>
-          </div>
-          <div class="control slider-inline">
-            <span class="control-heading control-heading--lower">flow</span>
-            <div class="slider-row">
-              <div class="slider" data-slider-id="flowThreshold" data-slider-type="single">
-                <input type="range" id="flowThresholdSlider" min="0" max="5" step="0.1" value="0" />
-              </div>
-              <div class="number-field" data-number-id="flowThresholdInput">
-                <input type="text" id="flowThresholdInput" min="0" max="5" step="0.1" value="0.0" />
-              </div>
-            </div>
-          </div>          <div class="control">
-            <div class="control-heading">Segmentation Mode</div>
-            <div id="segModeToggle" class="kernel-toggle segmented-toggle seg-mode-toggle" role="group" aria-label="Segmentation mode">
-              <button type="button" class="kernel-option" data-seg-mode="cluster" aria-label="DBSCAN cluster" title="DBSCAN clustering">
-                <span class="seg-mode-icon seg-mode-icon-dbscan" aria-hidden="true"></span>
-              </button>
-              <button type="button" class="kernel-option" data-seg-mode="affinity" aria-label="Affinity segmentation" title="Affinity segmentation">
-                <span class="seg-mode-icon seg-mode-icon-affinity" aria-hidden="true"></span>
-              </button>
-              <button type="button" class="kernel-option" data-seg-mode="none" aria-label="Neither" title="No clustering/affinity">
-                <span class="seg-mode-icon seg-mode-icon-cc" aria-hidden="true"></span>
-              </button>
-            </div>
-          </div>
-
-          <div class="control seg-action-row">
-            <button id="segmentButton" class="accent-button">Segment</button>
-            <button id="clearMasksButton" class="accent-button" title="Clear all masks (Cmd/Ctrl+X)">Clear</button>
-          </div>
-          <div id="segmentStatus" class="status"></div>
-          <div class="control">
-          </div>
-          <div class="control-heading">Mask Reconstruction</div>
-          <div class="control toggle-group">
-            <label class="toggle">
-              <input type="checkbox" id="affinityGraphToggle" />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Affinity Graph</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="pointsOverlayToggle" disabled />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Final Points</span>
-            </label>
-            <label class="toggle" id="vectorOverlayRow" title="overall pixel displacement">
-              <input type="checkbox" id="vectorOverlayToggle" disabled />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Displacement</span>
-            </label>
-          </div>
-          <div class="control-heading">Network Predictions</div>
-          <div class="control toggle-group" id="overlayControls">
-            <label class="toggle">
-              <input type="checkbox" id="flowOverlayToggle" disabled />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Flow</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="distanceOverlayToggle" disabled />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Distance</span>
-            </label>
-          </div>
-        </div>
+        <!--
+          The segmentation panel is injected at runtime by js/plugin-panel.js
+          based on the active plugin's manifest. If no plugin is registered,
+          no panel is created — the container itself is absent from the DOM.
+          See _attic_omnipose-panel.html for the legacy hard-coded omnipose UI
+          (kept as reference for porting omnipose to its own plugin).
+        -->
         <div class="panel-section" id="systemInfoPanel">
           <div class="control-heading">Server Info</div>
           <div class="control system-info">
@@ -109,16 +20,12 @@
               <span id="systemCpu" class="system-value">--</span>
             </div>
             <div class="system-row">
-              <span class="system-label">GPU</span>
+              <span class="system-label" id="systemGpuLabel">
+                GPU
+                <span id="systemGpuMark" class="system-status-mark" aria-hidden="true"></span>
+              </span>
               <span id="systemGpu" class="system-value">--</span>
             </div>
-          </div>
-          <div class="control toggle-group">
-            <label class="toggle">
-              <input type="checkbox" id="useGpuToggle" />
-              <span class="toggle-switch"></span>
-              <span class="toggle-label">Use GPU</span>
-            </label>
           </div>
         </div>
         <div class="hint">

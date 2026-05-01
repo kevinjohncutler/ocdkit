@@ -10,6 +10,9 @@ from ocdkit.array import (
     safe_divide,
     rescale,
     is_integer,
+    to_torch,
+    parallel_reduce,
+    parallel_copy,
     unique_nonzero,
     torch_norm,
     normalize99,
@@ -286,6 +289,159 @@ class TestIsInteger:
 
     def test_float(self):
         assert is_integer(1.5) is False
+
+
+# ---------------------------------------------------------------------------
+# to_torch — uniform numpy/dask/torch/scalar conversion
+# ---------------------------------------------------------------------------
+
+class TestToTorch:
+    def test_numpy_roundtrip(self):
+        x = np.arange(12, dtype=np.float32).reshape(3, 4)
+        t = to_torch(x)
+        assert torch.is_tensor(t)
+        np.testing.assert_array_equal(t.numpy(), x)
+
+    def test_numpy_dtype_cast(self):
+        x = np.arange(6, dtype=np.uint16).reshape(2, 3)
+        t = to_torch(x, dtype=torch.float32)
+        assert t.dtype == torch.float32
+        np.testing.assert_allclose(t.numpy(), x.astype(np.float32))
+
+    def test_numpy_non_contiguous(self):
+        # Non-contiguous slice — torch.from_numpy alone would still work but
+        # to_torch should also accept it without raising.
+        x = np.arange(20, dtype=np.float32).reshape(4, 5)[:, ::2]
+        assert not x.flags["C_CONTIGUOUS"]
+        t = to_torch(x)
+        np.testing.assert_array_equal(t.numpy(), x)
+
+    def test_dask_materialized(self):
+        x_np = np.random.randint(0, 100, size=(5, 6), dtype=np.uint16)
+        x_dk = da.from_array(x_np, chunks=(5, 3))
+        t = to_torch(x_dk, dtype=torch.float32)
+        assert torch.is_tensor(t)
+        assert t.dtype == torch.float32
+        np.testing.assert_allclose(t.numpy(), x_np.astype(np.float32))
+
+    def test_torch_passthrough(self):
+        x = torch.arange(10, dtype=torch.float32)
+        t = to_torch(x)
+        assert t is x or torch.equal(t, x)
+
+    def test_torch_dtype_change(self):
+        x = torch.arange(4, dtype=torch.int64)
+        t = to_torch(x, dtype=torch.float32)
+        assert t.dtype == torch.float32
+
+    def test_python_list(self):
+        t = to_torch([1.0, 2.0, 3.0], dtype=torch.float32)
+        np.testing.assert_array_equal(t.numpy(), [1.0, 2.0, 3.0])
+
+    def test_python_scalar(self):
+        t = to_torch(3.14, dtype=torch.float32)
+        assert torch.is_tensor(t)
+        assert t.ndim == 0
+
+    def test_memmap(self, tmp_path):
+        path = tmp_path / "x.npy"
+        arr = np.arange(20, dtype=np.uint16).reshape(4, 5)
+        np.save(path, arr)
+        mm = np.load(path, mmap_mode="r")
+        assert isinstance(mm, np.memmap)
+        t = to_torch(mm, dtype=torch.float32)
+        np.testing.assert_allclose(t.numpy(), arr.astype(np.float32))
+
+
+# ---------------------------------------------------------------------------
+# parallel_reduce — threaded numpy reductions
+# ---------------------------------------------------------------------------
+
+class TestParallelReduce:
+    @pytest.mark.parametrize("op", ["sum", "mean", "max", "min"])
+    @pytest.mark.parametrize("axis", [0, 1, 2, -1])
+    def test_parity_with_numpy(self, op, axis):
+        np.random.seed(0)
+        arr = np.random.randint(0, 1000, size=(40, 60, 80), dtype=np.uint16)
+        kw = {"dtype": np.float32} if op in ("sum", "mean") else {}
+        ref = getattr(np, op)(arr, axis=axis, **kw)
+        got = parallel_reduce(arr, op, axis=axis, dtype=kw.get("dtype"))
+        np.testing.assert_allclose(got, ref, rtol=1e-5)
+        assert got.shape == ref.shape
+
+    def test_memmap_input(self, tmp_path):
+        arr = np.random.randint(0, 65535, size=(20, 50, 50), dtype=np.uint16)
+        p = tmp_path / "x.npy"
+        np.save(p, arr)
+        mm = np.load(p, mmap_mode="r")
+        ref = np.sum(arr, axis=0, dtype=np.float32)
+        got = parallel_reduce(mm, "sum", axis=0, dtype=np.float32)
+        np.testing.assert_allclose(got, ref, rtol=1e-5)
+
+    def test_callable_op(self):
+        arr = np.random.rand(10, 20, 30).astype(np.float32)
+        ref = np.std(arr, axis=0)
+        got = parallel_reduce(arr, lambda a, axis, dtype=None: np.std(a, axis=axis), axis=0)
+        np.testing.assert_allclose(got, ref, rtol=1e-5)
+
+    def test_unknown_op(self):
+        arr = np.zeros((4, 4))
+        with pytest.raises(ValueError, match="unsupported op"):
+            parallel_reduce(arr, "argmax", axis=0)
+
+    def test_tiny_array_uses_singlethread_path(self):
+        # Below 1M elements should still work and match np exactly.
+        arr = np.random.randint(0, 100, size=(5, 5), dtype=np.uint16)
+        got = parallel_reduce(arr, "sum", axis=0, dtype=np.float32)
+        np.testing.assert_allclose(got, arr.sum(axis=0, dtype=np.float32))
+
+    def test_n_threads_capped(self):
+        arr = np.ones((100, 100, 100), dtype=np.uint16)
+        # Asking for 1000 threads on a 100-row split-axis should be fine.
+        got = parallel_reduce(arr, "sum", axis=0, n_threads=1000, dtype=np.float32)
+        np.testing.assert_allclose(got, arr.sum(axis=0, dtype=np.float32))
+
+
+# ---------------------------------------------------------------------------
+# parallel_copy
+# ---------------------------------------------------------------------------
+
+class TestParallelCopy:
+    def test_parity_with_np_array(self):
+        arr = np.random.randint(0, 65535, size=(40, 200, 200), dtype=np.uint16)
+        out = parallel_copy(arr)
+        np.testing.assert_array_equal(out, arr)
+        assert out.dtype == arr.dtype
+        assert out.shape == arr.shape
+
+    def test_returns_fresh_buffer(self):
+        arr = np.random.rand(50, 100, 100).astype(np.float32)
+        out = parallel_copy(arr)
+        assert out is not arr
+        assert out.flags["C_CONTIGUOUS"]
+        # Mutating out must not affect arr.
+        out[0, 0, 0] = -999
+        assert arr[0, 0, 0] != -999
+
+    def test_memmap_materialized(self, tmp_path):
+        arr = np.random.randint(0, 65535, size=(50, 200, 200), dtype=np.uint16)
+        p = tmp_path / "x.npy"
+        np.save(p, arr)
+        mm = np.load(p, mmap_mode="r")
+        out = parallel_copy(mm)
+        # Output is a regular ndarray, not a memmap.
+        assert not isinstance(out, np.memmap)
+        np.testing.assert_array_equal(out, arr)
+
+    def test_tiny_array_uses_np_array(self):
+        arr = np.array([[1, 2], [3, 4]], dtype=np.uint8)
+        out = parallel_copy(arr)
+        np.testing.assert_array_equal(out, arr)
+
+    def test_1d_array(self):
+        arr = np.random.rand(2_000_000).astype(np.float32)
+        out = parallel_copy(arr)
+        np.testing.assert_array_equal(out, arr)
 
 
 # ---------------------------------------------------------------------------

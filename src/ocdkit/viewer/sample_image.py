@@ -37,9 +37,7 @@ DEFAULT_HOME_SAMPLE = Path.home() / ".ocdkit" / "sample.tif"
 
 def get_preload_image_path() -> Optional[Path]:
     """Return the preferred sample image path if one exists."""
-    env = os.environ.get("OCDKIT_VIEWER_SAMPLE_IMAGE") or os.environ.get(
-        "OMNIPOSE_SAMPLE_IMAGE"
-    )
+    env = os.environ.get("OCDKIT_VIEWER_SAMPLE_IMAGE")
     if env:
         path = Path(env).expanduser()
         if path.is_file():

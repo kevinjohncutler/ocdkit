@@ -88,7 +88,7 @@ class TestImshow:
     def test_existing_ax(self):
         nb = _make_notebook([
             "import numpy as np",
-            "from ocdkit.plot.figure import figure",
+            "from ocdkit.plot import figure",
             "from ocdkit.plot.display import imshow",
             "fig, ax = figure()",
             "img = np.random.rand(8, 8, 3).astype(np.float32)",

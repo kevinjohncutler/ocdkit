@@ -1,4 +1,4 @@
-(function initOmniPainting(global) {
+(function initViewerPainting(global) {
   'use strict';
 
 const state = {
@@ -57,10 +57,10 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
   if (typeof globalThis === 'undefined') {
     return false;
   }
-  if (Object.prototype.hasOwnProperty.call(globalThis, '__OMNI_FORCE_GRID_MASK__')) {
-    return Boolean(globalThis.__OMNI_FORCE_GRID_MASK__);
+  if (Object.prototype.hasOwnProperty.call(globalThis, '__VIEWER_FORCE_GRID_MASK__')) {
+    return Boolean(globalThis.__VIEWER_FORCE_GRID_MASK__);
   }
-  globalThis.__OMNI_FORCE_GRID_MASK__ = false;
+  globalThis.__VIEWER_FORCE_GRID_MASK__ = false;
   return false;
 })();
 
@@ -512,8 +512,8 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
       return;
     }
     if (!state.maskPipeline) {
-      const factory = global.OmniMaskPipeline && typeof global.OmniMaskPipeline.createMaskPipeline === 'function'
-        ? global.OmniMaskPipeline.createMaskPipeline
+      const factory = global.ViewerMaskPipeline && typeof global.ViewerMaskPipeline.createMaskPipeline === 'function'
+        ? global.ViewerMaskPipeline.createMaskPipeline
         : null;
       if (factory) {
         state.maskPipeline = factory({
@@ -631,7 +631,7 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
     }
     fillWasmState.fillFn(fillWasmState.maskPtr, indicesArray.__wasmPtr, count, paintLabel);
   }
-  const brushApi = global.OmniBrush || {};
+  const brushApi = global.ViewerBrush || {};
   const BACKGROUND_STEPS = [
     [0, -1],
     [0, 1],
@@ -1261,7 +1261,7 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
 
   function ensureCtx() {
     if (!state.ctx) {
-      throw new Error('OmniPainting.init must be called before use');
+      throw new Error('ViewerPainting.init must be called before use');
     }
     return state.ctx;
   }
@@ -1311,8 +1311,8 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
       onMaskBufferReplaced: null,
       floodRebuildThreshold: 0.35,
     }, options || {});
-    const globalFlag = (typeof globalThis !== 'undefined' && Object.prototype.hasOwnProperty.call(globalThis, '__OMNI_MASK_PIPELINE_V2__'))
-      ? Boolean(globalThis.__OMNI_MASK_PIPELINE_V2__)
+    const globalFlag = (typeof globalThis !== 'undefined' && Object.prototype.hasOwnProperty.call(globalThis, '__VIEWER_MASK_PIPELINE_V2__'))
+      ? Boolean(globalThis.__VIEWER_MASK_PIPELINE_V2__)
       : false;
     state.maskPipelineEnabled = Boolean(originalOptions.enableMaskPipelineV2 || globalFlag);
     state.strokeChanges = null;
@@ -2265,7 +2265,7 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
     return true;
   }
 
-  const api = global.OmniPainting || {};
+  const api = global.ViewerPainting || {};
   Object.assign(api, {
     init,
     beginStroke,
@@ -2331,14 +2331,14 @@ const ENABLE_DEBUG_GRID_MASK = (() => {
       };
     },
   });
-  global.OmniPainting = api;
+  global.ViewerPainting = api;
   global.__VIEWER_DEBUG__ = global.__VIEWER_DEBUG__ || {};
   global.__VIEWER_DEBUG__.setGridLoggingEnabled = (value) => {
     global.__VIEWER_DEBUG__.gridLogs = Boolean(value);
   };
   global.__VIEWER_DEBUG__.setForceGridMask = (value) => {
     const next = Boolean(value);
-    global.__OMNI_FORCE_GRID_MASK__ = next;
+    global.__VIEWER_FORCE_GRID_MASK__ = next;
     state.debugGridPending = next;
     if (next) {
       applyDebugGridIfNeeded(true);

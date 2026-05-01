@@ -152,6 +152,12 @@ def create_app() -> "Any":
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Always register the bundled threshold (skimage) plugin — discover()
+        # only handles entry-point plugins, and uvicorn's reload worker runs
+        # lifespan but not the supervisor's _autoload_plugins().
+        from .plugins.threshold import plugin as _threshold_plugin
+        if _threshold_plugin.name not in REGISTRY:
+            REGISTRY.register(_threshold_plugin)
         REGISTRY.discover()
         active = ACTIVE_PLUGIN.current()
         if active and active.warmup is not None:
@@ -396,6 +402,13 @@ def run_server(
         )
         raise SystemExit(1)
 
+    # When source lives on a NAS / SMB / NFS share, kernel inotify events
+    # don't fire on remote writes. Force the watchfiles backend to poll so
+    # auto-reload works regardless of where the code lives. Cheap (one stat
+    # per watched dir per cycle) and only enabled when --reload is on.
+    if reload:
+        os.environ.setdefault("WATCHFILES_FORCE_POLLING", "true")
+
     # Use current() (which auto-selects a default), not name() — name() returns
     # the raw stored value which is None at startup before discovery has set
     # anything, leading to misleading "(none)" log on a fully-functional setup.
@@ -430,9 +443,7 @@ def run_server(
             log_level="info",
         )
         if reload:
-            reload_dirs = [str(Path(__file__).resolve().parent)]
-            if WEB_DIR.exists():
-                reload_dirs.append(str(WEB_DIR))
+            reload_dirs = _collect_reload_dirs()
             uvicorn.run(
                 "ocdkit.viewer.app:create_app",
                 factory=True,
@@ -446,9 +457,7 @@ def run_server(
 
     print(f"[viewer] serving at http://{host}:{port}", flush=True)
     if reload:
-        reload_dirs = [str(Path(__file__).resolve().parent)]
-        if WEB_DIR.exists():
-            reload_dirs.append(str(WEB_DIR))
+        reload_dirs = _collect_reload_dirs()
         uvicorn.run(
             "ocdkit.viewer.app:create_app",
             factory=True,
@@ -754,6 +763,34 @@ def run_desktop(
             server_thread.join(timeout=5)
             if server_thread.is_alive():
                 print("[viewer] uvicorn thread did not exit cleanly", file=sys.stderr)
+
+
+def _collect_reload_dirs() -> list[str]:
+    """Directories uvicorn should watch for hot-reload.
+
+    Always: the viewer package + the bundled web assets. Then: the source
+    directory of every registered plugin's run() module, so editing an
+    external plugin (e.g. omnipose's ocdkit_plugin.py) triggers a reload too.
+    """
+    dirs = [str(Path(__file__).resolve().parent)]
+    if WEB_DIR.exists():
+        dirs.append(str(WEB_DIR))
+    seen = set(dirs)
+    for plugin in REGISTRY.all():
+        run_fn = getattr(plugin, "run", None)
+        mod_name = getattr(run_fn, "__module__", None) if run_fn else None
+        module = sys.modules.get(mod_name) if mod_name else None
+        mod_file = getattr(module, "__file__", None) if module else None
+        if not mod_file:
+            continue
+        try:
+            pkg_dir = str(Path(mod_file).resolve().parent)
+        except Exception:
+            continue
+        if pkg_dir not in seen:
+            dirs.append(pkg_dir)
+            seen.add(pkg_dir)
+    return dirs
 
 
 def _autoload_plugins(extra: list[str] | None = None) -> None:

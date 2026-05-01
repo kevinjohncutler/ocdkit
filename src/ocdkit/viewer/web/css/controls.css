@@ -240,7 +240,10 @@
   cursor: pointer;
   position: relative;
   /* Note: No z-index here to avoid creating stacking context (allows ::before z-index: -1 to work) */
-  transition: background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease, opacity 0.12s ease;
+  transition: background 0.14s ease,
+              color var(--accent-transition-duration) ease,
+              box-shadow 0.14s ease,
+              opacity 0.12s ease;
 }
 
 /* Accent fill via ::before with proper rounded clip-path */
@@ -263,19 +266,13 @@
   box-shadow: inset 0 0 0 1px var(--slider-track-border);
 }
 
-.dropdown-toggle::after {
-  content: '';
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 6px solid currentColor;
+.dropdown-toggle-chevron {
   margin-left: 10px;
-  transition: transform 0.14s ease;
+  transform: rotate(90deg);  /* point down at rest */
 }
 
-.dropdown[data-open='true'] .dropdown-toggle::after {
-  transform: rotate(180deg);
+.dropdown[data-open='true'] .dropdown-toggle-chevron {
+  transform: rotate(-90deg);  /* point up when open */
 }
 
 .dropdown {
@@ -362,7 +359,7 @@
   font-size: 0.9rem;
   color: var(--panel-text-color);
   cursor: pointer;
-  transition: background 0.14s ease;
+  transition: background var(--accent-transition-duration) ease;
   margin: 0;
   position: relative;
   z-index: 1;
@@ -526,7 +523,7 @@
   inset: var(--control-inset);
   border-radius: var(--control-inset-radius);
   background: transparent;
-  transition: background 0.18s ease;
+  transition: background var(--accent-transition-duration) ease;
 }
 
 .toggle-switch::after {
@@ -660,7 +657,8 @@ button {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.2s ease, transform 0.1s ease;
+  transition: background var(--accent-transition-duration) ease,
+              transform 0.1s ease;
 }
 
 button:disabled {
@@ -993,7 +991,8 @@ button:not(:disabled):hover {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background 0.2s ease,
+              color var(--accent-transition-duration) ease;
 }
 
 .kernel-option[data-active='true'] {
@@ -1232,6 +1231,44 @@ button:not(:disabled):hover {
 
 .system-value {
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  /* Allow long brand strings (e.g. "Threadripper PRO 3995WX") to wrap — but
+     cap at two lines so the panel doesn't grow without bound. Most CPUs and
+     all current GPU labels fit on a single line; only the longest models
+     (Threadripper PRO + 4-character SKU) take two. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Inline status indicator — checkmark sits next to the row's label
+   (e.g. "GPU ✔"). Drives off `data-state` on any ancestor so the same
+   mark element can be placed in the label or the value depending on the
+   row's design. */
+.system-status-mark {
+  display: inline-block;
+  margin-left: 4px;
+  line-height: 1;
+}
+.system-status-mark::before {
+  content: '';
+  display: inline-block;
+  font-weight: 700;
+  font-size: 1em;
+  line-height: 1;
+}
+[data-state='ok'] .system-status-mark::before {
+  content: '✔';
+  color: var(--accent-color);
+}
+[data-state='off'] .system-status-mark::before {
+  content: '—';
+  color: var(--panel-text-color);
+  opacity: 0.45;
 }
 
 #systemInfoPanel .toggle {
@@ -1435,10 +1472,11 @@ button:not(:disabled):hover {
   align-items: center;
   position: fixed;
   z-index: 10000;
-  padding: 0 12px;
+  padding: 6px 12px;
   border-radius: calc(var(--slider-track-height) / 2);
-  height: var(--slider-track-height);
-  line-height: normal;
+  min-height: var(--slider-track-height);
+  max-width: min(360px, 90vw);
+  line-height: 1.35;
   background: var(--panel-surface);
   color: var(--panel-text-color);
   border: 1px solid var(--panel-border);
@@ -1451,7 +1489,7 @@ button:not(:disabled):hover {
   transform: translateY(6px);
   transition: opacity 0.12s ease, transform 0.12s ease;
   pointer-events: none;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .omni-tooltip.visible {
@@ -1531,6 +1569,7 @@ button:not(:disabled):hover {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(var(--control-blur));
   -webkit-backdrop-filter: blur(var(--control-blur));
+  color: var(--panel-text-color);
 }
 
 .omni-context-item {
@@ -1539,15 +1578,34 @@ button:not(:disabled):hover {
   border-radius: calc(var(--slider-track-height) / 2);
   border: none;
   background: transparent;
-  color: var(--panel-text-color);
+  color: inherit;
   text-align: left;
   padding: 0 12px;
   cursor: pointer;
 }
 
-.omni-context-item:hover {
+.omni-context-item:hover:not(:disabled) {
   background: var(--accent-color);
   color: var(--accent-ink, #161616);
+}
+
+.omni-context-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.omni-context-separator {
+  border-top: 1px solid var(--panel-border);
+  margin: 4px 0;
+}
+
+.omni-context-header {
+  padding: 4px 12px;
+  font-size: 11px;
+  opacity: 0.55;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: inherit;
 }
 
 .image-hover-info {
@@ -2085,4 +2143,167 @@ button:not(:disabled):hover {
 .dropdown[data-open='true'] .dropdown-menu-wrap {
   border-width: 1px;
   border-color: var(--panel-border);
+}
+
+/* ---------------------------------------------------------------------------
+ * Tooltip editor — Ctrl/Cmd+Shift+T toggles edit mode; the body class drives
+ * a hover affordance on every [data-tooltip] target. The popover and small
+ * indicator chip are positioned/styled here.
+ * ------------------------------------------------------------------------ */
+.tooltip-edit-mode [data-tooltip] {
+  cursor: text;
+}
+.tooltip-edit-mode [data-tooltip]:hover {
+  outline: 1px dashed var(--accent-color);
+  outline-offset: 2px;
+}
+
+.tooltip-edit-indicator {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  z-index: 10002;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--panel-surface);
+  color: var(--panel-text-color);
+  border: 1px solid var(--accent-color);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+.tooltip-edit-indicator kbd {
+  font-family: inherit;
+  font-size: 0.72rem;
+  padding: 1px 5px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.tooltip-edit-popover {
+  position: fixed;
+  z-index: 10003;
+  min-width: 280px;
+  max-width: min(440px, 90vw);
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--panel-surface);
+  color: var(--panel-text-color);
+  border: 1px solid var(--accent-color);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tooltip-edit-popover-head {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  opacity: 0.7;
+  word-break: break-all;
+}
+.tooltip-edit-popover-textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.18);
+  color: inherit;
+  font: inherit;
+  white-space: pre-wrap;
+  box-sizing: border-box;
+}
+.tooltip-edit-popover-textarea:focus {
+  outline: 1px solid var(--accent-color);
+  outline-offset: 0;
+}
+.tooltip-edit-popover-original {
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.tooltip-edit-popover-original > summary {
+  cursor: pointer;
+  user-select: none;
+}
+.tooltip-edit-popover-original > pre {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+.tooltip-edit-popover-buttons {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.tooltip-edit-popover-buttons button {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: var(--control-surface);
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+.tooltip-edit-popover-buttons button.tooltip-edit-save {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #000;
+}
+.tooltip-edit-popover-buttons button:hover {
+  filter: brightness(1.08);
+}
+
+/* ---------------------------------------------------------------------------
+ * Progress outline — chasing accent stroke around the perimeter of any host
+ * element. Add `.is-progress-running` to start; remove to stop. The host
+ * element gets `position: relative` so the ::after ring positions correctly.
+ * Border-radius is inherited so rounded panels and pill buttons stay aligned.
+ * ------------------------------------------------------------------------ */
+@property --progress-snake-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes ocdkit-progress-snake {
+  to { --progress-snake-angle: 360deg; }
+}
+
+.is-progress-running {
+  position: relative;
+}
+
+.is-progress-running::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--progress-snake-angle),
+    transparent 0deg 220deg,
+    var(--accent-color) 320deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: ocdkit-progress-snake 1.8s linear infinite;
+  z-index: 1;
 }

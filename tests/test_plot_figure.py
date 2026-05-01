@@ -4,7 +4,7 @@ import matplotlib
 import matplotlib as mpl
 from matplotlib.figure import Figure
 
-from ocdkit.plot.figure import figure, split_list
+from ocdkit.plot import figure, split_list
 from ocdkit.plot.defaults import apply_mpl_defaults
 
 

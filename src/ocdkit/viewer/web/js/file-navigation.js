@@ -1,7 +1,7 @@
 /**
- * OmniFileNav — File/image navigation, folder browsing, drag-and-drop.
+ * ViewerFileNav — File/image navigation, folder browsing, drag-and-drop.
  *
- * Exports to window.OmniFileNav following the existing IIFE + classic script pattern.
+ * Exports to window.ViewerFileNav following the existing IIFE + classic script pattern.
  * No ES modules — PyWebView breaks with type="module".
  */
 (function (global) {
@@ -102,67 +102,137 @@
     });
   }
 
-  function selectImageFolder() {
-    if (_navigationInFlight) { return Promise.resolve(); }
-    var sessionId = typeof _getSessionId === 'function' ? _getSessionId() : null;
-    _navigationInFlight = true;
-    var save = typeof _saveBeforeNavigate === 'function'
-      ? _saveBeforeNavigate()
-      : Promise.resolve();
-    return save.catch(function () {}).then(function () {
-      return fetch('/api/select_image_folder', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionId }),
-      });
-    }).then(function (response) {
-      return response.json().catch(function () {
-        return response.text().catch(function () { return 'unknown'; }).then(function (message) {
-          return { error: message || 'unknown' };
-        });
-      }).then(function (result) {
-        if (!response.ok) {
-          console.warn('select_image_folder failed', response.status, result);
-          return;
-        }
-        handleNavigationResult(result);
-      });
-    }).catch(function (err) {
-      console.warn('select_image_folder request failed', err);
-    }).then(function () {
-      _navigationInFlight = false;
-    });
+  // Browser-side single-file picker. Uploads bytes to /api/upload_image so it
+  // works for remote viewers (no server-side display required).
+  var _filePickerInput = null;
+  function _ensureFilePickerInput() {
+    if (_filePickerInput && document.body.contains(_filePickerInput)) return _filePickerInput;
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*,.tif,.tiff,.npy,.npz';
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+    _filePickerInput = inp;
+    return inp;
   }
 
   function selectImageFile() {
     if (_navigationInFlight) { return Promise.resolve(); }
     var sessionId = typeof _getSessionId === 'function' ? _getSessionId() : null;
-    _navigationInFlight = true;
-    var save = typeof _saveBeforeNavigate === 'function'
-      ? _saveBeforeNavigate()
-      : Promise.resolve();
-    return save.catch(function () {}).then(function () {
-      return fetch('/api/select_image_file', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionId }),
-      });
-    }).then(function (response) {
-      return response.json().catch(function () {
-        return response.text().catch(function () { return 'unknown'; }).then(function (message) {
-          return { error: message || 'unknown' };
+    if (!sessionId) {
+      console.warn('Session not initialized; cannot pick image');
+      return Promise.resolve();
+    }
+    var inp = _ensureFilePickerInput();
+    inp.value = '';
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(result) {
+        if (done) return;
+        done = true;
+        inp.removeEventListener('change', onChange);
+        resolve(result || null);
+      }
+      function onChange() {
+        var f = inp.files && inp.files[0];
+        if (!f) return finish(null);
+        _navigationInFlight = true;
+        var save = typeof _saveBeforeNavigate === 'function'
+          ? _saveBeforeNavigate()
+          : Promise.resolve();
+        save.catch(function () {}).then(function () {
+          var fd = new FormData();
+          fd.append('sessionId', sessionId);
+          fd.append('file', f, f.name);
+          return fetch('/api/upload_image', { method: 'POST', body: fd });
+        }).then(function (response) {
+          if (!response.ok) {
+            return response.text().catch(function () { return ''; }).then(function (msg) {
+              console.warn('upload_image failed', response.status, msg);
+            });
+          }
+          return response.json().then(function (result) {
+            handleNavigationResult(result);
+          });
+        }).catch(function (err) {
+          console.warn('upload_image request failed', err);
+        }).then(function () {
+          _navigationInFlight = false;
+          finish();
         });
-      }).then(function (result) {
-        if (!response.ok) {
-          console.warn('select_image_file failed', response.status, result);
-          return;
-        }
-        handleNavigationResult(result);
-      });
-    }).catch(function (err) {
-      console.warn('select_image_file request failed', err);
-    }).then(function () {
-      _navigationInFlight = false;
+      }
+      inp.addEventListener('change', onChange, { once: true });
+      inp.click();
+    });
+  }
+
+  // Browser-side folder picker (webkitdirectory). Uploads every image-like
+  // file under the chosen directory, then opens the first one. Uses a tight
+  // extension allowlist to keep transfer bounded.
+  var _folderPickerInput = null;
+  var _IMAGE_EXTS = /\.(tif|tiff|png|jpg|jpeg|bmp|gif|webp|npy|npz)$/i;
+  function _ensureFolderPickerInput() {
+    if (_folderPickerInput && document.body.contains(_folderPickerInput)) return _folderPickerInput;
+    var inp = document.createElement('input');
+    inp.type = 'file';
+    inp.setAttribute('webkitdirectory', '');
+    inp.setAttribute('directory', '');
+    inp.multiple = true;
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+    _folderPickerInput = inp;
+    return inp;
+  }
+
+  function selectImageFolder() {
+    if (_navigationInFlight) { return Promise.resolve(); }
+    var sessionId = typeof _getSessionId === 'function' ? _getSessionId() : null;
+    if (!sessionId) {
+      console.warn('Session not initialized; cannot pick folder');
+      return Promise.resolve();
+    }
+    var inp = _ensureFolderPickerInput();
+    inp.value = '';
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish() {
+        if (done) return;
+        done = true;
+        inp.removeEventListener('change', onChange);
+        resolve(null);
+      }
+      function onChange() {
+        var allFiles = inp.files ? Array.from(inp.files) : [];
+        var images = allFiles.filter(function (f) { return _IMAGE_EXTS.test(f.name); });
+        if (!images.length) return finish();
+        _navigationInFlight = true;
+        var save = typeof _saveBeforeNavigate === 'function'
+          ? _saveBeforeNavigate()
+          : Promise.resolve();
+        // Upload each image sequentially. The last response carries the
+        // session into the right state; the navigator dropdown then refreshes
+        // automatically via handleNavigationResult.
+        save.catch(function () {}).then(function () {
+          return images.reduce(function (chain, f) {
+            return chain.then(function () {
+              var fd = new FormData();
+              fd.append('sessionId', sessionId);
+              fd.append('file', f, f.name);
+              return fetch('/api/upload_image', { method: 'POST', body: fd })
+                .then(function (r) { return r.ok ? r.json() : null; });
+            });
+          }, Promise.resolve(null));
+        }).then(function (lastResult) {
+          if (lastResult) handleNavigationResult(lastResult);
+        }).catch(function (err) {
+          console.warn('folder upload failed', err);
+        }).then(function () {
+          _navigationInFlight = false;
+          finish();
+        });
+      }
+      inp.addEventListener('change', onChange, { once: true });
+      inp.click();
     });
   }
 
@@ -336,14 +406,14 @@
       if (fileName && isModelFile(fileName)) {
         if (filePath) {
           // PyWebView / Electron — we have the real path
-          if (typeof window.__omni_addCustomModel === 'function') {
-            window.__omni_addCustomModel(filePath, fileName);
+          if (typeof window.__viewer_addCustomModel === 'function') {
+            window.__viewer_addCustomModel(filePath, fileName);
           }
         } else {
           // Browser mode — upload the file first
           uploadModel(file).then(function (result) {
-            if (result && result.ok && result.path && typeof window.__omni_addCustomModel === 'function') {
-              window.__omni_addCustomModel(result.path, result.name || fileName);
+            if (result && result.ok && result.path && typeof window.__viewer_addCustomModel === 'function') {
+              window.__viewer_addCustomModel(result.path, result.name || fileName);
             }
           }).catch(function (err) {
             console.warn('Model upload failed', err);
@@ -393,6 +463,20 @@
     if (!imageNavigator) {
       return;
     }
+    function syncDropdownMenu() {
+      var dd = getDropdownFn('imageNavigator');
+      if (!dd) return;
+      dd.options = Array.from(imageNavigator.options).map(function (o) {
+        return {
+          value: o.value,
+          label: o.textContent || o.value,
+          disabled: o.disabled,
+          title: o.dataset.fullPath || o.dataset.fullLabel || o.title || o.textContent || o.value,
+        };
+      });
+      if (typeof dd.buildMenu === 'function') dd.buildMenu();
+    }
+
     if (!Array.isArray(directoryEntries) || directoryEntries.length === 0) {
       imageNavigator.innerHTML = '';
       var opt = document.createElement('option');
@@ -409,6 +493,32 @@
       openFolderOption.textContent = 'Open image folder...';
       openFolderOption.title = 'Open image folder';
       imageNavigator.appendChild(openFolderOption);
+      // Sync the visible menu so the new options actually appear (this branch
+      // previously skipped the sync, so the empty-folder dropdown looked
+      // blank to the user).
+      syncDropdownMenu();
+      // Bind the change handler in this branch too — otherwise picking
+      // "Open image file/folder" from a fresh viewer (no folder loaded yet)
+      // does nothing.
+      if (_navigatorChangeHandler && _navigatorElement) {
+        _navigatorElement.removeEventListener('change', _navigatorChangeHandler);
+      }
+      _navigatorElement = imageNavigator;
+      _navigatorChangeHandler = function () {
+        var v = imageNavigator.value;
+        if (v === '__open_file__') {
+          selectImageFile().then(function () {
+            imageNavigator.value = currentImagePath || '';
+            refreshDropdownFn('imageNavigator');
+          });
+        } else if (v === '__open_folder__') {
+          selectImageFolder().then(function () {
+            imageNavigator.value = currentImagePath || '';
+            refreshDropdownFn('imageNavigator');
+          });
+        }
+      };
+      imageNavigator.addEventListener('change', _navigatorChangeHandler);
       return;
     }
     imageNavigator.innerHTML = '';
@@ -506,5 +616,5 @@
     setupImageNavigator: setupImageNavigator,
   };
 
-  global.OmniFileNav = api;
+  global.ViewerFileNav = api;
 })(window);

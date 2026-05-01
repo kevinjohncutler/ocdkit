@@ -93,6 +93,44 @@ def is_integer(var):
     return False
 
 
+def to_torch(arr, device=None, dtype=None):
+    """Convert *arr* to a ``torch.Tensor`` on *device* with *dtype*.
+
+    Handles numpy arrays (incl. ``np.memmap``), dask arrays, existing torch
+    tensors, and Python scalars/lists uniformly. Dask arrays are materialized
+    via ``np.asarray`` — the conversion to torch is the natural boundary at
+    which lazy graphs must be computed.
+
+    Parameters
+    ----------
+    arr : torch.Tensor | numpy.ndarray | np.memmap | dask.array.Array | list | scalar
+    device : torch.device | str | None
+        Forwarded to ``.to``. ``None`` keeps the current device for tensors,
+        otherwise defaults to CPU.
+    dtype : torch.dtype | None
+        Forwarded to ``.to``. ``None`` preserves the source dtype.
+
+    Returns
+    -------
+    torch.Tensor
+    """
+    if torch.is_tensor(arr):
+        return arr.to(device=device, dtype=dtype)
+    if isinstance(arr, da.Array):
+        arr = np.asarray(arr)
+    if isinstance(arr, np.ndarray):
+        # ``torch.from_numpy`` is zero-copy but warns on non-writeable input
+        # (e.g. ``np.memmap`` opened with ``mmap_mode='r'``). When we have to
+        # copy anyway, threaded ``parallel_copy`` is ~2x faster than
+        # ``np.array`` for large memmaps (1 GB: 64 ms vs 123 ms) and falls
+        # back to ``np.array`` automatically for tiny arrays.
+        if not arr.flags["C_CONTIGUOUS"] or not arr.flags["WRITEABLE"]:
+            from .parallel import parallel_copy
+            arr = parallel_copy(arr)
+        return torch.from_numpy(arr).to(device=device, dtype=dtype)
+    return torch.tensor(arr, device=device, dtype=dtype)
+
+
 def move_axis(img, axis=-1, pos="last"):
     """Move ndarray axis to a new location, preserving order of other axes."""
     if axis == -1:

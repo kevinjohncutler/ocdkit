@@ -1,4 +1,4 @@
-(function initOmniPointer(global) {
+(function initViewerPointer(global) {
   'use strict';
 
   const POINTER_OPTIONS = {
@@ -108,8 +108,8 @@
     };
   }
 
-  const existing = global.OmniPointer || {};
+  const existing = global.ViewerPointer || {};
   existing.POINTER_OPTIONS = POINTER_OPTIONS;
   existing.createPointerState = createPointerState;
-  global.OmniPointer = existing;
+  global.ViewerPointer = existing;
 })(typeof window !== 'undefined' ? window : globalThis);

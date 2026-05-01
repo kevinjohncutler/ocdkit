@@ -22,23 +22,27 @@ def enable_submodules(
     *,
     include=None,
     exclude=None,
-    expose: bool = True,
+    expose: bool = False,
 ) -> None:
     """Discover sub-modules and expose them on the package.
 
-    Default mode (``expose=True``) eagerly imports each sub-module and
-    promotes its public non-module attributes onto the parent. Suitable
-    for gateway sub-packages that re-export their sub-modules' functions
-    (``from foo import some_func`` and ``from foo import *`` semantics).
-    This matches the historical behavior.
+    Default mode (``expose=False``) is fully lazy (PEP 562): sub-modules
+    are *not* imported at call time, only their names are enumerated.
+    Each sub-module loads on first attribute access via ``__getattr__``.
+    ``import pkg`` stays near-instant and circular sub-package imports
+    don't blow up at package load. Cross-attribute lookups
+    (``pkg.some_func`` where ``some_func`` lives in a sub-module) still
+    work via the ``__getattr__`` fallback that scans sub-modules on
+    miss.
 
-    ``expose=False`` is fully lazy (PEP 562): sub-modules are *not*
-    imported at call time, only their names are enumerated. Each
-    sub-module loads on first attribute access via ``__getattr__``.
-    ``import pkg`` becomes near-instant. Use for *top-level* packages
-    (``ocdkit``, ``omnipose``) where the cost of eagerly loading every
-    sub-package's transitive dependencies (torch, numba, …) on bare
-    ``import pkg`` is unacceptable.
+    ``expose=True`` eagerly imports each sub-module and promotes its
+    public non-module attributes onto the parent. Use for gateway
+    sub-packages whose consumers expect ``from foo import *`` to pull
+    in re-exported sub-module attrs (PEP 328 wildcard imports do *not*
+    invoke ``__getattr__``, so promoted attrs must already exist on the
+    package). Eager mode also makes ``dir(pkg)`` complete without
+    triggering loads. Avoid at top-level packages — the transitive
+    dependency cost (torch, numba, …) is paid on bare ``import pkg``.
 
     ``__all__`` lists sub-module names (lazy mode) or sub-module names
     plus promoted attributes (expose mode), suitable for ``from pkg
@@ -53,9 +57,10 @@ def enable_submodules(
         exclusive with *exclude*.
     exclude : collection of str, optional
         If given, these sub-module names are skipped.
-    expose : bool, default True
-        If True (default), eagerly load and promote sub-module attrs.
-        If False, defer all sub-module loading until first access.
+    expose : bool, default False
+        If False (default), defer all sub-module loading until first
+        access. If True, eagerly load and promote sub-module attrs —
+        opt in for wildcard-import gateways.
     """
     pkg: ModuleType = sys.modules[pkg_name]
     submods = {info.name for info in pkgutil.iter_modules(pkg.__path__)}
@@ -72,7 +77,19 @@ def enable_submodules(
                 mod = importlib.import_module(f"{pkg_name}.{sub}")
             except ImportError:
                 continue
-            setattr(pkg, sub, mod)
+            # Same-name disambiguation: if the submodule exports a
+            # public callable named the same as the submodule itself
+            # (a common ``foo.py`` → ``def foo()`` pattern), prefer the
+            # callable. Otherwise the submodule shadows the function and
+            # ``from pkg import foo`` returns the module — almost never
+            # what the consumer intended.
+            same_named = getattr(mod, sub, None)
+            if (same_named is not None
+                    and not isinstance(same_named, ModuleType)
+                    and callable(same_named)):
+                setattr(pkg, sub, same_named)
+            else:
+                setattr(pkg, sub, mod)
             for name in dir(mod):
                 if name.startswith("_"):
                     continue
@@ -90,6 +107,15 @@ def enable_submodules(
         # Direct sub-module access: load that one only and cache.
         if name in submods:
             mod = importlib.import_module(f"{pkg_name}.{name}")
+            # Same-name disambiguation (lazy mode): if the submodule
+            # defines a public callable with the same name as itself,
+            # prefer the callable. See the ``expose=True`` branch above.
+            same_named = getattr(mod, name, None)
+            if (same_named is not None
+                    and not isinstance(same_named, ModuleType)
+                    and callable(same_named)):
+                setattr(pkg, name, same_named)
+                return same_named
             setattr(pkg, name, mod)
             return mod
         # Fallback: scan sub-modules for the attribute. Catches private

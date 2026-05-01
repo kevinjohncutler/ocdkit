@@ -1,9 +1,8 @@
 """Generic mask utilities — plugin-independent operations.
 
-Houses the editor operations that used to live inside the omnipose Segmenter
-but are not actually omnipose-specific: n-coloring and label formatting via
-the ``ncolor`` package. The viewer routes call these directly so plugins do
-not have to re-implement them.
+N-coloring and label formatting via the ``ncolor`` package. Plugin-agnostic;
+the viewer routes call these directly so plugins do not have to re-implement
+them.
 """
 
 from __future__ import annotations

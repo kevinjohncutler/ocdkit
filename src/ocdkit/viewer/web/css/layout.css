@@ -4,6 +4,41 @@
   --control-blur: 20px;
   --accent-color: #d8a200;
   --control-height: 36px;
+
+  /* ──────────────────────────────────────────────────────────────────────
+     Accent transition subsystem
+     ──────────────────────────────────────────────────────────────────────
+     Any rule whose transitioning property resolves through
+     --accent-color / --accent-hover / --accent-ink MUST use this token
+     as the transition duration:
+
+       transition: background var(--accent-transition-duration) ease,
+                   color var(--accent-transition-duration) ease;
+
+     While JS is driving rapid accent updates (hue-offset drag, shuffle),
+     it sets <html class="accent-live">, which flips the token to 0s so
+     those transitions snap with the slider instead of trailing it by the
+     hover-ease duration. Outside the drag window the token is back to
+     0.18s, so hover/state animations keep their polish.
+
+     Per-element tuning: override the token locally:
+         .fast-button { --accent-transition-duration: 0.12s; }
+     The accent-live override still wins because it's set higher up.
+
+     A safety net at the bottom of this file zeroes transition-duration
+     on *all* elements under accent-live, catching any rule that forgot
+     to route through the token. The token is the primary, intent-
+     carrying mechanism; the safety net is belt-and-suspenders.
+     ────────────────────────────────────────────────────────────────────── */
+  --accent-transition-duration: 0.18s;
+}
+
+html.accent-live {
+  --accent-transition-duration: 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --accent-transition-duration: 0s; }
 }
 
 /* Dark theme defaults */
@@ -44,13 +79,32 @@
   box-sizing: border-box;
 }
 
+:root {
+  /* Tell the WebView this page supports both light and dark modes so CSS
+     system colors (Canvas, CanvasText, Highlight) resolve to the OS-native
+     window chrome variant — same approach as hipr-count's launcher. */
+  color-scheme: light dark;
+}
+
+/* Safety net for the accent transition subsystem (see :root at top of
+   file). Primary path: migrated rules reference --accent-transition-duration,
+   which flips to 0s under .accent-live. This blanket rule zeroes
+   transition-duration on anything that slipped past that convention. */
+html.accent-live *,
+html.accent-live *::before,
+html.accent-live *::after {
+  transition-duration: 0s !important;
+}
+
 html,
 
 body {
   margin: 0;
   height: 100%;
-  background: #111;
-  color: #eee;
+  /* OS-native window background + text colors (e.g. on macOS dark mode this
+     resolves to rgb(30,30,30) — the actual NSColor.windowBackgroundColor). */
+  background: Canvas;
+  color: CanvasText;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   touch-action: none;
 }

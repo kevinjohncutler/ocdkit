@@ -1,4 +1,4 @@
-(function initOmniBrush(global) {
+(function initViewerBrush(global) {
   'use strict';
 
   const DEFAULT_MODES = {
@@ -38,7 +38,7 @@
 
   function ctx() {
     if (!state.ctx) {
-      throw new Error('OmniBrush.init must be called before use');
+      throw new Error('ViewerBrush.init must be called before use');
     }
     return state.ctx;
   }
@@ -316,7 +316,7 @@
     drawTouchOverlay();
   }
 
-  const api = global.OmniBrush || {};
+  const api = global.ViewerBrush || {};
   Object.assign(api, {
     init,
     getBrushKernelCenter,
@@ -326,5 +326,5 @@
     resizePreviewCanvas,
     drawBrushPreview,
   });
-  global.OmniBrush = api;
+  global.ViewerBrush = api;
 })(typeof window !== 'undefined' ? window : globalThis);

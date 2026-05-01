@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import threading
+import time
 from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 import numpy as np
@@ -62,7 +63,15 @@ class ActivePlugin:
             return self._name
 
     def current(self) -> Optional[SegmentationPlugin]:
-        """Return the currently selected plugin, auto-selecting if exactly one is registered."""
+        """Return the currently selected plugin, auto-selecting a default when
+        none has been chosen.
+
+        Selection order when nothing is set: prefer ``omnipose`` if registered
+        (the "real" segmentation), otherwise the first registered plugin
+        alphabetically. The built-in ``threshold`` (skimage) plugin always
+        ships, so this guarantees there's always an active plugin if at least
+        one is registered.
+        """
         with self._lock:
             if self._name is not None:
                 try:
@@ -70,11 +79,13 @@ class ActivePlugin:
                 except KeyError:
                     self._name = None
         all_plugins = REGISTRY.all()
-        if len(all_plugins) == 1:
-            with self._lock:
-                self._name = all_plugins[0].name
-            return all_plugins[0]
-        return None
+        if not all_plugins:
+            return None
+        by_name = {p.name: p for p in all_plugins}
+        chosen = by_name.get("omnipose") or sorted(all_plugins, key=lambda p: p.name)[0]
+        with self._lock:
+            self._name = chosen.name
+        return chosen
 
     def require(self) -> SegmentationPlugin:
         plugin = self.current()
@@ -205,14 +216,20 @@ def run_segmentation(
             if k != "use_gpu":
                 params[k] = v
 
+    t0 = time.perf_counter()
     raw = plugin.run(image, params)
+    plugin_ms = (time.perf_counter() - t0) * 1000.0
     mask, extras = split_run_result(raw)
     if mask.ndim != 2:
         raise RuntimeError(f"plugin {plugin.name!r} returned mask with ndim={mask.ndim}")
 
+    t1 = time.perf_counter()
     ncolor_mask = compute_ncolor_mask(mask, expand=True)
+    ncolor_ms = (time.perf_counter() - t1) * 1000.0
     ACTIVE_PLUGIN.store_result(mask, extras, ncolor=ncolor_mask)
-    return _build_segment_payload(mask, extras, plugin=plugin, ncolor_mask=ncolor_mask)
+    payload = _build_segment_payload(mask, extras, plugin=plugin, ncolor_mask=ncolor_mask)
+    payload["timing_ms"] = {"plugin": plugin_ms, "ncolor": ncolor_ms, "total": plugin_ms + ncolor_ms}
+    return payload
 
 
 def run_mask_update(
@@ -237,11 +254,17 @@ def run_mask_update(
             if k != "use_gpu":
                 params[k] = v
 
+    t0 = time.perf_counter()
     raw = plugin.resegment(params)
+    plugin_ms = (time.perf_counter() - t0) * 1000.0
     mask, extras = split_run_result(raw)
     if mask.ndim != 2:
         raise RuntimeError(f"plugin {plugin.name!r}.resegment returned ndim={mask.ndim}")
 
+    t1 = time.perf_counter()
     ncolor_mask = compute_ncolor_mask(mask, expand=True)
+    ncolor_ms = (time.perf_counter() - t1) * 1000.0
     ACTIVE_PLUGIN.store_result(mask, extras, ncolor=ncolor_mask)
-    return _build_segment_payload(mask, extras, plugin=plugin, ncolor_mask=ncolor_mask)
+    payload = _build_segment_payload(mask, extras, plugin=plugin, ncolor_mask=ncolor_mask)
+    payload["timing_ms"] = {"plugin": plugin_ms, "ncolor": ncolor_ms, "total": plugin_ms + ncolor_ms}
+    return payload
