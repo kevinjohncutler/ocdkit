@@ -1,8 +1,7 @@
-"""Per-label medoid extraction and density-based operations."""
+"""Per-label medoid extraction."""
 
 from .imports import *
 import edt as _edt
-from scipy.signal import fftconvolve
 
 
 def argmin_cdist(X, labels, distance_values):
@@ -123,59 +122,3 @@ def get_medoids(labels, do_skel=True, return_dists=False):
         return medoids, mlabels
 
     return None, None
-
-
-def bartlett_nd(size):
-    """Create an N-dimensional Bartlett (triangular) window with shape *size*.
-
-    If *size* is an integer it is treated as ``(size,)``. The kernel is
-    normalized to sum to 1.
-    """
-    if isinstance(size, int):
-        size = (size,)
-    windows = [np.bartlett(s) for s in size]
-    grids = np.ix_(*windows)
-    kernel = grids[0].astype(float)
-    for g in grids[1:]:
-        kernel = kernel * g
-    kernel /= kernel.sum()
-    return kernel
-
-
-def find_highest_density_box(label_matrix, box_size):
-    """Find the densest sub-box of shape *box_size* in a binary/label matrix.
-
-    Convolves a binary mask with an N-D Bartlett kernel and returns the
-    sub-box of shape *box_size* centered on the convolution maximum, clamped
-    so the box stays within the array bounds.
-
-    Parameters
-    ----------
-    label_matrix : ndarray
-        Integer label or binary mask. Any nonzero pixel counts.
-    box_size : int or tuple of int
-        Box dimensions. ``-1`` returns a slice covering the full array.
-
-    Returns
-    -------
-    tuple of slice
-    """
-    if box_size == -1:
-        return tuple(slice(0, s) for s in label_matrix.shape)
-
-    if isinstance(box_size, int):
-        box_size = (box_size,) * label_matrix.ndim
-
-    mask = (label_matrix > 0).astype(np.float32)
-    kernel = bartlett_nd(box_size)
-    density_map = fftconvolve(mask, kernel, mode='same')
-    max_density_coords = np.unravel_index(np.argmax(density_map), density_map.shape)
-
-    slices = []
-    for max_coord, size, dim_size in zip(max_density_coords, box_size, label_matrix.shape):
-        start = max(0, max_coord - size // 2)
-        stop = min(dim_size, start + size)
-        start = max(0, stop - size)
-        slices.append(slice(start, stop))
-
-    return tuple(slices)

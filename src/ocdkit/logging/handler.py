@@ -42,6 +42,17 @@ _console = None
 _PALETTE: Dict[str, str] = {}
 _DEFAULT_COLOR = "#cccccc"
 
+# Override Rich's default logging styles. Defaults are too dark on dark
+# terminals (info = navy "blue", time = dim cyan that disappears).
+_LEVEL_THEME: Dict[str, str] = {
+    "log.time": "grey62",
+    "log.path": "grey42",
+    "logging.level.debug": "grey50",
+    "logging.level.info": "bright_cyan",
+    "logging.level.warning": "yellow",
+    "logging.level.error": "bold red",
+    "logging.level.critical": "bold reverse red",
+}
 
 # ---------------------------------------------------------------------------
 # Color registration
@@ -72,7 +83,34 @@ def set_colors(mapping: Dict[str, str]) -> None:
 
 def _build_theme():
     from rich.theme import Theme
-    return Theme({k: v for k, v in _PALETTE.items()}, inherit=True)
+    # Module palette overrides level theme if there's a (very unlikely) name clash.
+    return Theme({**_LEVEL_THEME, **_PALETTE}, inherit=True)
+
+
+def _install_jupyter_css() -> None:
+    """Zero out the default <pre> margin on Rich's Jupyter output.
+
+    In JupyterLab, Rich emits one ``<pre style="line-height:normal;...">``
+    per log record. That style does not include ``margin``, so the browser
+    default (~1em top + 1em bottom) shows up as a large gap between every
+    consecutive log line. One CSS rule fixes it for the rest of the
+    session.
+    """
+    try:
+        from IPython import get_ipython
+        if get_ipython() is None:
+            return
+        from IPython.display import display, HTML
+    except ImportError:
+        return
+
+    display(HTML(
+        "<style>"
+        ".jp-RenderedHTML > pre[style*='line-height:normal'],"
+        ".rendered_html > pre[style*='line-height:normal']"
+        "{ margin: 0; }"
+        "</style>"
+    ))
 
 
 def _ensure_handler(level: str | int = "INFO") -> logging.Handler:
@@ -86,6 +124,7 @@ def _ensure_handler(level: str | int = "INFO") -> logging.Handler:
     from rich.logging import RichHandler
 
     _console = Console(theme=_build_theme(), force_terminal=True)
+    _install_jupyter_css()
 
     class _ColorByModule(logging.Filter):
         """Wrap each record's message in the module's theme color."""
@@ -112,7 +151,9 @@ def _ensure_handler(level: str | int = "INFO") -> logging.Handler:
         rich_tracebacks=True,
         tracebacks_show_locals=True,
         show_time=True,
-        show_path=True,
+        show_path=False,                  # right-edge path column truncated badly in jupyter
+        omit_repeated_times=False,        # always show time — the blank time-column was the worst spacing offender
+        log_time_format="[%H:%M:%S]",     # short HH:MM:SS instead of locale date+time
     )
     _rich_handler.addFilter(_ColorByModule())
 

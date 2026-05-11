@@ -24,6 +24,23 @@ def setup():
     from IPython.display import display, HTML
     from tqdm.notebook import tqdm as notebook_tqdm
 
+    # Front-load matplotlib submodules that are otherwise imported lazily on
+    # first plot. Profiling showed ~1 s of one-time import + font-cache work
+    # hitting the user's first ``plt.figure()`` call; doing it here in
+    # ``setup()`` (which runs once at notebook startup) moves that cost off
+    # the interactive path.
+    import matplotlib.text  # noqa: F401
+    import matplotlib.axis  # noqa: F401
+    import matplotlib.lines  # noqa: F401
+    import matplotlib.markers  # noqa: F401
+    import matplotlib.patches  # noqa: F401
+    import matplotlib.collections  # noqa: F401
+    import matplotlib.transforms  # noqa: F401
+    # Touch the font manager so its first lookup (which builds the font cache
+    # on cold start) happens here, not when the first label is rendered.
+    from matplotlib import font_manager
+    font_manager.findfont("DejaVu Sans")
+
     apply_mpl_defaults()
 
     display(HTML("""

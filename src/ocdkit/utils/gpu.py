@@ -9,8 +9,37 @@ import platform
 
 import numpy as _np
 import torch
+import torch.nn.functional as _F
 
 ARM = "arm" in platform.processor() and torch.backends.mps.is_available()
+
+
+# Cache of (device_type, mode) -> bool for the 3D grid_sample capability probe.
+# MPS has historically lacked nearest support; landed on main but not yet in
+# any released stable (as of torch 2.11). Probe once per (type, mode).
+_grid3d_cap: dict = {}
+
+
+def supports_grid3d(device, mode: str = 'bilinear') -> bool:
+    """True if *device* supports 3D ``grid_sample`` with the given interp mode.
+
+    Probes once per (device_type, mode) and caches. ``RuntimeError`` and
+    ``NotImplementedError`` are both treated as "unsupported".
+    """
+    dtype = getattr(device, 'type', str(device))
+    key = (dtype, mode)
+    if key not in _grid3d_cap:
+        try:
+            dev = torch.device(dtype)
+            _F.grid_sample(
+                torch.zeros(1, 1, 2, 2, 2, device=dev),
+                torch.zeros(1, 2, 2, 2, 3, device=dev),
+                mode=mode, align_corners=True,
+            )
+            _grid3d_cap[key] = True
+        except (NotImplementedError, RuntimeError):
+            _grid3d_cap[key] = False
+    return _grid3d_cap[key]
 
 
 def resolve_device(device=None):
