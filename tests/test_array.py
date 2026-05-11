@@ -14,6 +14,7 @@ from ocdkit.array import (
     parallel_reduce,
     parallel_copy,
     unique_nonzero,
+    is_sequential,
     torch_norm,
     normalize99,
     normalize_field,
@@ -455,6 +456,40 @@ class TestUniqueNonzero:
 
     def test_all_zero(self):
         assert len(unique_nonzero(np.array([0, 0, 0]))) == 0
+
+
+# ---------------------------------------------------------------------------
+# is_sequential
+# ---------------------------------------------------------------------------
+
+class TestIsSequential:
+    def test_dense_run(self):
+        assert is_sequential(np.array([0, 1, 2, 3]))
+        assert is_sequential(np.array([1, 2, 3]))
+        assert is_sequential(np.array([5, 6, 7]))
+
+    def test_with_gap(self):
+        assert not is_sequential(np.array([0, 1, 3, 4]))
+        assert not is_sequential(np.array([1, 3, 5]))
+
+    def test_single_value(self):
+        assert is_sequential(np.array([0]))
+        assert is_sequential(np.array([7]))
+
+    def test_empty(self):
+        assert is_sequential(np.array([], dtype=np.int32))
+
+    def test_repeated_values(self):
+        # Duplicates collapse under unique; the dedup'd values still
+        # need to form a contiguous run.
+        assert is_sequential(np.array([1, 1, 2, 2, 3, 3]))
+        assert not is_sequential(np.array([1, 1, 3, 3]))
+
+    def test_2d(self):
+        arr = np.array([[0, 1], [2, 3]])
+        assert is_sequential(arr)
+        arr = np.array([[0, 1], [4, 5]])
+        assert not is_sequential(arr)
 
 
 # ---------------------------------------------------------------------------

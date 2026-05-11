@@ -82,10 +82,32 @@ def enumerate_nested(*lists, parent_indices=None):
 
 
 def unique_nonzero(arr):
-    """Return sorted unique non-zero values of *arr*."""
-    import fastremap
-    u = fastremap.unique(arr)
+    """Return sorted unique non-zero values of *arr*.
+
+    Uses ``numpy.unique`` directly. Historically delegated to
+    ``fastremap.unique`` because it was several × faster on integer
+    label arrays; numpy 2.x's reworked unique closed that gap, so we
+    drop the optional dep. ocdkit pins ``numpy>=2.0`` to keep this
+    fast — older numpy will still work but loses the perf parity.
+    """
+    u = np.unique(arr)
     return u[u != 0]
+
+
+def is_sequential(labels):
+    """Whether the unique values of *labels* form a contiguous integer run.
+
+    Returns ``True`` when ``np.unique(labels)`` is a tightly-packed
+    range ``[v0, v0+1, …, vN]`` with no gaps. Useful for asking "is
+    this label array already in canonical 1..N (or 0..N) form?"
+    before deciding whether to compact via a renumber pass.
+
+    Empty / single-value arrays are treated as sequential.
+    """
+    u = np.unique(np.asarray(labels))
+    if u.size <= 1:
+        return True
+    return bool(np.all(np.diff(u) == 1))
 
 
 def get_size(var, unit='GB'):

@@ -18,6 +18,20 @@ def split_kwargs(
 ) -> Dict[Callable, Dict[str, Any]]:
     """Split *kwargs* into per-function dictionaries.
 
+    Each output bucket is padded with the function's parameter defaults
+    so the caller sees a complete ``{name: value}`` snapshot for every
+    function — user-passed keys override the defaults. This matches the
+    expectation that "defaults always pass through; deviations are
+    explicit."
+
+    Downstream callers that compute a value to substitute for an
+    unspecified kwarg should treat ``None`` as "not specified" rather
+    than using ``setdefault`` (which can't distinguish a user-passed
+    ``None`` from an auto-filled signature default of ``None``)::
+
+        if kwargs.get('intervals') is None:
+            kwargs['intervals'] = computed_intervals
+
     Keys that match *no* explicit parameter are routed to the **first**
     callable that accepts a ``**kwargs`` argument (VAR_KEYWORD). Only when
     *none* of *funcs* can accept arbitrary keywords does ``strict=True``
@@ -58,6 +72,8 @@ def split_kwargs(
     for fn in funcs:
         out.setdefault(fn, {})
 
+    # Pad each bucket with parameter defaults — caller-supplied keys
+    # already populated above take precedence.
     for fn in funcs:
         sig = inspect.signature(fn)
         fn_kwargs = out[fn]

@@ -1,8 +1,16 @@
 """Generic image display helpers (axes chrome, multi-image grids)."""
 
+import inspect
+
 from .imports import *
 
 from .figure import figure
+from .color import colorize
+from ..array.normalize import normalize99
+from ..utils.kwargs import split_kwargs
+
+
+_COLORIZE_PARAMS = frozenset(inspect.signature(colorize).parameters) - {"im"}
 
 
 def set_outline(ax, outline_color=None, outline_width=0):
@@ -131,3 +139,70 @@ def imshow(
         display(fig)
     else:
         return fig
+
+
+def outline_view(img, masks, *, boundaries=None, color=(1, 0, 0),
+                 mode="inner", connectivity=2, channel_axis=-1, **kwargs):
+    """Stamp label-mask boundaries as a flat color over an image.
+
+    Channel handling is automatic:
+
+    - 2D (or N=1) → tiled to RGB as grayscale
+    - N=3         → assumed to already be RGB (unless a :func:`colorize`
+      kwarg like ``colors`` is passed, in which case it is composited)
+    - other N     → composited via :func:`colorize`
+
+    Any keyword argument matching :func:`colorize`'s signature
+    (``colors``, ``color_weights``, ``intervals``, ``offset``) is routed
+    to colorize via :func:`split_kwargs`.
+
+    Parameters
+    ----------
+    img : array
+        2D grayscale or 3D with channels along ``channel_axis``.
+    masks : array
+        Integer label image (same spatial shape as ``img``).
+    boundaries : array, optional
+        Precomputed boolean boundary mask. If ``None``, computed via
+        :func:`skimage.segmentation.find_boundaries`.
+    color : tuple of 3 floats
+        Outline color. Floats in ``[0, 1]`` are scaled to ``[0, 255]``;
+        any value above 1 is taken as already in 8-bit range.
+    mode, connectivity
+        Forwarded to :func:`find_boundaries`.
+    channel_axis : int
+        Channel axis for multi-channel input. Default ``-1``.
+    """
+    from skimage.segmentation import find_boundaries
+
+    user_colorize_kw = bool(_COLORIZE_PARAMS & kwargs.keys())
+    nchan = 1 if img.ndim == 2 else img.shape[channel_axis]
+
+    if not user_colorize_kw and nchan == 3:
+        rgb = img if channel_axis in (-1, img.ndim - 1) else np.moveaxis(img, channel_axis, -1)
+    elif not user_colorize_kw and nchan == 1:
+        src = img if img.ndim == 2 else img.squeeze(axis=channel_axis)
+        rgb = np.stack([src] * 3, axis=-1)
+    else:
+        if img.ndim == 2:
+            im_first = img[None]
+        elif channel_axis != 0:
+            im_first = np.moveaxis(img, channel_axis, 0)
+        else:
+            im_first = img
+        rgb = colorize(im_first, **split_kwargs([colorize], kwargs, strict=False))
+
+    if rgb.dtype != np.uint8:
+        rgb = (np.clip(normalize99(rgb), 0, 1) * 255).astype(np.uint8)
+
+    color_arr = np.asarray(color, dtype=np.float64)
+    if color_arr.max() <= 1:
+        color_arr = color_arr * 255
+    color_arr = color_arr.astype(np.uint8)
+
+    if boundaries is None:
+        boundaries = find_boundaries(masks, mode=mode, connectivity=connectivity)
+
+    out = rgb.copy()
+    out[np.asarray(boundaries, dtype=bool)] = color_arr
+    return out
