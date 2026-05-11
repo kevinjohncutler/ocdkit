@@ -33,8 +33,10 @@ from typing import Iterable
 def _module_top_level_imports(file_path: Path, package_name: str) -> set[str]:
     """Return fully-qualified imports from *file_path* at module scope only."""
     try:
-        tree = ast.parse(file_path.read_text())
-    except (SyntaxError, OSError):
+        # Force utf-8 — Windows defaults to cp1252 and chokes on any
+        # non-ASCII byte in a source file (e.g. unicode in docstrings).
+        tree = ast.parse(file_path.read_text(encoding='utf-8'))
+    except (SyntaxError, OSError, UnicodeDecodeError):
         return set()
 
     pkg_parts = package_name.split('.')
@@ -189,16 +191,36 @@ def make_no_silent_discovery_test(package: ModuleType):
     ``walk_packages`` silently skips modules that raise during import discovery
     by default. This test re-runs the walk with an ``onerror`` callback so
     any silently-skipped failure surfaces as a test failure.
+
+    Modules that fail only because an **external** optional dependency isn't
+    installed (e.g. ``ocdkit.viewer.routers`` failing on a minimal install
+    because ``fastapi`` is missing) are not considered silent failures and
+    are tolerated. Only failures where the missing/erroring module is part
+    of *package* itself surface as test failures.
     """
+    pkg_name = package.__name__
+    pkg_prefix = pkg_name + "."
+
+    def _is_internal_missing(exc: BaseException) -> bool:
+        """True iff `exc` represents an ImportError caused by an internal
+        (in-package) module — i.e. a real structural problem we want to catch."""
+        if not isinstance(exc, ImportError):
+            return True  # unknown class of failure, always report
+        missing = getattr(exc, 'name', None) or ''
+        return missing == pkg_name or missing.startswith(pkg_prefix)
+
     def test_no_silent_discovery_errors() -> None:
         errors: list[tuple[str, BaseException | None]] = []
 
         def _on_error(name: str) -> None:
-            errors.append((name, sys.exc_info()[1]))
+            exc = sys.exc_info()[1]
+            if exc is not None and not _is_internal_missing(exc):
+                return  # missing external optional dep, tolerated
+            errors.append((name, exc))
 
         # Drain the iterator
         for _ in pkgutil.walk_packages(
-            package.__path__, package.__name__ + ".", onerror=_on_error
+            package.__path__, pkg_prefix, onerror=_on_error
         ):
             pass
 
