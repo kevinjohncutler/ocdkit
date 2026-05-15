@@ -44,10 +44,30 @@ def _pick_split_axis(arr_shape: tuple, reduce_axis: int) -> int:
     return max(candidates, key=lambda i: arr_shape[i])
 
 
+# Cap default n_threads at this value.  NumPy reductions on uint16/float
+# stacks are memory-bandwidth-bound past ~8-16 threads — extra workers
+# just contend for DRAM channels and scheduler slots.  Measured on a
+# (32, 2000, 2000) uint16 stack (256 MB):
+#
+#                    M-series (20-core)        Threadripper (128-core)
+#   op       n=8     n=16    n=cpu_count       n=8     n=16    n=cpu_count
+#   sum      14.9    13.5    13.5 (= n=20)     15.4    15.0    27.8
+#   max       3.6     3.5     3.5 (= n=20)      7.6     7.4    22.6
+#   min       3.6     3.8     5.7 (= n=20)      7.8     7.3    23.2
+#
+# So picking the unbounded ``cpu_count`` default is a 2-3x regression on
+# a 128-core box for memory-bandwidth-bound reductions.  16 is the sweet
+# spot across both classes of machine; explicit ``n_threads=`` overrides
+# the cap when callers know their op is CPU-bound enough to use more.
+_DEFAULT_N_THREADS_CAP = 16
+
+
 def _resolve_n_threads(n_threads: Optional[int], n_items: int) -> int:
-    """Cap thread count so each worker has at least one item to process."""
+    """Cap thread count so each worker has at least one item to process,
+    and so the default doesn't oversubscribe big-core hosts on
+    bandwidth-bound work."""
     if n_threads is None:
-        n_threads = os.cpu_count() or 1
+        n_threads = min(os.cpu_count() or 1, _DEFAULT_N_THREADS_CAP)
     return max(1, min(n_threads, n_items))
 
 
