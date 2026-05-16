@@ -154,6 +154,181 @@ _SIDE_INFO = {
 }
 
 
+def _per_tick(option, n: int, default):
+    """Normalize a scalar-or-list option to a list of length ``n``.
+
+    ``None`` → ``[default] * n``.  Scalar → repeated ``n`` times.  List
+    → returned as-is (must have length ``n``).  Lets callers say
+    ``color="#000"`` for uniform OR ``colors=["#ff0000", "#00ff00"]``
+    for per-tick.
+    """
+    if option is None:
+        return [default] * n
+    if isinstance(option, (str, int, float)) or option is False or option is True:
+        return [option] * n
+    out = list(option)
+    if len(out) != n:
+        raise ValueError(
+            f"per-tick option has {len(out)} entries, expected {n}")
+    return out
+
+
+def _spine_endpoints(plot_box: PlotBox, side: str
+                      ) -> tuple[float, float, float, float]:
+    """Return (x1, y1, x2, y2) for the spine on the given side."""
+    if side == "bottom":
+        return plot_box.x0, plot_box.y1, plot_box.x1, plot_box.y1
+    if side == "top":
+        return plot_box.x0, plot_box.y0, plot_box.x1, plot_box.y0
+    if side == "left":
+        return plot_box.x0, plot_box.y0, plot_box.x0, plot_box.y1
+    if side == "right":
+        return plot_box.x1, plot_box.y0, plot_box.x1, plot_box.y1
+    raise ValueError(f"side must be one of {sorted(_SIDE_INFO)}; got {side!r}")
+
+
+def draw_spine(svg, plot_box: PlotBox, side: str = "bottom", *,
+                color: str | None = None,
+                width: float | None = None) -> None:
+    """Emit the spine line for one side of the plot box.
+
+    Single ``<line class="fig-spine" />`` element.  Pick this up via
+    ``Figure.apply_color_scheme(axes=...)``.
+    """
+    d = _style.AXIS_DEFAULTS
+    color = color if color is not None else d["spine_color"]
+    width = width if width is not None else d["spine_width"]
+    x1, y1, x2, y2 = _spine_endpoints(plot_box, side)
+    svg.line(x1, y1, x2, y2, stroke=color, stroke_width=width,
+              class_="fig-spine")
+
+
+def draw_tick_marks(svg, plot_box: PlotBox, side: str, *,
+                     positions: Sequence[float],
+                     length: float | None = None,
+                     color: str | None = None,
+                     colors: Sequence[str] | None = None,
+                     width: float | None = None,
+                     widths: Sequence[float] | None = None,
+                     ) -> None:
+    """Emit tick mark lines at canvas-space ``positions`` along ``side``.
+
+    Positions are **canvas coordinates** along the side's axis (x for
+    horizontal sides, y for vertical) — *not* data values.  Callers
+    that have data values should map them via :func:`data_to_svg`
+    first.  This keeps the primitive backend-agnostic w.r.t. tick
+    locators / data ranges.
+
+    Per-tick variants (``colors``, ``widths``) override the uniform
+    scalars (``color``, ``width``) when given.
+
+    Each emitted line carries ``class="fig-tick"`` so
+    ``apply_color_scheme(axes=...)`` finds it.
+    """
+    info = _SIDE_INFO[side]
+    sign = info["offset_sign"]
+    orient = info["orient"]
+    d = _style.AXIS_DEFAULTS
+    length = length if length is not None else d["tick_length"]
+    n = len(positions)
+    if n == 0:
+        return
+    color_list = _per_tick(colors, n, color if color is not None else d["spine_color"])
+    width_list = _per_tick(widths, n, width if width is not None else d["spine_width"])
+
+    if orient == "horizontal":
+        ty = plot_box.y1 if side == "bottom" else plot_box.y0
+        for x, c, w in zip(positions, color_list, width_list):
+            svg.line(x, ty, x, ty + sign * length,
+                      stroke=c, stroke_width=w, class_="fig-tick")
+    else:
+        tx = plot_box.x0 if side == "left" else plot_box.x1
+        for y, c, w in zip(positions, color_list, width_list):
+            svg.line(tx, y, tx + sign * length, y,
+                      stroke=c, stroke_width=w, class_="fig-tick")
+
+
+def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
+                      positions: Sequence[float],
+                      labels: Sequence[str],
+                      offset: float | None = None,
+                      size: float | None = None,
+                      sizes: Sequence[float] | None = None,
+                      color: str | None = None,
+                      colors: Sequence[str] | None = None,
+                      weight: str = "normal",
+                      weights: Sequence[str] | None = None,
+                      family: str | None = None,
+                      families: Sequence[str | None] | None = None,
+                      anchor: str | None = None,
+                      baseline: str | None = None,
+                      ) -> None:
+    """Emit tick label text at canvas-space ``positions`` along ``side``.
+
+    ``offset`` is the perpendicular distance from the spine to the
+    label baseline (defaults to ``tick_length + tick_label_padding``
+    from :mod:`ocdkit.plot.style`).  Per-tick variants for size,
+    color, weight, family override the uniform scalars.
+
+    Default ``anchor`` / ``baseline`` are chosen per side so labels
+    sit naturally outside the spine; callers can override.
+
+    Each emitted text carries ``class="fig-tick-label"``.
+    """
+    info = _SIDE_INFO[side]
+    sign = info["offset_sign"]
+    orient = info["orient"]
+    d = _style.AXIS_DEFAULTS
+    size = size if size is not None else d["tick_label_size"]
+    if offset is None:
+        offset = d["tick_length"] + d["tick_label_padding"]
+    n = len(positions)
+    if n == 0:
+        return
+    if len(labels) != n:
+        raise ValueError(
+            f"labels has {len(labels)} entries, expected {n}")
+    size_list = _per_tick(sizes, n, size)
+    color_list = _per_tick(colors, n, color if color is not None else d["text_color"])
+    weight_list = _per_tick(weights, n, weight)
+    family_list = _per_tick(families, n, family)
+
+    # Choose sensible defaults for anchor + baseline per side.
+    if orient == "horizontal":
+        default_anchor = "middle"
+        default_baseline = "hanging" if sign > 0 else "alphabetic"
+    else:
+        default_anchor = "start" if sign > 0 else "end"
+        default_baseline = "middle"
+    anchor = anchor if anchor is not None else default_anchor
+    baseline = baseline if baseline is not None else default_baseline
+
+    if orient == "horizontal":
+        ty = plot_box.y1 if side == "bottom" else plot_box.y0
+        label_y = ty + sign * offset
+        for x, lab, s, c, w, fam in zip(positions, labels, size_list,
+                                          color_list, weight_list, family_list):
+            kwargs = dict(fill=c, size=s, anchor=anchor, baseline=baseline,
+                          class_="fig-tick-label")
+            if w != "normal":
+                kwargs["weight"] = w
+            if fam:
+                kwargs["family"] = fam
+            svg.text(x, label_y, lab, **kwargs)
+    else:
+        tx = plot_box.x0 if side == "left" else plot_box.x1
+        label_x = tx + sign * offset
+        for y, lab, s, c, w, fam in zip(positions, labels, size_list,
+                                          color_list, weight_list, family_list):
+            kwargs = dict(fill=c, size=s, anchor=anchor, baseline=baseline,
+                          class_="fig-tick-label")
+            if w != "normal":
+                kwargs["weight"] = w
+            if fam:
+                kwargs["family"] = fam
+            svg.text(label_x, y, lab, **kwargs)
+
+
 def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
               data_range: tuple[float, float] | None = None,
               ticks: Sequence[float] | None = None,
@@ -232,22 +407,12 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
                   else color if color is not None
                   else d["text_color"])
 
-    # Spine endpoints.
-    if side == "bottom":
-        sx1, sy1, sx2, sy2 = plot_box.x0, plot_box.y1, plot_box.x1, plot_box.y1
-    elif side == "top":
-        sx1, sy1, sx2, sy2 = plot_box.x0, plot_box.y0, plot_box.x1, plot_box.y0
-    elif side == "left":
-        sx1, sy1, sx2, sy2 = plot_box.x0, plot_box.y0, plot_box.x0, plot_box.y1
-    elif side == "right":
-        sx1, sy1, sx2, sy2 = plot_box.x1, plot_box.y0, plot_box.x1, plot_box.y1
-    else:
-        raise ValueError(f"side must be one of {sorted(_SIDE_INFO)}; got {side!r}")
+    # Spine.
     if draw_spine:
-        svg.line(sx1, sy1, sx2, sy2, stroke=spine_color,
-                  stroke_width=spine_width, class_="fig-spine")
+        draw_spine_fn = draw_spine_  # alias to the module-level primitive
+        draw_spine_fn(svg, plot_box, side, color=spine_color, width=spine_width)
 
-    # Resolve ticks.
+    # Resolve ticks (data values + labels).
     if ticks is None:
         if data_range is None:
             raise ValueError("draw_axis needs either ticks= or data_range=")
@@ -262,7 +427,7 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
         fmt = tick_label_fmt or (lambda v: f"{v:g}")
         tick_labels = [fmt(v) for v in ticks]
 
-    # Map tick values to canvas positions along the spine.
+    # Map data-space tick values to canvas positions.
     if data_range is None:
         raise ValueError("draw_axis needs data_range= to position the ticks")
     lo, hi = data_range
@@ -273,41 +438,25 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
     def _frac(v):
         v_eff = math.log10(max(v, 1e-300)) if log else v
         return (v_eff - lo) / (hi - lo)
+    if orient == "horizontal":
+        positions = [plot_box.x0 + _frac(v) * plot_box.w for v in ticks]
+    else:
+        positions = [plot_box.y0 + (1 - _frac(v)) * plot_box.h for v in ticks]
 
-    # Tick marks + labels.
-    for v, lab in zip(ticks, tick_labels):
-        f = _frac(v)
-        if orient == "horizontal":
-            tx = plot_box.x0 + f * plot_box.w
-            ty = sy1
-            svg.line(tx, ty, tx, ty + sign * tick_length,
-                      stroke=spine_color, stroke_width=spine_width,
-                      class_="fig-tick")
-            label_x = tx
-            label_y = ty + sign * (tick_length + tick_label_padding +
-                                    (tick_label_size if sign > 0 else 0))
-            baseline = "hanging" if sign > 0 else "alphabetic"
-            svg.text(label_x, label_y, str(lab), fill=text_color,
-                      size=tick_label_size, anchor="middle",
-                      baseline=baseline, class_="fig-tick-label")
-        else:  # vertical
-            tx = sx1
-            ty = plot_box.y0 + (1 - f) * plot_box.h
-            svg.line(tx, ty, tx + sign * tick_length, ty,
-                      stroke=spine_color, stroke_width=spine_width,
-                      class_="fig-tick")
-            label_x = tx + sign * (tick_length + tick_label_padding)
-            # baseline="middle" centers the text on ty — no extra y-offset needed.
-            anchor = "start" if sign > 0 else "end"
-            svg.text(label_x, ty, str(lab), fill=text_color,
-                      size=tick_label_size, anchor=anchor,
-                      baseline="middle", class_="fig-tick-label")
+    # Compose: tick marks + labels via the atomic primitives.
+    draw_tick_marks(svg, plot_box, side, positions=positions,
+                     length=tick_length, color=spine_color, width=spine_width)
+    draw_tick_labels(svg, plot_box, side, positions=positions,
+                      labels=[str(lab) for lab in tick_labels],
+                      offset=tick_length + tick_label_padding,
+                      size=tick_label_size, color=text_color)
 
     # Axis label.
     if axis_label is None:
         return
     if orient == "horizontal":
         lx = plot_box.cx
+        sy1 = plot_box.y1 if side == "bottom" else plot_box.y0
         ly = sy1 + sign * (tick_length + tick_label_padding +
                             tick_label_size + axis_label_padding +
                             (axis_label_size if sign > 0 else 0))
@@ -316,7 +465,7 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
                   baseline="hanging" if sign > 0 else "alphabetic",
                   class_="fig-axis-label")
     else:
-        # Rotated -90 around the anchor point.
+        sx1 = plot_box.x0 if side == "left" else plot_box.x1
         lx = sx1 + sign * (tick_length + tick_label_padding +
                             axis_label_padding)
         ly = plot_box.cy
@@ -325,3 +474,7 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
                   size=axis_label_size, anchor="middle",
                   baseline="middle", transform=transform,
                   class_="fig-axis-label")
+
+
+# Alias so draw_axis can refer to the spine primitive without a recursive name.
+draw_spine_ = draw_spine
