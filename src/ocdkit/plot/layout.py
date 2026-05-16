@@ -162,6 +162,7 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
               tick_label_fmt: Callable[[float], str] | None = None,
               axis_label: str | None = None,
               log: bool = False,
+              draw_spine: bool = True,
               # style overrides (default → ocdkit.plot.style)
               tick_length: float | None = None,
               tick_label_size: float | None = None,
@@ -169,6 +170,8 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
               axis_label_size: float | None = None,
               axis_label_padding: float | None = None,
               spine_width: float | None = None,
+              spine_color: str | None = None,
+              text_color: str | None = None,
               color: str | None = None,
               ) -> None:
     """Emit a complete axis (spine + ticks + tick labels + axis label).
@@ -220,8 +223,14 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
     axis_label_padding = (axis_label_padding if axis_label_padding is not None
                            else d["axis_label_padding"])
     spine_width = spine_width if spine_width is not None else d["spine_width"]
-    spine_color = color if color is not None else d["spine_color"]
-    text_color = color if color is not None else d["text_color"]
+    # ``color`` is a convenience override for both spine + text; individual
+    # ``spine_color`` / ``text_color`` win over it.
+    spine_color = (spine_color if spine_color is not None
+                   else color if color is not None
+                   else d["spine_color"])
+    text_color = (text_color if text_color is not None
+                  else color if color is not None
+                  else d["text_color"])
 
     # Spine endpoints.
     if side == "bottom":
@@ -234,8 +243,9 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
         sx1, sy1, sx2, sy2 = plot_box.x1, plot_box.y0, plot_box.x1, plot_box.y1
     else:
         raise ValueError(f"side must be one of {sorted(_SIDE_INFO)}; got {side!r}")
-    svg.line(sx1, sy1, sx2, sy2, stroke=spine_color,
-              stroke_width=spine_width, class_="fig-spine")
+    if draw_spine:
+        svg.line(sx1, sy1, sx2, sy2, stroke=spine_color,
+                  stroke_width=spine_width, class_="fig-spine")
 
     # Resolve ticks.
     if ticks is None:
@@ -287,9 +297,9 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
                       stroke=spine_color, stroke_width=spine_width,
                       class_="fig-tick")
             label_x = tx + sign * (tick_length + tick_label_padding)
-            label_y = ty + tick_label_size / 3  # rough baseline centering
+            # baseline="middle" centers the text on ty — no extra y-offset needed.
             anchor = "start" if sign > 0 else "end"
-            svg.text(label_x, label_y, str(lab), fill=text_color,
+            svg.text(label_x, ty, str(lab), fill=text_color,
                       size=tick_label_size, anchor=anchor,
                       baseline="middle", class_="fig-tick-label")
 
