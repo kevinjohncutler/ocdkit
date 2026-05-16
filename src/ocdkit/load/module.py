@@ -90,13 +90,24 @@ def enable_submodules(
                 setattr(pkg, sub, same_named)
             else:
                 setattr(pkg, sub, mod)
-            for name in dir(mod):
+            # Prefer the submodule's ``__all__`` when defined — gives
+            # authors a way to keep helper imports (e.g.
+            # ``from matplotlib.figure import Figure`` used internally)
+            # out of the parent-package namespace.  Falls back to
+            # ``dir(mod)`` filtered to public names when ``__all__`` is
+            # absent (preserves legacy behavior for modules that haven't
+            # opted in).
+            if hasattr(mod, "__all__"):
+                names = list(mod.__all__)
+            else:
+                names = [n for n in dir(mod) if not n.startswith("_")]
+            for name in names:
                 if name.startswith("_"):
                     continue
                 if hasattr(pkg, name):
                     continue
-                attr = getattr(mod, name)
-                if isinstance(attr, ModuleType):
+                attr = getattr(mod, name, None)
+                if attr is None or isinstance(attr, ModuleType):
                     continue
                 setattr(pkg, name, attr)
                 promoted.add(name)
@@ -122,10 +133,18 @@ def enable_submodules(
         # names and module-typed attrs (e.g. stdlib ``platform``) that
         # the eager pass skips. Sub-modules are already loaded under
         # ``expose=True``, so this scan is just dict lookups.
+        #
+        # Respects each submodule's ``__all__`` when defined — same
+        # contract as the eager-promotion pass.  A submodule that
+        # imports a name internally (e.g. ``from matplotlib.figure
+        # import Figure``) but omits it from ``__all__`` will NOT
+        # leak through the fallback.
         for sub in submods:
             try:
                 mod = importlib.import_module(f"{pkg_name}.{sub}")
             except ImportError:
+                continue
+            if hasattr(mod, "__all__") and name not in mod.__all__:
                 continue
             if hasattr(mod, name):
                 attr = getattr(mod, name)
