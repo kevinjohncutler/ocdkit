@@ -1,4 +1,7 @@
 from .imports import *
+from matplotlib.figure import Figure
+
+__all__ = ["figure", "split_list"]
 
 
 def figure(nrow=None, ncol=None, aspect=1, **kwargs):

@@ -1,9 +1,13 @@
 """Grid-based image display utilities."""
 
 from .imports import *
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
 from .figure import split_list
 from .label import apply_label_backgrounds, recolor_label
+
+__all__ = ["image_grid", "color_swatches"]
 
 
 def image_grid(images, column_titles=None, row_titles=None,

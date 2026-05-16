@@ -1,8 +1,11 @@
 from .imports import *
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.transforms import Bbox
 from matplotlib.font_manager import FontProperties
 from matplotlib.textpath import TextPath
 from matplotlib.path import Path
+
+__all__ = ["recolor_label", "add_label_background", "apply_label_backgrounds"]
 
 
 LUMA_WEIGHTS = np.array([0.299, 0.587, 0.114], dtype=np.float32)
