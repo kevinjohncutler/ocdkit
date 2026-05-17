@@ -326,6 +326,20 @@ class SVG:
     def add(self, raw: str):
         self.parts.append(raw)
 
+    def text_extents(self, content: str, *, size: float,
+                      weight: str = "regular") -> tuple[float, float]:
+        """Return ``(visible_width, visible_height)`` for ``content`` at ``size``.
+
+        Canonical "how big is this text" answer on the builder — uses
+        the same FreeType face that produces our font metrics, no
+        rasterizer involved.  Use this for layout decisions (slot
+        reservation, centering, etc.) so the dimensions you reason
+        about match the dimensions of the text element you'd emit
+        with :meth:`text`.
+        """
+        from .text_metrics import measure_text_visible
+        return measure_text_visible(content, size, weight=weight)
+
     # ── shape primitives ───────────────────────────────────────────────
 
     def rect(self, x, y, w, h, *, fill='none', stroke='none', stroke_width=0,
