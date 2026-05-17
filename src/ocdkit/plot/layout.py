@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from typing import NamedTuple, Sequence, Callable
 
-from .text_metrics import measure_text  # noqa: F401 (re-exported)
+from .text_metrics import measure_text, measure_text_visible  # noqa: F401 (re-exported)
 from . import style as _style
 
 
@@ -508,3 +508,83 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
 
 # Alias so draw_axis can refer to the spine primitive without a recursive name.
 draw_spine_ = draw_spine
+
+
+# ─── rotated-label layout (slot reservation + per-label centering) ────
+
+class RotatedLabelLayout(NamedTuple):
+    """Geometry for a row of (possibly rotated, possibly multi-line) tick labels.
+
+    Returned by :func:`rotated_label_layout`.  Use ``slot_extent`` as
+    the perpendicular space to reserve below (or above) a spine to fit
+    these labels with ``pad`` on each side; pass ``offsets`` to
+    :func:`draw_tick_labels` as the per-tick offset so each label
+    sits centered in its slot.
+    """
+    slot_extent: float                 # total perpendicular pixels to reserve
+    offsets: list[float]               # per-label offset from the spine
+    widths: list[float]                # per-label visible ink width
+    block_h: float                     # n_lines × line_h (multi-line block height)
+
+
+def rotated_label_layout(labels: Sequence[str], *,
+                          fontsize: float,
+                          rotation: float = 0.0,
+                          pad: float = 8.0,
+                          weight: str = 'regular',
+                          linespacing: float = 1.2,
+                          ) -> RotatedLabelLayout:
+    """Compute the slot geometry for a row of rotated tick labels.
+
+    For ``rotation = 0`` the labels stack normally; the slot extent is
+    ``n_lines × fontsize × linespacing + 2·pad``.
+
+    For ``rotation = ±90°`` the labels lay vertically; each label's
+    perpendicular extent = its visible ink width.  The slot is sized
+    to fit the widest, and each label gets an offset so it's centered
+    in the slot (visual padding above and below each label is equal).
+
+    For arbitrary angles the bounding-box projection is used:
+        ``sin(|θ|)·max_line_w + cos(|θ|)·block_h``
+
+    Visible widths come from :func:`measure_text_visible` (FreeType-
+    based, pure font metrics — no rasterizer involved).  Pass the
+    result's ``slot_extent`` to whatever code reserves perpendicular
+    space, and the ``offsets`` list to ``draw_tick_labels(offsets=...)``
+    so each label is centered.
+    """
+    if not labels:
+        return RotatedLabelLayout(2 * pad, [], [], 0.0)
+    line_h = fontsize * linespacing
+    # Per-label: visible width of the widest line (multi-line labels are
+    # collapsed to the wider line for slot purposes).
+    per_label_w = []
+    n_lines_max = 1
+    for s in labels:
+        lines = s.split('\n') if '\n' in s else [s]
+        n_lines_max = max(n_lines_max, len(lines))
+        w = max((measure_text_visible(line, fontsize, weight=weight)[0]
+                  for line in lines), default=0.0)
+        per_label_w.append(w)
+    max_w = max(per_label_w)
+    block_h = n_lines_max * line_h
+
+    rad = abs(rotation) * math.pi / 180.0
+    if rotation == 0:
+        per_label_extent = block_h  # all labels share the same vertical extent
+        slot_extent = block_h + 2 * pad
+        offsets = [pad] * len(labels)
+    elif abs(rotation) >= 89:
+        slot_extent = max_w + 2 * pad
+        # Center each label in the slot — extra space split top/bottom.
+        offsets = [pad + (max_w - w) / 2 for w in per_label_w]
+    else:
+        # Bounding-box projection of a rotated text block.
+        slot_extent = (max_w * math.sin(rad)
+                        + block_h * math.cos(rad)) + 2 * pad
+        offsets = [pad + (max_w - w) * math.sin(rad) / 2
+                    for w in per_label_w]
+    return RotatedLabelLayout(slot_extent=slot_extent,
+                                offsets=offsets,
+                                widths=per_label_w,
+                                block_h=block_h)
