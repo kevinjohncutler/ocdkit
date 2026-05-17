@@ -252,6 +252,7 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
                       positions: Sequence[float],
                       labels: Sequence[str],
                       offset: float | None = None,
+                      offsets: Sequence[float] | None = None,
                       size: float | None = None,
                       sizes: Sequence[float] | None = None,
                       color: str | None = None,
@@ -269,8 +270,12 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
 
     ``offset`` is the perpendicular distance from the spine to the
     label baseline (defaults to ``tick_length + tick_label_padding``
-    from :mod:`ocdkit.plot.style`).  Per-tick variants for size,
-    color, weight, family override the uniform scalars.
+    from :mod:`ocdkit.plot.style`).  ``offsets`` (per-tick variant)
+    overrides the uniform ``offset`` — useful for centering rotated
+    labels of varying widths in a uniform reserved slot.
+
+    Per-tick variants for size, color, weight, family override the
+    uniform scalars.
 
     Default ``anchor`` / ``baseline`` are chosen per side so labels
     sit naturally outside the spine; callers can override.
@@ -294,6 +299,7 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
     color_list = _per_tick(colors, n, color if color is not None else d["text_color"])
     weight_list = _per_tick(weights, n, weight)
     family_list = _per_tick(families, n, family)
+    offset_list = _per_tick(offsets, n, offset)
 
     # Choose sensible defaults for anchor + baseline per side.
     if orient == "horizontal":
@@ -307,19 +313,19 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
 
     if orient == "horizontal":
         ty = plot_box.y1 if side == "bottom" else plot_box.y0
-        label_y = ty + sign * offset
-        for x, lab, s, c, w, fam in zip(positions, labels, size_list,
-                                          color_list, weight_list, family_list):
-            _emit_label(svg, x, label_y, lab, fill=c, size=s,
+        for x, lab, s, c, w, fam, off in zip(positions, labels, size_list,
+                                              color_list, weight_list,
+                                              family_list, offset_list):
+            _emit_label(svg, x, ty + sign * off, lab, fill=c, size=s,
                          anchor=anchor, baseline=baseline,
                          weight=w, family=fam,
                          rotation=rotation, linespacing=linespacing)
     else:
         tx = plot_box.x0 if side == "left" else plot_box.x1
-        label_x = tx + sign * offset
-        for y, lab, s, c, w, fam in zip(positions, labels, size_list,
-                                          color_list, weight_list, family_list):
-            _emit_label(svg, label_x, y, lab, fill=c, size=s,
+        for y, lab, s, c, w, fam, off in zip(positions, labels, size_list,
+                                              color_list, weight_list,
+                                              family_list, offset_list):
+            _emit_label(svg, tx + sign * off, y, lab, fill=c, size=s,
                          anchor=anchor, baseline=baseline,
                          weight=w, family=fam,
                          rotation=rotation, linespacing=linespacing)
