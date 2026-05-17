@@ -435,11 +435,16 @@ class SVG:
         # Build the inner glyph SVG.
         sw = stroke_width
         glyph = ""
+        # All stripe glyphs: a SINGLE line per tile, drawn from edge to
+        # opposite edge so neighbor tiles seam cleanly when tiled.
+        # Diagonals extend slightly past the tile corners to avoid
+        # sub-pixel gaps along the seam at small tile sizes.
+        eps = sw  # extend by stroke-width past each end
         if char == "/":
-            glyph = (f'<path d="M -1 {t+1} L {t+1} -1 M 0 {2*t} L {2*t} 0" '
+            glyph = (f'<line x1="{-eps}" y1="{t+eps}" x2="{t+eps}" y2="{-eps}" '
                      f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
         elif char == "\\":
-            glyph = (f'<path d="M -1 -1 L {t+1} {t+1}" '
+            glyph = (f'<line x1="{-eps}" y1="{-eps}" x2="{t+eps}" y2="{t+eps}" '
                      f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
         elif char == "|":
             glyph = (f'<line x1="{t/2}" y1="0" x2="{t/2}" y2="{t}" '
@@ -452,7 +457,9 @@ class SVG:
             glyph = (f'<circle cx="{t/2}" cy="{t/2}" r="{r}" '
                      f'fill="{stroke}" opacity="{alpha}"/>')
         elif char == "x":
-            glyph = (f'<path d="M 0 0 L {t} {t} M {t} 0 L 0 {t}" '
+            glyph = (f'<line x1="{-eps}" y1="{-eps}" x2="{t+eps}" y2="{t+eps}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>'
+                     f'<line x1="{-eps}" y1="{t+eps}" x2="{t+eps}" y2="{-eps}" '
                      f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
         elif char == "+":
             glyph = (f'<line x1="{t/2}" y1="0" x2="{t/2}" y2="{t}" '
