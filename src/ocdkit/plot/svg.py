@@ -397,6 +397,77 @@ class SVG:
             f'stroke-linejoin="{linejoin}"{da}{op}/>'
         )
 
+    def hatch_pattern(self, pattern: str, *, stroke='white',
+                       stroke_width: float = 1.0,
+                       alpha: float = 1.0,
+                       tile: float = 6.0) -> str:
+        """Register a hatch pattern in <defs>; return its element id.
+
+        Mirrors matplotlib's small set of hatch glyphs:
+
+          ``'/'``  → forward (45°) diagonal lines
+          ``'\\'`` → backward (-45°) diagonal lines
+          ``'|'``  → vertical lines
+          ``'-'``  → horizontal lines
+          ``'.'``  → dots
+          ``'x'``  → crosshatch (45° + -45°)
+          ``'+'``  → crosshatch (horizontal + vertical)
+          ``''``   → no hatch (returns ``""`` so callers can
+                     unconditionally ``fill=`url(#{id})``)
+
+        Repeated characters (e.g. ``'/'*3``) request denser hatching —
+        we pick a tile size proportional to ``tile / repeat_count``.
+
+        Returns the pattern id (e.g. ``hatch-abc12345``).  Use as
+        ``svg.rect(..., fill=f'url(#{id})')``.  ``stroke`` is the
+        glyph color; ``alpha`` tints the whole pattern.
+        """
+        if not pattern:
+            return ""
+        # Repeat count adjusts density.
+        char = pattern[0]
+        repeats = max(1, len(pattern))
+        t = max(2.0, tile / repeats ** 0.5)
+        from hashlib import sha1
+        pid = "hatch-" + sha1(
+            f"{pattern}|{stroke}|{stroke_width}|{alpha}|{tile}".encode()
+        ).hexdigest()[:8]
+        # Build the inner glyph SVG.
+        sw = stroke_width
+        glyph = ""
+        if char == "/":
+            glyph = (f'<path d="M -1 {t+1} L {t+1} -1 M 0 {2*t} L {2*t} 0" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        elif char == "\\":
+            glyph = (f'<path d="M -1 -1 L {t+1} {t+1}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        elif char == "|":
+            glyph = (f'<line x1="{t/2}" y1="0" x2="{t/2}" y2="{t}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        elif char == "-":
+            glyph = (f'<line x1="0" y1="{t/2}" x2="{t}" y2="{t/2}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        elif char == ".":
+            r = max(0.5, sw)
+            glyph = (f'<circle cx="{t/2}" cy="{t/2}" r="{r}" '
+                     f'fill="{stroke}" opacity="{alpha}"/>')
+        elif char == "x":
+            glyph = (f'<path d="M 0 0 L {t} {t} M {t} 0 L 0 {t}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        elif char == "+":
+            glyph = (f'<line x1="{t/2}" y1="0" x2="{t/2}" y2="{t}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>'
+                     f'<line x1="0" y1="{t/2}" x2="{t}" y2="{t/2}" '
+                     f'stroke="{stroke}" stroke-width="{sw}" opacity="{alpha}"/>')
+        else:
+            # Unknown — fall back to no hatch.
+            return ""
+        self.parts.append(
+            f'<defs><pattern id="{pid}" patternUnits="userSpaceOnUse" '
+            f'width="{t}" height="{t}">{glyph}</pattern></defs>'
+        )
+        return pid
+
     def image(self, x, y, w, h, rgba_arr, *,
               preserve_aspect='none', format: str = 'png',
               **encoder_kwargs):

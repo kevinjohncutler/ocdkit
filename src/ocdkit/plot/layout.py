@@ -262,6 +262,8 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
                       families: Sequence[str | None] | None = None,
                       anchor: str | None = None,
                       baseline: str | None = None,
+                      rotation: float = 0.0,
+                      linespacing: float = 1.2,
                       ) -> None:
     """Emit tick label text at canvas-space ``positions`` along ``side``.
 
@@ -308,25 +310,47 @@ def draw_tick_labels(svg, plot_box: PlotBox, side: str, *,
         label_y = ty + sign * offset
         for x, lab, s, c, w, fam in zip(positions, labels, size_list,
                                           color_list, weight_list, family_list):
-            kwargs = dict(fill=c, size=s, anchor=anchor, baseline=baseline,
-                          class_="fig-tick-label")
-            if w != "normal":
-                kwargs["weight"] = w
-            if fam:
-                kwargs["family"] = fam
-            svg.text(x, label_y, lab, **kwargs)
+            _emit_label(svg, x, label_y, lab, fill=c, size=s,
+                         anchor=anchor, baseline=baseline,
+                         weight=w, family=fam,
+                         rotation=rotation, linespacing=linespacing)
     else:
         tx = plot_box.x0 if side == "left" else plot_box.x1
         label_x = tx + sign * offset
         for y, lab, s, c, w, fam in zip(positions, labels, size_list,
                                           color_list, weight_list, family_list):
-            kwargs = dict(fill=c, size=s, anchor=anchor, baseline=baseline,
-                          class_="fig-tick-label")
-            if w != "normal":
-                kwargs["weight"] = w
-            if fam:
-                kwargs["family"] = fam
-            svg.text(label_x, y, lab, **kwargs)
+            _emit_label(svg, label_x, y, lab, fill=c, size=s,
+                         anchor=anchor, baseline=baseline,
+                         weight=w, family=fam,
+                         rotation=rotation, linespacing=linespacing)
+
+
+def _emit_label(svg, x: float, y: float, content: str, *,
+                 fill: str, size: float, anchor: str, baseline: str,
+                 weight: str, family: str | None,
+                 rotation: float, linespacing: float) -> None:
+    """Emit a single tick-label text — handles multi-line + rotation.
+
+    Multi-line (``\\n`` in content): each line stacks downward at
+    ``size * linespacing`` y-spacing.  Rotation, when non-zero, is
+    applied as an SVG ``transform="rotate(angle x y)"`` so the rotation
+    pivot is the label anchor.
+    """
+    lines = content.split("\n") if "\n" in content else [content]
+    transform = (f"rotate({rotation} {x:.2f} {y:.2f})"
+                 if rotation else None)
+    line_h = size * linespacing
+    for i, line in enumerate(lines):
+        ly = y + i * line_h
+        kwargs = dict(fill=fill, size=size, anchor=anchor,
+                      baseline=baseline, class_="fig-tick-label")
+        if weight != "normal":
+            kwargs["weight"] = weight
+        if family:
+            kwargs["family"] = family
+        if transform is not None:
+            kwargs["transform"] = transform
+        svg.text(x, ly, line, **kwargs)
 
 
 def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
