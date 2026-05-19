@@ -149,4 +149,6 @@ def _to_list(x):
         return x
     if isinstance(x, np.ndarray):
         return x.tolist()
+    if isinstance(x, (tuple, set, frozenset)):
+        return list(x)
     return [x]
