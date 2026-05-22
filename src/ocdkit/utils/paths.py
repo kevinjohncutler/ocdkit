@@ -38,7 +38,7 @@ Usage::
     from ocdkit.utils.paths import user_data, user_config
 
     models_dir = user_data("omnipose", "models")
-    prefs_file = user_config("hiprpy") / "preferences.toml"
+    prefs_file = user_config("myapp") / "preferences.toml"
 """
 
 from __future__ import annotations

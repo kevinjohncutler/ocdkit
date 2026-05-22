@@ -44,7 +44,7 @@ FIGURE_DEFAULTS = {
 
 # ─── categorical palettes ─────────────────────────────────────────────
 
-# The 6-color palette used by hiprpy's key-slices SVG (top axis band
+# 6-color categorical palette used for key-slice SVGs (top axis band
 # coloring + bottom axis exc labels).  Hand-tuned for contrast on
 # both dark and light backgrounds; not strictly perceptually uniform.
 PALETTE_SIX = (

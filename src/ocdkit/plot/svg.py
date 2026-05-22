@@ -49,8 +49,8 @@ def rgba_to_css(rgba) -> str:
             f"{int(round(b*255))},{a:.3f})")
 
 
-# SMPTE 2084 (PQ) constants — same as hiprpy.io.hdr (kept inline here so
-# ocdkit doesn't depend on hiprpy).
+# SMPTE 2084 (PQ) constants (kept inline so ocdkit has no hard dependency
+# on a separate HDR-encoding module).
 _PQ_M1 = np.float32(2610.0 / 16384.0)
 _PQ_M2 = np.float32(2523.0 / 4096.0 * 128.0)
 _PQ_C1 = np.float32(3424.0 / 4096.0)
@@ -81,9 +81,9 @@ def _p3_linear_to_pq_hdr_uint16(rgb_p3_linear: 'np.ndarray',
     Apple displays (XDR, recent MBP/iMac) target the P3 gamut; tagging
     as Rec.2020 would claim a wider gamut than either the source data
     or the display can render, forcing the decoder into pointless
-    gamut-mapping. The :func:`hiprpy.io.hdr.encode_rgb_hdr` path uses
-    Rec.2020 because BT.2100 broadcast HDR standardises on it; for
-    on-screen P3 content we stay in P3.
+    gamut-mapping. A separate Rec.2020-based HDR encode path exists for
+    BT.2100 broadcast HDR (which standardises on Rec.2020); for on-screen
+    P3 content we stay in P3.
 
     Pipeline: image-peak normalize → ``shadow_gamma`` pre-OETF → PQ OETF
     → uint16 quantize. Pair with a JXL ``ColorSpec(primaries=11,
@@ -270,8 +270,8 @@ def jxl_data_url(rgba_arr, effort: int = 1, lossless: bool = True,
     * ``color='display-p3'`` — tag as Display P3 (Apple wide-gamut, ~25%
       more coverage than sRGB; cleanly displayed on any Apple device).
     * ``color='rec2020-pq'`` + ``intensity_target=`` nits — full PQ HDR;
-      the data should be a 16-bit array. See ``hiprpy.io.hdr`` for the
-      P3→Rec.2020 → PQ-OETF pipeline.
+      the data should be a 16-bit array (P3→Rec.2020 → PQ-OETF
+      pre-processed upstream).
 
     Default is sRGB (no color tag) since our standard plot rasters are
     sRGB colormapped intensity. Pass ``lossless=False`` + ``distance=``
@@ -508,7 +508,7 @@ class SVG:
           displays (any recent Apple device). Same JXL browser caveats.
         * ``'jxl-hdr-pq'`` — for **natively HDR-source data only**:
           expects a ``(H, W, 3)`` linear-light Display-P3 float array
-          (e.g. ``hiprpy.io.hdr.compute_rgb_p3_linear(scene)`` output).
+          (e.g. the output of an upstream linear-P3 compositor).
           Encoded via :func:`_p3_linear_to_pq_hdr_uint16` (image-peak
           normalise → ``shadow_gamma=2.2`` pre-OETF → PQ OETF →
           uint16), then JXL with a manual

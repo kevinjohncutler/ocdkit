@@ -213,7 +213,7 @@ def start_trust_setup_sidecar(host: str, port: int) -> None:
     Runs in a daemon thread so the main server owns the lifecycle. Users hit
     this over plain HTTP (no TLS warning) to download the root CA before
     their OS trusts our HTTPS cert. Safe to call from any app embedding an
-    HTTPS server (hiprpy, omnipose, bare FastAPI, etc.).
+    HTTPS server (omnipose, bare FastAPI, etc.).
     """
     import uvicorn as _uvicorn
     from fastapi import FastAPI
@@ -349,7 +349,7 @@ def run_server(
     For HTTPS via your private step-ca (see :mod:`ocdkit.tls`), pass
     ``https_auto=True`` (or a hostname / list of hostnames) together with
     ``tls_config={"ca_url": ..., "provisioner": ..., "provisioner_password_file": ...}``.
-    Apps embedding the viewer (hiprpy, omnipose, etc.) should ship their own
+    Apps embedding the viewer (e.g. omnipose) should ship their own
     ``tls_config`` rather than relying on a shared global file.
     """
     if title:
@@ -502,8 +502,8 @@ def run_desktop(
         macOS bundle name, Windows ``AppUserModelID``, Linux
         ``StartupWMClass``, AND the ``platformdirs`` key the viewer uses
         for any persistent state/cache.  When an embedding launcher (e.g.
-        omnirefactor, hiprpy) calls this function it should pass its own
-        app name so each host stays namespaced.
+        omnirefactor) calls this function it should pass its own app name
+        so each host stays namespaced.
 
         Ignored if ``app_identity`` is given.  Defaults to ``"ocdkit-viewer"``
         when neither is specified.

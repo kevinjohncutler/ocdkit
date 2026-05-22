@@ -2,7 +2,7 @@
 module without silently swallowing import errors.
 
 The check itself lives in :mod:`ocdkit.testing.imports` so downstream
-packages (hiprpy, omnipose, …) can opt in with the same one-liner — see
+packages (e.g. omnipose) can opt in with the same one-liner — see
 their respective ``tests/test_module_discovery.py``.
 """
 import ocdkit

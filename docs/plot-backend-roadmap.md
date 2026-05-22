@@ -1,18 +1,17 @@
 # Plot backend roadmap
 
 **Status:** Design discussion / pending decision.
-**Owner:** kevin@kanvasbio.com
-**Driver:** matplotlib accounts for ~80% of warm-call time in `hiprpy.plot.plot_spectra` (~115 ms of ~140 ms) and ~1.5 s of cold-import overhead. We also want native hover/tooltip behavior like the classification-debugger GUI, which matplotlib can't deliver inline.
+**Driver:** matplotlib accounts for ~80% of warm-call time in a typical spectra-plotting call (~115 ms of ~140 ms) and ~1.5 s of cold-import overhead. We also want native hover/tooltip behavior like the classification-debugger GUI, which matplotlib can't deliver inline.
 
 ## Context
 
-`ocdkit.plot` and `hiprpy.plot` already own ~10 K LOC of plotting code:
+`ocdkit.plot` and a downstream plot package together own ~10 K LOC of plotting code:
 
 | Package | LOC |
 |---|---|
 | `ocdkit.plot` (figure, grid, label, color, defaults, display, contour, export) | 1,935 |
-| `hiprpy.plot` non-WGPU (datashade, cell, text, barcode, line, background, …) | 4,641 |
-| `hiprpy.plot.wgpu` (lines, scatter, aggregators — already custom GPU primitives) | 4,783 |
+| Downstream non-WGPU plot code (datashade, cell, text, barcode, line, background, …) | 4,641 |
+| Downstream WGPU plot code (lines, scatter, aggregators — already custom GPU primitives) | 4,783 |
 
 What we still depend on matplotlib for is narrow: 2D Cartesian axes, ticks, labels, legends, image display, save-to-PNG/PDF/SVG, inline-in-Jupyter. **Not** 3D, animation, multi-backend abstraction (Qt/GTK/MacOSX), most chart types, complex tick locators/formatters, or any of the other ~180 K LOC of matplotlib's surface.
 
@@ -29,7 +28,7 @@ Shallow-cloned each candidate, counted Python LOC excluding tests, sphinx, sampl
 | plotly | 66 MB | 13 K relevant (+ ~600 K autogen) | JS bundle as data | Most LOC is auto-generated trait validators |
 | datoviz | 137 MB | 8 K Py wrapper | 140 K C++ Vulkan engine | Heaviest binary footprint, fastest renderer |
 | vispy | 11 MB | 32 K | None — pure Py + OpenGL | OpenGL stack, not WGPU |
-| pygfx | 84 MB | 20 K | None — uses `wgpu-py` | Same backend ocdkit/hiprpy already use |
+| pygfx | 84 MB | 20 K | None — uses `wgpu-py` | Same backend ocdkit already uses |
 
 ## Tradeoff summary
 
@@ -63,20 +62,20 @@ If pygfx covers ≥80% of our needs at ≥80% of the visual quality, **adopt pyg
 
 ### Step 2 (only if pygfx is insufficient): roll our own
 
-Estimated scope, building on existing `hiprpy.plot.wgpu.lines`:
+Estimated scope, building on the existing WGPU line rasterizer:
 
 | Module | LOC est. | Notes |
 |---|---|---|
 | `ocdkit.plot.figure_v2` | 400 | New `Figure` class owning the wgpu canvas + axes layout; coexists with current matplotlib `figure()` so migration is piecewise |
 | `ocdkit.plot.axis` | 800 | `LinearAxis`, `LogAxis` — tick locator + formatter + render-time placement. The matplotlib equivalent is ~3 K LOC; we don't need most of it |
-| `hiprpy.plot.wgpu.text` | 600 | FreeType-rendered glyph atlas + WGSL textured-quad shader. The one piece of genuinely new rasterization work |
+| `ocdkit.plot.wgpu.text` | 600 | FreeType-rendered glyph atlas + WGSL textured-quad shader. The one piece of genuinely new rasterization work |
 | `ocdkit.plot.legend` | 200 | Boxed layout: text + marker swatches |
 | `ocdkit.plot.hover` | 300 | Mouse → data-coord lookup → DOM/Jupyter tooltip overlay. Generalize the classification-debugger pattern |
 | `ocdkit.plot.export` | 400 | PNG (numpy→PIL), SVG (string templates), maybe PDF (skip if PIL→PNG covers science exports) |
 | Migration: rewrite `plot_spectra`, `plot_image_grid`, `key_slice_grid`, `label_axes` against new primitives | ~600 | Mostly drop-in replacements at the call sites |
 | **Total** | **~3.3 K** | New code, all in our control |
 
-Plus: deletion of matplotlib-specific code paths in `hiprpy.plot` (~1 K LOC saved) and removal of matplotlib runtime dep.
+Plus: deletion of matplotlib-specific code paths in the downstream plot package (~1 K LOC saved) and removal of matplotlib runtime dep.
 
 ### Why not pygfx + own axes?
 
@@ -91,6 +90,6 @@ A hybrid path is also viable: use pygfx for the rasterization layer (lines/text/
 
 ## Concrete next action
 
-Spike `plot_spectra_pygfx` using `scope.mixed_spectra[-1]` from `notebooks/hiprpy_demo_notebook.ipynb` as the test case. Compare visual output side-by-side with `plot_spectra_wgpu` and `plot_spectra_cpu`. Decide pygfx-vs-roll-own from that single comparison.
+Spike `plot_spectra_pygfx` against a representative spectra notebook (e.g. `scope.mixed_spectra[-1]` from any existing demo). Compare visual output side-by-side with `plot_spectra_wgpu` and `plot_spectra_cpu`. Decide pygfx-vs-roll-own from that single comparison.
 
 If the answer ends up being "pygfx + own axis layer", the new module structure would live in `ocdkit.plot.gfx_*` (parallel to the current matplotlib-based modules) so the migration is a per-call-site flip rather than a big-bang rewrite.

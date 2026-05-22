@@ -381,10 +381,9 @@ def draw_axis(svg, plot_box: PlotBox, side: str = "bottom", *,
               ) -> None:
     """Emit a complete axis (spine + ticks + tick labels + axis label).
 
-    All elements carry the ``fig-*`` class scheme expected by
-    :meth:`hiprpy._figure.Figure.apply_color_scheme`, so downstream
-    recolor calls (``apply_color_scheme(font=..., axes=...)``) target
-    the right things.
+    All elements carry the ``fig-*`` class scheme expected by downstream
+    ``Figure.apply_color_scheme``-style helpers, so recolor calls
+    (``apply_color_scheme(font=..., axes=...)``) target the right things.
 
     Parameters
     ----------

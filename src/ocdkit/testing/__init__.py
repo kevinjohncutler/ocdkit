@@ -2,7 +2,7 @@
 
 Each helper is a pytest-test factory: pass the root package and assign
 the returned function to a ``test_*`` name in a test file. Downstream
-packages (omnipose, hiprpy, …) opt into each check with one line.
+packages (e.g. omnipose) opt into each check with one line.
 
 Available factories:
 

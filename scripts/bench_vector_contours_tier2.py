@@ -20,6 +20,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -675,7 +676,13 @@ def _time_call(fn, repeat=3):
 
 
 def main():
-    mask = skimage.io.imread('/Volumes/DataDrive/ncolor/test_files/example.png')
+    mask_path = os.environ.get('OCDKIT_BENCH_MASK')
+    if not mask_path:
+        raise SystemExit(
+            "Set OCDKIT_BENCH_MASK to the path of a label-mask PNG "
+            "(e.g. export OCDKIT_BENCH_MASK=/path/to/labels.png)."
+        )
+    mask = skimage.io.imread(mask_path)
     print(f"mask shape={mask.shape} n_labels={len(np.unique(mask)) - 1}")
 
     def run_current():
@@ -737,7 +744,7 @@ def main():
     vector_contours_marching(fig, axes[1, 2], mask, smooth_sigma=2.0, color='r', linewidth=1.5)
 
     fig.tight_layout()
-    out = Path('/Volumes/DataDrive/ocdkit/scripts/bench_vector_contours_tier2.png')
+    out = Path(__file__).resolve().parent / 'bench_vector_contours_tier2.png'
     fig.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\nsaved: {out}")
 

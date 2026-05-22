@@ -1,15 +1,18 @@
 """Benchmark current vector_contours pipeline vs a vectorized prototype.
 
-Loads the ncolor example mask and renders both the current
+Loads a label-mask image and renders both the current
 ocdkit.plot.contour.vector_contours output and a prototype implementation
 side by side, with timings.
 
+Set ``OCDKIT_BENCH_MASK`` to the path of a label-mask PNG before running.
+
 Run:
-    python scripts/bench_vector_contours.py
+    OCDKIT_BENCH_MASK=/path/to/labels.png python scripts/bench_vector_contours.py
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -245,7 +248,13 @@ def _time_call(fn, repeat=3):
 
 
 def main():
-    mask = skimage.io.imread('/Volumes/DataDrive/ncolor/test_files/example.png')
+    mask_path = os.environ.get('OCDKIT_BENCH_MASK')
+    if not mask_path:
+        raise SystemExit(
+            "Set OCDKIT_BENCH_MASK to the path of a label-mask PNG "
+            "(e.g. export OCDKIT_BENCH_MASK=/path/to/labels.png)."
+        )
+    mask = skimage.io.imread(mask_path)
     print(f"mask shape={mask.shape} n_labels={len(np.unique(mask)) - 1}")
 
     def run_current():
@@ -302,7 +311,7 @@ def main():
     axes[1, 1].set_title("zoomed crop", fontsize=10)
     fig.tight_layout()
 
-    out = Path('/Volumes/DataDrive/ocdkit/scripts/bench_vector_contours.png')
+    out = Path(__file__).resolve().parent / 'bench_vector_contours.png'
     fig.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\nsaved: {out}")
 

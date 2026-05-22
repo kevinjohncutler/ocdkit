@@ -11,7 +11,7 @@ Provides three consumer APIs:
 
 3. **``ocdkit paths``** — top-level subcommand that uses this module.
 
-Downstream example (``omnirefactor``, ``hiprpy``, etc.)::
+Downstream example (``omnirefactor`` etc.)::
 
     import argparse
     from ocdkit.cli.paths import PathsAction
