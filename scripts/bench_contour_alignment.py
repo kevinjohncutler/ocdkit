@@ -73,7 +73,7 @@ def main():
                              color='red', linewidth=1.5)
 
     fig.tight_layout()
-    out = Path('/Volumes/DataDrive/ocdkit/scripts/bench_contour_alignment.png')
+    out = Path(__file__).resolve().parent / 'bench_contour_alignment.png'
     fig.savefig(out, dpi=150, bbox_inches='tight')
     print(f"saved: {out}")
 

@@ -82,11 +82,7 @@ testpaths = ["tests"]
 source = ["ocdkit"]
 
 [tool.coverage.paths]
-source = [
-    "src/ocdkit",
-    "/Volumes/DataDrive/ocdkit/src/ocdkit",
-    "/home/kcutler/DataDrive/ocdkit/src/ocdkit",
-]
+source = ["src/ocdkit"]
 
 [tool.coverage.report]
 show_missing = true

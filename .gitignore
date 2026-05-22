@@ -6,6 +6,10 @@
 # Local tooling
 .claude/
 
+# Local machine-specific config for bench / coverage scripts
+scripts/coverage_cross_device.env
+scripts/bench_paths.env
+
 # Editor / NAS junk
 *.bak
 .!*
