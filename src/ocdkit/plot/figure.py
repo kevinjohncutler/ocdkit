@@ -1,4 +1,5 @@
 from .imports import *
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
 __all__ = ["figure", "split_list"]
@@ -10,8 +11,7 @@ def figure(nrow=None, ncol=None, aspect=1, **kwargs):
         figsize = (figsize*aspect, figsize)
 
     kwargs['figsize'] = figsize
-    fig = Figure(**kwargs)
-    # fig = plt.figure(**kwargs)
+    fig = plt.figure(**kwargs)
     if nrow is not None and ncol is not None:
         axs = []
         for i in range(nrow * ncol):

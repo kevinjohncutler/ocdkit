@@ -7,10 +7,10 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from .figure import split_list
 from .label import apply_label_backgrounds, recolor_label
 
-__all__ = ["image_grid", "color_swatches"]
+__all__ = ["image_grid_matplotlib", "color_swatches"]
 
 
-def image_grid(images, column_titles=None, row_titles=None,
+def image_grid_matplotlib(images, column_titles=None, row_titles=None,
                plot_labels=None,
                xticks=[], yticks=[],
                outline=False, outline_color=[0.5]*3, outline_width=.5,
@@ -303,7 +303,7 @@ def color_swatches(colors, figsize=0.5, dpi=150, fontsize=5, fontcolor='w', padd
 
     # Display the swatches
     # return imshow(swatches, figsize=figsize, dpi=dpi, titles=titles)
-    return image_grid(split_list(swatches,ncol),
+    return image_grid_matplotlib(split_list(swatches,ncol),
                         plot_labels=split_list(titles,ncol) if titles is not None else None,
                       padding=0.05, fontsize=fontsize,
                       fontcolor=fontcolor,

@@ -32,6 +32,7 @@ dependencies = [
     "tqdm",
     "platformdirs",
     "cryptography",
+    "lxml",
 ]
 
 [project.optional-dependencies]
