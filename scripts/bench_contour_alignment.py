@@ -24,8 +24,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 from bench_vector_contours import vector_contours_fast
-from bench_vector_contours_tier2 import vector_contours_marching
-from ocdkit.plot.contour import vector_contours
+from ocdkit.plot.contour import vector_contours, vector_contours_marching
 
 
 def make_mask():

@@ -89,9 +89,14 @@ def measure_text(text: str, size_px: float,
         return (0.0, 0.0)
     face = load_face(weight)
     face.set_pixel_sizes(0, int(round(size_px)))
+    # FT_LOAD_NO_HINTING: the .ttc hinter divides by zero at very small
+    # pixel sizes (< ~6px). We measure for layout, not rasterization, so
+    # hinting offers no benefit anyway — advance widths are font-metric,
+    # not rasterizer-dependent.
+    flags = freetype.FT_LOAD_DEFAULT | freetype.FT_LOAD_NO_HINTING
     w = 0
     for ch in text:
-        face.load_char(ch, freetype.FT_LOAD_DEFAULT)
+        face.load_char(ch, flags)
         w += face.glyph.advance.x
     # FreeType advances are in 26.6 fixed-point pixels.
     width = w / 64.0
@@ -118,12 +123,14 @@ def measure_text_visible(text: str, size_px: float,
         return (0.0, 0.0)
     face = load_face(weight)
     face.set_pixel_sizes(0, int(round(size_px)))
+    # Hinting is disabled — see :func:`measure_text` for the rationale.
+    flags = freetype.FT_LOAD_DEFAULT | freetype.FT_LOAD_NO_HINTING
     advance = 0
     first_left_bearing = 0
     last_right_bearing = 0
     last_idx = len(text) - 1
     for i, ch in enumerate(text):
-        face.load_char(ch, freetype.FT_LOAD_DEFAULT)
+        face.load_char(ch, flags)
         g = face.glyph
         advance += g.advance.x
         if i == 0:
