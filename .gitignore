@@ -10,6 +10,13 @@
 scripts/coverage_cross_device.env
 scripts/bench_paths.env
 
+# Generated artifacts from bench / demo scripts
+scripts/bench_*.png
+scripts/check_*.png
+scripts/check_*.svg
+scripts/check_*.html
+figures/
+
 # Editor / NAS junk
 *.bak
 .!*
