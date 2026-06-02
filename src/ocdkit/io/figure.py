@@ -423,11 +423,23 @@ _SHELL_CSS = """
     position: relative;
     display: inline-block;
     max-width: 100%;
+    /* Opt the subtree into both light + dark schemes so the
+       ``light-dark()`` call below can resolve the active one. Without
+       this, browsers assume ``light`` and dark-mode never fires. */
+    color-scheme: light dark;
   }
   .ocd-svgfig[data-uid="__UID__"] > svg {
     display: block;
     max-width: 100%;
     height: auto;
+    /* Anchor for SVG ``fill="currentColor"`` / ``stroke="currentColor"``
+       (image_grid label + outline defaults). High-contrast adaptive:
+       near-black on light backgrounds, near-white on dark, so labels
+       stay readable when painted over arbitrary image content in
+       Jupyter notebooks and embedded dashboards alike. Explicit
+       ``fontcolor=...`` on ``image_grid`` still overrides via the SVG
+       ``fill`` attribute (more specific than CSS). */
+    color: light-dark(#1a1a1a, #f0f0f0);
   }
   .ocd-svgfig[data-uid="__UID__"] .fig-tile {
     cursor: zoom-in;

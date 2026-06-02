@@ -54,11 +54,18 @@ def image_grid(
     dx: int = 1,                           # raster stride (downsample)
     plot_labels=None,
     fontsize: float = 8,
-    fontcolor: str = '#808080',
+    # Default ``'currentColor'`` makes labels inherit the host's CSS
+    # ``color`` — JupyterLab swaps that with the active theme, so labels
+    # render light on dark backgrounds and dark on light without re-encoding
+    # the SVG. Pass an explicit color string (``'lightgray'``, ``'#808080'``)
+    # to pin a specific shade regardless of theme.
+    fontcolor: str = 'currentColor',
     lpos: str = 'top_middle',
     facecolor: str | None = None,
     outline: bool = False,
-    outline_color: str = '#808080',
+    # Same theme-adaptive default as ``fontcolor`` — outlines follow the
+    # host text color via CSS ``currentColor`` unless explicitly overridden.
+    outline_color: str = 'currentColor',
     outline_width: float = 0.5,
     raster_format: str | None = None,     # None → autodetect from dtype
     sdr_white_nits: float = 1600.0,
@@ -129,11 +136,15 @@ def image_grid(
         images = split_list(_to_array_only(items, dx=dx), ncol)
         labels = (split_list(list(plot_labels), ncol)
                   if plot_labels is not None else None)
+        # ``currentColor`` is a CSS keyword the SVG backend resolves at
+        # render time; matplotlib has no equivalent. Translate the SVG
+        # default back to neutral gray so matplotlib renders cleanly.
+        mpl_fontcolor = '#808080' if fontcolor == 'currentColor' else fontcolor
         return image_grid_matplotlib(
             images,
             plot_labels=labels,
             figsize=figsize if figsize is not None else ncol,
-            fontsize=fontsize, fontcolor=fontcolor, lpos=lpos,
+            fontsize=fontsize, fontcolor=mpl_fontcolor, lpos=lpos,
             dpi=dpi if dpi is not None else 300,
             **mpl_kwargs,
         )
@@ -573,6 +584,17 @@ def _encode_thumb_url(arr, raster_format, sdr_white_nits):
     target/HDR settings, so warm renders skip both decode and encode
     entirely.
     """
+    # Fast path: the array carries a pre-built UHDR JPEG thumbnail
+    # (layer-IDCT subsample of the source, original gainmap metadata
+    # preserved bit-exact). Used by ``_resolve_items`` whenever the
+    # scene has ``_rgb_uhdr`` or a ``.jpg`` ``rgb_path`` — no float
+    # roundtrip, no gain-map recompute.
+    thumb_bytes = getattr(arr, '_uhdr_thumb_bytes', None)
+    if thumb_bytes is not None:
+        import base64
+        return ("data:image/jpeg;base64,"
+                + base64.b64encode(thumb_bytes).decode('ascii'))
+
     from .svg import (jxl_data_url, uhdr_data_url, _p3_linear_to_pq_uint16,
                       _srgb_to_display_p3_uint8,
                       _linear_p3_to_uint8_srgb_peaknorm,
@@ -636,7 +658,9 @@ def _resolve_items(items, *, dx, target_px=None):
     images via the DC progressive path.
     """
     from concurrent.futures import ThreadPoolExecutor
-    from ..io.figure_server import resolve_linear_p3, Source
+    from ..io.figure_server import (
+        resolve_linear_p3, resolve_uhdr_thumb_bytes, Source,
+    )
 
     def _resolve_one(it):
         if isinstance(it, Source):
@@ -678,9 +702,36 @@ def _resolve_items(items, *, dx, target_px=None):
                         new_w = arr.shape[1] // s
                         arr = _resize_nearest(arr, new_h, new_w)
         else:
-            # Prefer linear-P3 HDR (from cache or decoded JXL) so the
-            # thumbnail can be encoded as jxl-hdr-pq with the same
-            # brightness ladder as the on-disk hi-res file.
+            # Prefer the layer-IDCT subsample of the source UHDR (when
+            # available): extract base + gain map, stride both layers
+            # in lockstep, re-pack with the ORIGINAL gainmap metadata.
+            # Preserves ``max_content_boost`` bit-exact so the thumb's
+            # HDR brightness matches the on-disk file. Skips the float
+            # roundtrip + gain-map recompute entirely.
+            # Pick a downsample factor from the (legacy) target_px:
+            # source-longest // target_px gives an integer stride that
+            # produces ≥ target_px output. Clamped at 1.
+            if target_px is not None:
+                src_size = (getattr(it, '_rgb_jxl_size', None)
+                            or _native_dims(it, np.zeros((1, 1, 3))))
+                src_longest = max(int(src_size[0]), int(src_size[1]))
+                ds = max(1, src_longest // int(target_px))
+            else:
+                ds = 4
+            uhdr_resolved = resolve_uhdr_thumb_bytes(it, downsample=ds)
+            if uhdr_resolved is not None:
+                # Placeholder float array sized to match the actual
+                # thumb pixel dims so ``_native_dims`` reports the cell
+                # bbox at the same resolution the bytes encode — browser
+                # renders the embedded UHDR JPEG 1:1 inside the bbox.
+                thumb_bytes, (h, w) = uhdr_resolved
+                from .hdr_cmap import HdrCmapArray
+                arr = HdrCmapArray(np.zeros((h, w, 3), dtype=np.float32))
+                arr._uhdr_thumb_bytes = thumb_bytes
+                return arr  # bypass the dx-stride below
+            # Fall back to float decode + re-encode for items without
+            # UHDR-decodable bytes (rare: scenes with only ``_rgb``
+            # set and no on-disk JPG / in-memory UHDR cache).
             arr = resolve_linear_p3(it, target_px=target_px)
             if arr is None:
                 rgb = getattr(it, 'rgb', None)
