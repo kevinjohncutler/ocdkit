@@ -387,8 +387,12 @@ def _kiss_offset(fig, ax, linewidth_pt):
 def cells_to_polygons(mask, *, colors=None, default_color='r',
                       smooth_sigma=DEFAULT_SMOOTH_SIGMA,
                       offset=None,
-                      x_offset=0.0, y_offset=0.0):
+                      x_offset=0.0, y_offset=0.0, return_labels=False):
     """Return per-cell smoothed closed polygons as Python data.
+
+    ``return_labels=True`` prepends each tuple with the integer cell label
+    (``(label, verts_xy, fill_rgba)``) so callers can key the polygons by cell
+    id — e.g. to highlight one cell's outline identically to the bulk render.
 
     Data-only sibling of :func:`vector_contours_marching` -- runs the same
     marching-squares + Gaussian smoothing pipeline but emits a list of
@@ -437,9 +441,36 @@ def cells_to_polygons(mask, *, colors=None, default_color='r',
             contour = _gaussian_smooth_closed(contour, sigma=smooth_sigma)
         if offset:
             contour = _offset_closed_polygon(contour, offset)
-        out.append((contour.astype(np.float32, copy=False),
-                    color_lut[lab].copy()))
+        verts = contour.astype(np.float32, copy=False)
+        out.append((lab, verts, color_lut[lab].copy()) if return_labels
+                   else (verts, color_lut[lab].copy()))
     return out
+
+
+def pack_label_contours(items) -> bytes:
+    """Pack per-label contour polygons into a compact binary blob for a viewer.
+
+    Layout (little-endian)::
+
+        [n int32] [index n x (label, vert_offset, vert_count) int32]
+        [verts M x 2 float32]
+
+    ``items`` is an iterable of ``(label:int, verts:(N,2) float32)`` — e.g. the
+    ``(label, verts, _)`` triples from ``cells_to_polygons(return_labels=True)``
+    with the verts in whatever coordinates the client expects (typically FOV-
+    normalised). A client reads ``n``, the index, then slices the flat vert array
+    per label — so it can stroke one cell's outline by id. Returns ``bytes``.
+    """
+    idx, flat, off = [], [], 0
+    for lab, verts in items:
+        v = np.ascontiguousarray(verts, dtype=np.float32).reshape(-1, 2)
+        idx.append((int(lab), off, len(v)))
+        flat.append(v)
+        off += len(v)
+    index = np.asarray(idx, "<i4") if idx else np.zeros((0, 3), "<i4")
+    vrt = (np.concatenate(flat, 0).astype("<f4") if flat
+           else np.zeros((0, 2), "<f4"))
+    return np.asarray([len(idx)], "<i4").tobytes() + index.tobytes() + vrt.tobytes()
 
 
 def vector_contours_marching(fig, ax, mask, smooth_sigma=DEFAULT_SMOOTH_SIGMA,
