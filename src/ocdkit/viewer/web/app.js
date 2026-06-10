@@ -9769,8 +9769,13 @@ if (sidebarEl) {
 }
 
 window.addEventListener('keydown', (evt) => {
-  const tag = evt.target && evt.target.tagName ? evt.target.tagName.toLowerCase() : '';
-  if (tag === 'input') {
+  // Bail when the user is typing into any editable field, so bare-letter
+  // shortcuts (w/s/e/h, …) aren't stolen mid-typing. Beyond native
+  // <input>, this must cover <textarea> (e.g. the tooltip editor) and
+  // contenteditable hosts — a tagName === 'input' check alone misses them.
+  if (evt.target && (evt.target.isContentEditable ||
+      (evt.target.closest && evt.target.closest(
+        'input, textarea, select, [contenteditable="true"]')))) {
     return;
   }
   const key = evt.key.toLowerCase();

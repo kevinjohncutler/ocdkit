@@ -2721,9 +2721,16 @@ void main() {
         function onKey(e) {
           if (e.key === 'h' || e.key === 'H' || e.key === 'Home') {
             if (!wrapper.isConnected) return;
-            const tag = (document.activeElement
-                && document.activeElement.tagName || '').toLowerCase();
+            // Never steal a keystroke that the user is typing into an
+            // editor. Beyond native <input>/<textarea>, notebook code
+            // cells are contenteditable editor surfaces — CodeMirror
+            // (JupyterLab/Notebook) and Monaco (VS Code) — so a bare
+            // tagName check misses them and would swallow 'h'.
+            const ae = document.activeElement;
+            const tag = (ae && ae.tagName || '').toLowerCase();
             if (tag === 'input' || tag === 'textarea') return;
+            if (ae && (ae.isContentEditable || ae.closest(
+                '.cm-editor, .CodeMirror, .monaco-editor, [contenteditable="true"]'))) return;
             e.preventDefault();
             resetView();
           }
