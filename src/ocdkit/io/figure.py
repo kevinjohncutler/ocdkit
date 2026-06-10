@@ -665,6 +665,24 @@ _SHELL_JS = r"""
   (function() {
     const wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
     if (!wrapper) return;
+    // ─── self-pruning window listeners ─────────────────────────────────
+    // Per-display ``window`` resize/scroll/keydown handlers would
+    // otherwise accumulate one set per figure across a notebook session:
+    // anonymous handlers can't be removed, and the wrapper carries no
+    // unload hook. ``onWindow`` wraps each handler so that the first time
+    // it fires after this figure's wrapper has left the DOM (cell re-run,
+    // cleared output) it removes itself — bounding the live listener count
+    // to on-screen figures without a document-wide MutationObserver.
+    const onWindow = (type, handler, opts) => {
+      const wrapped = (e) => {
+        if (!wrapper.isConnected) {
+          window.removeEventListener(type, wrapped, opts);
+          return;
+        }
+        handler(e);
+      };
+      window.addEventListener(type, wrapped, opts);
+    };
     const svg = wrapper.querySelector('svg');
     const tiles = wrapper.querySelectorAll('.fig-tile');
     const overlay = document.querySelector('.ocd-zoom-overlay[data-uid="__UID__"]');
@@ -2501,7 +2519,7 @@ void main() {
         // Any other key closes.
         closeZoom();
       }, true);  // capture phase so we beat JupyterLab's own handlers
-      window.addEventListener('resize', () => {
+      onWindow('resize', () => {
         if (overlay.classList.contains('active')) syncOverlayToPane();
       });
     }
@@ -2735,7 +2753,7 @@ void main() {
             resetView();
           }
         }
-        window.addEventListener('keydown', onKey);
+        onWindow('keydown', onKey);
 
         // Handlers attach to the HIT RECTS (which live in the outer SVG
         // coord system at the cell's bbox). The cells' viewBox is
