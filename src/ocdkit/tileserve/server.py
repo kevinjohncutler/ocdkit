@@ -284,6 +284,29 @@ def make_app():
         h.update(headers or {})
         return Response(content=blob, media_type=media, headers=h)
 
+    # ── generic viewer HTML (the zoomable colormap tile grid + LinkedPanel) ──
+    from fastapi.responses import HTMLResponse
+    from .viewer import grid_html, view_html, viewgl_html
+
+    @app.get("/grid/{sid}", response_class=HTMLResponse)
+    async def grid(sid: str, panel: str = "spectra", hdr_gain: str = "auto",
+                   hdr_cmap: str = "", ref_re: str = ""):
+        # panel: which LinkedPanel the bottom box hosts ("spectra" density lines
+        # or "scatter" discrete object points). hdr_gain: "auto" tracks the display
+        # headroom, a number forces the HDR multiplier. hdr_cmap: a colormap name
+        # lifts intensity tiles through the HDR pipeline. ref_re: optional host
+        # regex (token chars only) that lights up matching reference overlays.
+        return grid_html(sid, panel=panel, hdr_cmap=hdr_cmap, hdr_gain=hdr_gain,
+                         ref_token_re=ref_re)
+
+    @app.get("/view/{sid}", response_class=HTMLResponse)
+    async def view(sid: str, layer: str = ""):
+        return view_html(sid, layer)
+
+    @app.get("/viewgl/{sid}", response_class=HTMLResponse)
+    async def viewgl(sid: str, layer: str = ""):
+        return viewgl_html(sid, layer)
+
     for ext in _EXTENSIONS:
         try:
             ext(app)
