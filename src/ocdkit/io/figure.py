@@ -130,7 +130,12 @@ class SvgFigure:
                 f"got {type(payload).__name__}.  For matplotlib figures, "
                 f"pass them directly to figs_to_deck without wrapping."
             )
-        self._tree = ET.ElementTree(ET.fromstring(text))
+        # huge_tree: an SVG payload can carry many large base64 textures
+        # (native-res linked tiles, big FOVs), exceeding libxml2's default
+        # ~10 MB per-text-node limit. Without this, ET.fromstring raises
+        # "Buffer size limit exceeded, try XML_PARSE_HUGE" on big figures.
+        _svg_parser = ET.XMLParser(huge_tree=True)
+        self._tree = ET.ElementTree(ET.fromstring(text, parser=_svg_parser))
         # SVG is resolution-independent; this is the render-to-raster default.
         self._dpi = 96
         # When True (default), ``_repr_mimebundle_`` wraps the SVG in an
@@ -433,12 +438,11 @@ _SHELL_CSS = """
     max-width: 100%;
     height: auto;
     /* Anchor for SVG ``fill="currentColor"`` / ``stroke="currentColor"``
-       (image_grid label + outline defaults). High-contrast adaptive:
-       near-black on light backgrounds, near-white on dark, so labels
-       stay readable when painted over arbitrary image content in
-       Jupyter notebooks and embedded dashboards alike. Explicit
-       ``fontcolor=...`` on ``image_grid`` still overrides via the SVG
-       ``fill`` attribute (more specific than CSS). */
+       used by callers that pass ``fontcolor='currentColor'`` (legacy
+       CSS-theme path). The default ``fontcolor='auto'`` path bypasses
+       this entirely — it emits per-cell fill + stroke halo computed
+       from luminance under each label region, which is the only thing
+       that stays readable on arbitrary image content. */
     color: light-dark(#1a1a1a, #f0f0f0);
   }
   .ocd-svgfig[data-uid="__UID__"] .fig-tile {
@@ -482,16 +486,33 @@ _SHELL_CSS = """
     user-select: none;
     -webkit-user-select: none;
   }
+  /* Clickable "Masks" label (toggles the ncolor segmentation under the
+     outlines). pointer-events:all overrides the cell subtree's none. */
+  .ocd-svgfig[data-uid="__UID__"] text.ocd-mask-toggle {
+    cursor: pointer; pointer-events: all;
+    /* keep wiggle pivoting on the glyph box, not the SVG origin */
+    transform-box: fill-box; transform-origin: center;
+  }
+  .ocd-svgfig[data-uid="__UID__"] text.ocd-mask-toggle:hover {
+    font-weight: bold;
+    animation: ocd-mask-wiggle__UID__ 0.4s ease-in-out;
+  }
+  @keyframes ocd-mask-wiggle__UID__ {
+    0%   { transform: rotate(0deg); }
+    25%  { transform: rotate(-4deg); }
+    50%  { transform: rotate(3deg); }
+    75%  { transform: rotate(-2deg); }
+    100% { transform: rotate(0deg); }
+  }
   .ocd-svgfig[data-uid="__UID__"] .ocd-svgfig-actions {
-    position: absolute;
-    bottom: 4px; right: 4px;
+    /* Flow BELOW the figure (the actions div follows the content in the DOM),
+       not absolutely overlaid on the plot. ``inline-block`` wrapper grows to
+       include this row, so the buttons always sit clear of the lowest plot
+       element instead of covering the bottom-right of the spectra panel. */
     display: flex;
     gap: 8px;
-    opacity: 0;
-    transition: opacity .18s ease;
-    pointer-events: none;
-  }
-  .ocd-svgfig[data-uid="__UID__"]:hover .ocd-svgfig-actions {
+    justify-content: flex-end;
+    margin-top: 6px;
     opacity: 1;
     pointer-events: auto;
   }
@@ -522,6 +543,45 @@ _SHELL_CSS = """
   .ocd-zoom-overlay[data-uid="__UID__"].ocd-sdr-mode image,
   .ocd-zoom-overlay[data-uid="__UID__"].ocd-sdr-mode img {
     dynamic-range-limit: standard;
+  }
+  /* Per-cell adaptive ``image_grid`` labels. Each ``<text>`` carries
+     ``--ocd-tt-hdr`` and ``--ocd-tt-sdr`` custom properties — the
+     Python-side luminance sampler emits the contrast pick under each
+     assumption. The rules below pick the right one for current viewing
+     conditions:
+       1. Default → SDR pick (works on any display, including SDR-only).
+       2. ``@media (dynamic-range: high)`` → display can render HDR, so
+          the UHDR gain map IS being composited; switch to the HDR pick.
+       3. ``.ocd-sdr-mode`` (HDR toggle off in the shell) → user
+          explicitly asked for SDR rendering even on an HDR display.
+          Force the SDR pick back.
+     NOTE: We use ``dynamic-range: high`` not ``standard`` because both
+     queries match on HDR displays (HDR-capable monitors can also show
+     standard content), so keying off ``standard`` would always fire
+     and the HDR pick would never win.
+     Plain SVG ``fill`` attribute is intentionally NOT set inline (only
+     CSS custom props) so author-stylesheet ``fill`` rules can win the
+     cascade. */
+  /* Match both the parent ``<text>`` (auto-cell mode: single fill,
+     CSS vars set on the text element) AND its descendant ``<tspan>``s
+     (per-letter mode: each tspan has its own pair of CSS vars). The
+     ``var()`` lookup happens at the element where ``fill`` is computed,
+     so applying the rule to both targets makes either mode work. */
+  .ocd-svgfig[data-uid="__UID__"] text.ocd-adaptive-text,
+  .ocd-svgfig[data-uid="__UID__"] text.ocd-adaptive-text > tspan {
+    fill: var(--ocd-tt-sdr, currentColor);
+  }
+  @media (dynamic-range: high) {
+    .ocd-svgfig[data-uid="__UID__"] text.ocd-adaptive-text,
+    .ocd-svgfig[data-uid="__UID__"] text.ocd-adaptive-text > tspan {
+      fill: var(--ocd-tt-hdr, currentColor);
+    }
+  }
+  .ocd-svgfig[data-uid="__UID__"].ocd-sdr-mode text.ocd-adaptive-text,
+  .ocd-svgfig[data-uid="__UID__"].ocd-sdr-mode text.ocd-adaptive-text > tspan,
+  .ocd-zoom-overlay[data-uid="__UID__"].ocd-sdr-mode text.ocd-adaptive-text,
+  .ocd-zoom-overlay[data-uid="__UID__"].ocd-sdr-mode text.ocd-adaptive-text > tspan {
+    fill: var(--ocd-tt-sdr, currentColor);
   }
   .ocd-svgfig[data-uid="__UID__"] .ocd-hdrbtn.ocd-hdr-off {
     color: #c97a3a;  /* warm tint = SDR mode active */
@@ -1682,7 +1742,20 @@ void main() {
         try { webglViewer.clearActive(); } catch (_) {}
       }
       currentTile = tile;
-      const hiresHref = tile.getAttribute('data-hires-href');
+      let hiresHref = tile.getAttribute('data-hires-href');
+      // Live label tile → render in the popup via createLabelViewer (same
+      // LabelGLRenderer as the inline tile), so the zoom gets palette fill
+      // + outlines + HDR boundary AND live hover-highlight. No <image>
+      // snapshot, no <foreignObject> re-raster.
+      let labelCv = tile.querySelector('canvas[data-label-tile]');
+      if (!labelCv) {
+        // Fallback: querySelector type-selectors for HTML elements inside
+        // an SVG <foreignObject> are finicky in some engines.
+        const cs = tile.getElementsByTagName('canvas');
+        for (let i = 0; i < cs.length; i++) {
+          if (cs[i].hasAttribute('data-label-tile')) { labelCv = cs[i]; break; }
+        }
+      }
       // Extract label (if any) for the floating title above the plot.
       const labelSrc = tile.querySelector('text.fig-figure-text, text');
       const labelText = labelSrc ? (labelSrc.textContent || '') : '';
@@ -1699,10 +1772,13 @@ void main() {
       const figRoot = tile.closest('svg');
       const viewerHint = (figRoot && figRoot.dataset
                             && figRoot.dataset.popupViewer) || 'auto';
+      // Label tiles and the legacy SVG viewer are per-tile (bound to a
+      // specific source) and can't be recycled — rebuild on every open.
       const needLegacyRebuild = webglViewer && webglViewer.isLegacy;
-      const firstBuild = (!webglViewer || needLegacyRebuild);
+      const needLabelRebuild = !!labelCv || (webglViewer && webglViewer.isLabel);
+      const firstBuild = (!webglViewer || needLegacyRebuild || needLabelRebuild);
       if (firstBuild) {
-        if (needLegacyRebuild) {
+        if ((needLegacyRebuild || needLabelRebuild) && webglViewer) {
           try { webglViewer.dispose(); } catch (_) {}
           webglViewer = null;
         }
@@ -1711,6 +1787,11 @@ void main() {
         canvasEl.className = 'ocd-zoom-canvas';
         overlayInner.appendChild(canvasEl);
 
+        // Live label tile: render via the shared LabelGLRenderer.
+        if (labelCv) {
+          webglViewer = createLabelViewer(canvasEl, labelCv);
+          if (webglViewer) webglViewer.isLabel = true;
+        }
         // Default viewer is the CSS-img path: plain <img> + CSS
         // matrix3d transform on its own compositor layer. Routes the
         // raster through BitmapImage → CALayer (Safari) / Skia HDR
@@ -1725,10 +1806,10 @@ void main() {
         // decode / upload) but breaks HDR. Used for benchmarking or
         // SDR-only workloads where pan/zoom smoothness matters more
         // than correctness on HDR content.
-        if (viewerHint === 'webgl' || viewerHint === 'worker') {
+        if (!webglViewer && (viewerHint === 'webgl' || viewerHint === 'worker')) {
           webglViewer = createPopupWorkerViewer(canvasEl)
                      || createPopupWebglViewer(canvasEl);
-        } else {
+        } else if (!webglViewer) {
           webglViewer = createCssImgViewer(canvasEl);
         }
         if (!webglViewer) {
@@ -1804,7 +1885,12 @@ void main() {
           });
         }
       };
-      if (thumbHref) {
+      if (viewerAtOpen && viewerAtOpen.isLabel) {
+        // Live label viewer: nothing to fetch — its data is already in
+        // the renderer. Just show the popup and fit.
+        showPopup();
+        if (webglViewer === viewerAtOpen) applyTransform();
+      } else if (thumbHref) {
         viewerAtOpen.loadImage(thumbHref, () => {
           showPopup();
           if (webglViewer === viewerAtOpen) applyTransform();
@@ -2036,6 +2122,192 @@ void main() {
                get imgW() { return imgW; }, get imgH() { return imgH; } };
     }
 
+    // Live label-tile popup viewer: renders the segmentation through the
+    // SAME LabelGLRenderer as the inline tile, so the popup gets palette
+    // fill + outlines + HDR boundary AND live hover-highlight (the inline
+    // tile's interactivity, now in the zoom). Mirrors the WebGL image
+    // viewer's transform (LabelGL.mat3ForFit) so pan/zoom feels identical.
+    function createLabelViewer(parent, srcCanvas) {
+      if (!self.LabelGL) return null;
+      const canvas = document.createElement('canvas');
+      // pointer-events:none so the popup's pan/zoom handlers (on parent)
+      // own the gestures; hover is wired on ``parent`` below.
+      canvas.style.cssText =
+        'position:absolute; inset:0; width:100%; height:100%;'
+      + ' image-rendering:pixelated; pointer-events:none;';
+      parent.appendChild(canvas);
+      const gl = canvas.getContext('webgl2',
+        { alpha: true, premultipliedAlpha: false });
+      if (!gl) { if (canvas.parentElement) canvas.parentElement.removeChild(canvas); return null; }
+      // HDR float16 extended-range backbuffer (see inline controller) so >1.0
+      // outline/highlight colors emit TRUE HDR. Needs EXT_color_buffer_float;
+      // (re)allocated in syncSize on every resize. SDR fallback if absent.
+      const _hdr = !!gl.drawingBufferStorage;
+      if (_hdr) {
+        try {
+          gl.getExtension('EXT_color_buffer_float');
+          gl.drawingBufferColorSpace = 'display-p3';
+        } catch (e) {}
+      }
+      let cfg = srcCanvas.__labelCfg || self.LabelGL.decodeAttrs(srcCanvas);
+      const imgW = cfg.w, imgH = cfg.h;
+      let lastState = { s: 1, tx: 0, ty: 0 };
+      // Base image: mirror the THUMBNAIL — an HTML <img> of the tile's sibling
+      // SVG <image> placed BEHIND the transparent canvas, so a uhdr base keeps
+      // its gain-map HDR (uploading it into the GPU as an 8-bit texture would
+      // flatten it to SDR). The <img>'s CSS transform tracks the canvas's
+      // pan/zoom (see redraw). The label canvas above stays transparent
+      // (baseSrc is NOT passed to buildRenderer → imageVisible 0).
+      let baseImg = null;
+      {
+        const g = srcCanvas.closest && srcCanvas.closest('g.fig-tile');
+        const sib = g && g.querySelector('image');
+        const href = (cfg.baseSrc) || (sib && (sib.getAttribute('href')
+          || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
+        if (href) {
+          baseImg = document.createElement('img');
+          baseImg.crossOrigin = 'anonymous';
+          baseImg.style.cssText = 'position:absolute; left:0; top:0;'
+            + ' pointer-events:none; image-rendering:pixelated;'
+            + ' transform-origin:0 0; will-change:transform;';
+          baseImg.style.width = imgW + 'px';
+          baseImg.style.height = imgH + 'px';
+          baseImg.onload = function () { redraw(lastState); };
+          parent.insertBefore(baseImg, canvas);   // behind the label canvas
+          baseImg.src = href;
+        } else {
+          // No base image (a pure segmentation tile): give the popup the same
+          // solid themed backdrop as the inline tile's <rect fill="Canvas">,
+          // so the semi-transparent cells composite over it (black in dark
+          // mode, white in light) instead of the bare zoom overlay. The popup
+          // overlay lives on document.body and does NOT inherit the figure's
+          // color-scheme, so opt this canvas in explicitly or ``Canvas``
+          // resolves to its light value (white) even in dark mode.
+          canvas.style.colorScheme = 'light dark';
+          canvas.style.backgroundColor = 'Canvas';
+        }
+      }
+      let r;
+      try {
+        // No baseSrc → buildRenderer leaves the canvas transparent (labels/
+        // outlines only); the HDR <img> above provides the base.
+        r = self.LabelGL.buildRenderer(gl, cfg, () => redraw(lastState));
+      } catch (e) {
+        console.warn('LabelGL popup:', e);
+        if (baseImg && baseImg.parentElement) baseImg.parentElement.removeChild(baseImg);
+        if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
+        return null;
+      }
+      // HDR toggle response (mirror the inline controller): SDR → boosts to
+      // 1.0 (SDR white); HDR → configured boosts. Applied on open + on toggle.
+      const _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
+      function setSdr(sdr) {
+        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
+                        highlightBoost: sdr ? 1.0 : 1.8 });
+        redraw(lastState);
+      }
+      let _cssW = 0, _cssH = 0, _dpr = 1, _dirty = true;
+      function invalidateSize() { _dirty = true; }
+      canvas.__invalidateSize = invalidateSize;
+      function syncSize() {
+        if (!_dirty) return;
+        _cssW = canvas.clientWidth; _cssH = canvas.clientHeight;
+        _dpr = window.devicePixelRatio || 1;
+        const w = Math.max(1, Math.round(_cssW * _dpr));
+        const h = Math.max(1, Math.round(_cssH * _dpr));
+        // Always size via width/height first (full resolution + SDR fallback),
+        // then upgrade the same-size buffer to float16 HDR in place. If
+        // drawingBufferStorage errors it's a no-op and the SDR buffer remains,
+        // so resolution is never lost.
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        if (_hdr) { try { gl.drawingBufferStorage(gl.RGBA16F, w, h); } catch (e) {} }
+        _dirty = false;
+      }
+      function redraw(s) {
+        lastState = s;
+        syncSize();
+        gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+        r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));
+        // Track the HDR base <img> to the SAME fit+pan+zoom the shader uses
+        // (mat3ForFit's geometry), so the browser-composited HDR base stays
+        // pixel-aligned with the GPU label/outline overlay.
+        if (baseImg) {
+          const sc = (s && s.s) || 1, tx = (s && s.tx) || 0, ty = (s && s.ty) || 0;
+          const fit = Math.min(_cssW / imgW, _cssH / imgH);
+          const ox = (_cssW * 0.5 - imgW * fit * 0.5) * sc + tx;
+          const oy = (_cssH * 0.5 - imgH * fit * 0.5) * sc + ty;
+          baseImg.style.transform =
+            'translate(' + ox + 'px,' + oy + 'px) scale(' + (fit * sc) + ')';
+        }
+      }
+      function loadImage(url, onLoaded) { if (onLoaded) onLoaded(); }  // data is in cfg
+      function isPointInImage(clientX, clientY) {
+        const rc = canvas.getBoundingClientRect();
+        return !!self.LabelGL.imagePointFromCss(lastState, imgW, imgH,
+          rc.width, rc.height, clientX - rc.left, clientY - rc.top);
+      }
+      // hover-highlight + tooltip, wired on the gesture surface (parent)
+      let tip = null, cur = 0;
+      function onMove(e) {
+        const rc = canvas.getBoundingClientRect();
+        const p = self.LabelGL.imagePointFromCss(lastState, imgW, imgH,
+          rc.width, rc.height, e.clientX - rc.left, e.clientY - rc.top);
+        const id = p ? r.labelAt(p.px, p.py) : 0;
+        if (id !== cur) { cur = id; r.setUniforms({ highlightLabel: id }); redraw(lastState); }
+        if (id > 0) {
+          if (!tip) {
+            tip = document.createElement('div');
+            tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
+              + 'background:rgba(20,20,20,.92);color:#eee;font:11px sans-serif;'
+              + 'padding:2px 6px;border-radius:4px;';
+            document.body.appendChild(tip);
+          }
+          tip.textContent = 'label ' + id; tip.style.display = 'block';
+          tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px';
+        } else if (tip) { tip.style.display = 'none'; }
+      }
+      function onLeave() {
+        cur = 0; r.setUniforms({ highlightLabel: 0 }); redraw(lastState);
+        if (tip) tip.style.display = 'none';
+      }
+      parent.addEventListener('pointermove', onMove);
+      parent.addEventListener('pointerleave', onLeave);
+      // Clear any active hover (highlight + floating tooltip) WITHOUT
+      // tearing the viewer down. closeZoom keeps the viewer alive for the
+      // texture LRU, so it never calls dispose() — but the ``tip`` div
+      // lives on document.body and ``pointerleave`` doesn't necessarily
+      // fire when the overlay is hidden via Esc / click-outside, leaving
+      // the 'label N' tooltip stuck on the page. closeZoom calls this.
+      function hideHover() {
+        cur = 0;
+        try { r.setUniforms({ highlightLabel: 0 }); redraw(lastState); } catch (_) {}
+        if (tip) tip.style.display = 'none';
+      }
+      function dispose() {
+        parent.removeEventListener('pointermove', onMove);
+        parent.removeEventListener('pointerleave', onLeave);
+        if (tip && tip.parentElement) tip.parentElement.removeChild(tip);
+        tip = null;
+        if (baseImg && baseImg.parentElement) baseImg.parentElement.removeChild(baseImg);
+        baseImg = null;
+        try { const ext = gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (_) {}
+        if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
+      }
+      function clearActive() {}  // one tile per popup session
+      // Apply the figure's current HDR-toggle state to this fresh popup
+      // viewer (the overlay carries .ocd-sdr-mode); setUniforms only — the
+      // first real paint comes from openZoom's applyTransform.
+      try { r.setUniforms({
+        outlineHdrBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr,
+        highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : 1.8 }); } catch (_) {}
+      return { canvas, redraw, loadImage, isPointInImage, dispose, clearActive,
+               hideHover, setSdr,
+               get textureLoaded() { return true; },
+               get imgW() { return imgW; }, get imgH() { return imgH; } };
+    }
+
     // Legacy SVG path — used only when WebGL2 isn't available.  Mirrors
     // the WebGL viewer's public interface (redraw, loadImage,
     // isPointInImage, dispose) so the rest of the popup code doesn't
@@ -2185,6 +2457,10 @@ void main() {
     }
     function closeZoom() {
       detachOverlayResizeTracking();
+      // Label-tile popups keep a floating 'label N' tooltip on document.body
+      // and persist the viewer across closes (texture LRU). Clear the hover
+      // so the tooltip + highlight don't stick to the page after close.
+      if (webglViewer && webglViewer.hideHover) webglViewer.hideHover();
       // Keep webglViewer + canvasEl alive across closes. The worker
       // holds a hot texture LRU — re-opening the popup (same figure
       // or arrow-navigation re-entry) is then a Map lookup + draw,
@@ -2541,6 +2817,22 @@ void main() {
       if (cells.length > 0 && hits.length === cells.length) {
         const RAS_W = parseFloat(svg.dataset.linkRasterW) || 1;
         const RAS_H = parseFloat(svg.dataset.linkRasterH) || 1;
+        // Tile pyramid levels are indexed COARSEST→FINEST (level 0 = coarsest,
+        // NLEV-1 = full res), per block_mean_pyramid. NLEV lets us pick a
+        // display-sized level + know which index is full res.
+        const NLEV = Math.max(1, parseInt(svg.dataset.linkNlevels) || 1);
+        const FULL_LEVEL = NLEV - 1;
+        // Outline stroke knobs (emitter side picks the markup): cell
+        // outlines use ``stroke-width: var(--ocd-osw, <image-px>)`` so they
+        // scale with zoom by default. When a screen-px floor is requested
+        // we set --ocd-osw per frame to max(image-px-in-vb-units, floor),
+        // keeping outlines visible when zoomed far out without re-emitting.
+        const _outlineBase = parseFloat(svg.dataset.linkOutlinePx) || 1;
+        const _outlineMinPx = parseFloat(svg.dataset.linkOutlineMinPx) || 0;
+        // Cached cell display width for the outline-min calc — invalidated on
+        // resize so applyViewBox never getBoundingClientRect()s (reflow) per frame.
+        let _dispWCache = 0;
+        onWindow('resize', () => { _dispWCache = 0; });
         // Parse initial ROI from data-link-roi="x y w h" (source px).
         const roiAttr = (svg.dataset.linkRoi || '').trim().split(/\s+/);
         const rawX = parseFloat(roiAttr[0]) || 0;
@@ -2583,8 +2875,8 @@ void main() {
         // perceptible lag). ZOOM updates only ``target`` and lets the
         // rAF tween ease ``state`` toward it (avoids the discrete-
         // wheel-notch jumpiness).
-        const state = { x: initX, y: initY, w: initW, h: initH };
-        const target = { x: initX, y: initY, w: initW, h: initH };
+        const state = { x: initX, y: initY, w: initW, h: initH, r: 0 };
+        const target = { x: initX, y: initY, w: initW, h: initH, r: 0 };
         // Zoom limits: max-zoom-in = 8 source-px window, max-zoom-out =
         // 8× full image. Aspect lock means we only need a single
         // ``scale`` (= w / initW) — w and h move together.
@@ -2593,13 +2885,1169 @@ void main() {
         const TWEEN_ALPHA = 0.35;
         const TWEEN_EPS = 0.25;
         let _raf = 0;
+        let _gestureActive = false;   // a trackpad gesture owns zoom+rotate
+        // Inverse-rotation fraction map: a rotated display fraction (fx,fy in
+        // [0,1] over the cell) → the un-rotated viewport fraction. Used to
+        // anchor rotate/zoom at the cursor instead of the viewport centre:
+        // src-under-cursor = vp.xy + _unrotFrac(f, r) * vp.wh.
+        function _unrotFrac(fx, fy, r) {
+          const cx = (fx - 0.5) * cellAR, cy = (fy - 0.5);
+          const cs = Math.cos(-r), sn = Math.sin(-r);
+          return { x: (cs * cx - sn * cy) / cellAR + 0.5, y: (sn * cx + cs * cy) + 0.5 };
+        }
+
+        // ─── WebGL image layer (fast pinch) ───────────────────────────
+        // The SVG-viewBox path re-rasterizes every embedded <image> on
+        // each pointer/wheel event — fine for drag/scroll, but pinch's
+        // high event rate makes that visibly slow on big rasters. Here a
+        // single WebGL2 canvas sits BEHIND the SVG and renders each cell's
+        // texture via a shared-viewport uniform (no re-raster). We hide
+        // the SVG <image>s (WebGL draws them) but keep the SVG cells'
+        // vector outlines/labels on top — they re-flow cheaply on viewBox
+        // change. Falls back to the pure-SVG path when WebGL2 is absent.
+        function createLinkedGLLayer() {
+          if (!window.WebGL2RenderingContext) return null;
+          const imgs = [];
+          for (let i = 0; i < cells.length; i++) imgs.push(cells[i].querySelector('image'));
+          if (!imgs.some(Boolean)) return null;
+          const host = svg.closest('.ocd-svgfig') || svg.parentElement;
+          if (!host) return null;
+          const canvas = document.createElement('canvas');
+          canvas.style.position = 'absolute';
+          canvas.style.left = '0'; canvas.style.top = '0';
+          canvas.style.pointerEvents = 'none';
+          canvas.style.zIndex = '0';
+          svg.style.position = 'relative';
+          svg.style.zIndex = '1';
+          host.insertBefore(canvas, host.firstChild);
+          const gl = canvas.getContext('webgl2',
+            { antialias: false, premultipliedAlpha: false, alpha: true,
+              // keep the framebuffer so the copy/save compositor can drawImage()
+              // this canvas after its frame (else it reads back empty/cleared).
+              preserveDrawingBuffer: true });
+          if (!gl) { host.removeChild(canvas); return null; }
+          const VS = '#version 300 es\n'
+            + 'in vec2 a_pos;out vec2 v_uv;uniform vec2 u_img;uniform vec4 u_vp;uniform float u_rot;'
+            + 'void main(){vec2 s=a_pos*u_img;vec2 f0=(s-u_vp.xy)/u_vp.zw;'
+            // rotate around the viewport center in aspect-correct (display) space
+            + 'float ar=u_vp.z/u_vp.w;vec2 d=(f0-0.5)*vec2(ar,1.0);'
+            + 'float cs=cos(u_rot),sn=sin(u_rot);'
+            + 'vec2 dr=vec2(cs*d.x-sn*d.y,sn*d.x+cs*d.y);vec2 f=dr/vec2(ar,1.0)+0.5;'
+            + 'gl_Position=vec4(f.x*2.0-1.0,1.0-f.y*2.0,0.0,1.0);v_uv=a_pos;}';
+          // Raw-tile colormap: intensity (R32F) → normalize(lo,hi) → LUT;
+          // rgb (RGBA32F) → passthrough. Matches the live grid's CFS shader so
+          // the cmap picker + self/global/bit-depth readout-norm are uniforms.
+          // u_mode: 0 = intensity (R32F → normalize(lo,hi) → LUT);
+          //         1 = passthrough RGBA (already display-encoded: mask/alts);
+          //         2 = LINEAR Display-P3 RGB → sRGB OETF (the make_rgb tile,
+          //             used only for EXPORT — on screen the WebGPU exc layer
+          //             owns the RGB; the GL passthrough underneath is linear).
+          const FS = '#version 300 es\nprecision highp float;in vec2 v_uv;'
+            + 'out vec4 o;uniform sampler2D u_tex;uniform sampler2D u_lut;'
+            + 'uniform float u_lo;uniform float u_hi;uniform int u_mode;'
+            + 'vec3 oetf(vec3 x){x=clamp(x,0.0,1.0);'
+            + 'return mix(12.92*x, 1.055*pow(x,vec3(1.0/2.4))-0.055, step(0.0031308,x));}'
+            + 'void main(){ if(u_mode==1){ o=texture(u_tex,v_uv); }'
+            + ' else if(u_mode==2){ vec4 c=texture(u_tex,v_uv); o=vec4(oetf(c.rgb), c.a); }'
+            + ' else { float v=texture(u_tex,v_uv).r;'
+            + ' float n=clamp((v-u_lo)/max(u_hi-u_lo,1e-12),0.0,1.0);'
+            + ' o=texture(u_lut, vec2(n,0.5)); } }';
+          function sh(t, s) {
+            const x = gl.createShader(t); gl.shaderSource(x, s); gl.compileShader(x);
+            if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) {
+              console.warn('linkedGL shader:', gl.getShaderInfoLog(x)); return null;
+            }
+            return x;
+          }
+          const prog = gl.createProgram();
+          const vs = sh(gl.VERTEX_SHADER, VS), fs = sh(gl.FRAGMENT_SHADER, FS);
+          if (!vs || !fs) { host.removeChild(canvas); return null; }
+          gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+          if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { host.removeChild(canvas); return null; }
+          gl.useProgram(prog);
+          const imgVAO = gl.createVertexArray();
+          gl.bindVertexArray(imgVAO);
+          const vbo = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0,1,0,0,1,1,1]), gl.STATIC_DRAW);
+          const aPos = gl.getAttribLocation(prog, 'a_pos');
+          gl.enableVertexAttribArray(aPos);
+          gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+          gl.bindVertexArray(null);
+          const U = { img: gl.getUniformLocation(prog, 'u_img'),
+                      vp: gl.getUniformLocation(prog, 'u_vp'),
+                      rot: gl.getUniformLocation(prog, 'u_rot'),
+                      tex: gl.getUniformLocation(prog, 'u_tex'),
+                      lut: gl.getUniformLocation(prog, 'u_lut'),
+                      lo: gl.getUniformLocation(prog, 'u_lo'),
+                      hi: gl.getUniformLocation(prog, 'u_hi'),
+                      mode: gl.getUniformLocation(prog, 'u_mode') };
+          gl.useProgram(prog); gl.uniform1i(U.tex, 0); gl.uniform1i(U.lut, 1);
+          gl.getExtension('OES_texture_float_linear');   // LINEAR on float tex
+          // ── colormap LUT (256×1 RGBA8) on unit 1; swapped live by the picker ──
+          const LUTS = (window.OCD_LUTS || {});
+          let CMAP = (LUTS.magma ? 'magma' : Object.keys(LUTS)[0]) || 'magma';
+          let NORMMODE = 'self';                       // self | global | bitdepth
+          let EXPORT_OETF = false;                     // OETF the linear RGB tile for PNG capture
+          const lutTex = gl.createTexture();
+          gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lutTex);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          function uploadLUT(name) {
+            const a = LUTS[name]; if (!a) return;
+            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lutTex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA,
+                          gl.UNSIGNED_BYTE, new Uint8Array(a));
+            gl.activeTexture(gl.TEXTURE0);
+          }
+          uploadLUT(CMAP);
+          gl.activeTexture(gl.TEXTURE0);
+          const tileMeta = new Array(cells.length).fill(null);  // per-cell raw hdrs
+          let RGLO = Infinity, RGHI = -Infinity, BITMAX = 65535; // readout pool
+          const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+          const textures = new Array(cells.length).fill(null);
+          function _newTex() {
+            const tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA,
+                          gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,0]));
+            return tex;
+          }
+          // Each cell's RAW tile URL: derive ``fmt=raw`` from ``data-tile-src``
+          // (async) or the baked ``href``. The GL layer fetches raw float32 +
+          // the X-Mode/X-Lo/X-Hi/X-Kind/X-Bitmax headers and colormaps on the
+          // GPU — NO PNG encode/decode (same path + speed as the live grid).
+          function _rawUrl(im, lvl) {
+            let s = im.getAttribute('data-tile-src')
+              || im.getAttribute('href')
+              || im.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+            if (!s) return '';
+            // set the pyramid level (the segment before ?); server clamps to
+            // the available levels and reports the actual one via X-Level.
+            if (lvl != null) s = s.replace(/\/(\d+)(\?|$)/, '/' + (lvl | 0) + '$2');
+            const u = s.indexOf('fmt=') >= 0 ? s.replace(/fmt=[a-z0-9]+/i, 'fmt=raw')
+              : (s + (s.indexOf('?') >= 0 ? '&' : '?') + 'fmt=raw');
+            // remote pages: route the loopback tile URL through the Jupyter proxy
+            return (window.__ocdResolveTileUrl ? window.__ocdResolveTileUrl(u) : u);
+          }
+          // ── Per-(cell,level) pyramid texture cache — mirrors plot_key_slices_live ──
+          // The live grid keeps EVERY fetched level in a Map keyed label/level so
+          // it can (a) paint the best cached level INSTANTLY (re-zoom never
+          // refetches) and (b) refine ONE level at a time (progressive sharpen).
+          // The old path kept a single per-cell texture and, on zoom, fetched
+          // every cell's full-res level in one Promise.all (~192 MB) → multi-second
+          // stalls and a full refetch on every re-zoom. This is the live-grid
+          // strategy: ``textures[i]``/``tileMeta[i]``/``tileLevel[i]`` are just the
+          // currently-DRAWN pointers, repointed (no upload) by _selectBest as the
+          // view changes; tileCache[i] holds the uploaded textures per level.
+          const tileCache = Array.from({ length: cells.length }, () => new Map()); // lvl -> {tex,t}
+          const tileLevel = new Array(cells.length).fill(-1);  // currently-DRAWN level (-1 = none)
+          // Coarsest level (index, width) whose width ≥ the cell's on-screen px at
+          // the current zoom: FULL_LEVEL - floor(log2(rasVisible/cw)). ``state.w``
+          // is the raster px currently spanning the cell width (= RAS_W at default
+          // zoom, shrinks as you zoom in → finer target).
+          function _targetLevel(i) {
+            let cw = 0;
+            try {
+              cw = ((_crects && _crects[i]) ? _crects[i].w : hits[i].getBoundingClientRect().width)
+                   * (window.devicePixelRatio || 1);
+            } catch (e) {}
+            if (cw < 1) return FULL_LEVEL;
+            const span = Math.max(1, state.w);
+            return Math.max(0, Math.min(FULL_LEVEL, FULL_LEVEL - Math.floor(Math.log2(span / cw))));
+          }
+          // Point the draw state at the finest CACHED level ≤ target — pure pointer
+          // swap, no GL upload, so render() is always instant. Returns true if any
+          // level is available to draw.
+          function _selectBest(i, target) {
+            for (let l = target; l >= 0; l--) {
+              const e = tileCache[i].get(l);
+              if (e) {
+                if (tileLevel[i] !== l) { textures[i] = e.tex; tileMeta[i] = e.t; tileLevel[i] = l; }
+                return true;
+              }
+            }
+            return false;
+          }
+          function _uploadTile(t) {              // one level → a GL texture
+            const tex = _newTex();
+            gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            if (t.mode === 'intensity') {
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, t.w, t.h, 0, gl.RED,
+                            gl.FLOAT, new Float32Array(t.buf));
+              if (t.kind === 'readout') {
+                RGLO = Math.min(RGLO, t.lo); RGHI = Math.max(RGHI, t.hi); BITMAX = t.bitmax;
+              }
+            } else {                                   // rgb float32 (ch 3 or 4)
+              const src = new Float32Array(t.buf), px = t.w * t.h;
+              let rgba;
+              if (t.ch === 4) { rgba = src; }
+              else {
+                rgba = new Float32Array(px * 4);
+                for (let p = 0, q = 0; p < px; p++) {
+                  rgba[q++] = src[p*3]; rgba[q++] = src[p*3+1];
+                  rgba[q++] = src[p*3+2]; rgba[q++] = 1.0;
+                }
+              }
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, t.w, t.h, 0, gl.RGBA,
+                            gl.FLOAT, rgba);
+            }
+            return tex;
+          }
+          // Fetch ONE (cell, level), upload + cache it. Resolves true on success,
+          // false on 204 / not-ready / error (caller retries). No-op if cached.
+          function _fetchLevel(i, level) {
+            if (tileCache[i].has(level)) return Promise.resolve(true);
+            const im = imgs[i]; if (!im) return Promise.resolve(false);
+            const _t0 = (window.performance && performance.now) ? performance.now() : 0;
+            return fetch(_rawUrl(im, level)).then(r => {
+              if (r.status === 204) return null;
+              if (!r.ok) throw new Error('tile ' + r.status);
+              const w = +r.headers.get('X-Level-Width'), h = +r.headers.get('X-Level-Height');
+              const ch = +(r.headers.get('X-Channels') || '1');
+              const mode = r.headers.get('X-Mode') || 'intensity';
+              const lo = parseFloat(r.headers.get('X-Lo') || '0');
+              const hi = parseFloat(r.headers.get('X-Hi') || '1');
+              const kind = r.headers.get('X-Kind') || 'reduction';
+              const bitmax = parseFloat(r.headers.get('X-Bitmax') || '65535');
+              const lvl = +(r.headers.get('X-Level') || String(level));
+              return r.arrayBuffer().then(buf => ({ w, h, ch, mode, lo, hi, kind, bitmax, level: lvl, buf }));
+            }).then(t => {
+              if (!t) return false;
+              const _t1 = (window.performance && performance.now) ? performance.now() : 0;
+              const tex = _uploadTile(t);
+              tileCache[i].set(t.level, { tex, t });
+              if (window.__ocdLog) {
+                const _t2 = (window.performance && performance.now) ? performance.now() : 0;
+                window.__ocdLog('tile ' + i + ' (' + t.mode + ' L' + t.level + ') fetch='
+                  + Math.round(_t1 - _t0) + 'ms up=' + Math.round(_t2 - _t1) + 'ms');
+              }
+              if (im && im.style) im.style.display = 'none';
+              return true;
+            }).catch(() => false);
+          }
+          // Synchronous placeholder per cell so the guard + render loop have a
+          // texture; tileMeta gates actual drawing until a real level lands.
+          for (let i = 0; i < cells.length; i++) { if (imgs[i]) textures[i] = _newTex(); }
+
+          // INITIAL load: fetch the COARSEST level (0) for every cell in one batch
+          // → instant first paint (124² ≈ 60 KB each), exactly like the live grid's
+          // poll(). Then redraw() schedules progressive refinement up to the
+          // display level. 204s (layer not projected yet) retry on a single timer.
+          let _tileTries = 0;
+          function _pollTiles(onDrain) {
+            const want = [];
+            for (let i = 0; i < cells.length; i++) if (imgs[i] && !tileCache[i].has(0)) want.push(i);
+            if (!want.length) { if (onDrain) onDrain(); redraw(); return; }
+            Promise.all(want.map(i => _fetchLevel(i, 0))).then(res => {
+              if (res.some(Boolean)) redraw();        // coalesced → 1 draw/batch
+              const allReady = cells.every((c, i) => !imgs[i] || tileCache[i].has(0));
+              if (allReady) { if (onDrain) onDrain(); redraw(); }
+              else if (_tileTries++ < 600)
+                // Backoff GROWS to ~2 s: real tiles fill on the bg thread within
+                // ~1-2 s (caught by the fast early polls); cells with NO data
+                // (blank readouts) 204 forever, so polling them every 150 ms for
+                // 90 s just churns the HTTP/1.1 connection pool and contends with
+                // the zoom refine. Slow polls = low churn, still recovers a late fill.
+                setTimeout(() => _pollTiles(onDrain), Math.min(2000, 80 + _tileTries * 60));
+              else if (onDrain) onDrain();
+            });
+          }
+          _pollTiles();
+          // Zoom-refine — exactly plot_key_slices_live's ``refine``: take ONE
+          // progressive step toward each cell's target level (so it sharpens, not
+          // pops, and a fast zoom doesn't fetch every level it flies past), cache
+          // it, repaint, then re-schedule until every cell reaches its target.
+          // Already-cached levels are reused with NO refetch — re-zoom is instant.
+          let _refineBusy = false;
+          function _refineLevels() {
+            if (_refineBusy || FULL_LEVEL <= 0) return;
+            const want = [];
+            for (let i = 0; i < cells.length; i++) {
+              if (!imgs[i] || !tileCache[i].has(0)) continue;   // not initially loaded yet
+              const tgt = _targetLevel(i);
+              let have = -1;
+              for (let l = tgt; l >= 0; l--) { if (tileCache[i].has(l)) { have = l; break; } }
+              const step = Math.min(tgt, have + 1);
+              if (!tileCache[i].has(step)) want.push([i, step]);
+            }
+            if (!want.length) return;
+            _refineBusy = true;
+            // ONE paint after the whole batch lands — exactly like
+            // plot_key_slices_live's refine() (fetch the level for all cells, then
+            // render() once). Painting per-tile (a previous attempt) ran a FULL
+            // redraw — including the ~208k-edge outline pass — after every tile,
+            // i.e. N redraws per level, which blocked the main thread and inflated
+            // each tile's fetch .then latency. The cached coarser level already
+            // shows (scaled) via the sync redraw on zoom, so there's no blank gap
+            // to fill with per-tile paints.
+            Promise.all(want.map(([i, l]) => _fetchLevel(i, l))).then(res => {
+              _refineBusy = false;
+              if (!res.some(Boolean)) return;
+              _paint();
+              const more = cells.some((c, i) =>
+                imgs[i] && tileCache[i].has(0) && !tileCache[i].has(_targetLevel(i)));
+              if (more) scheduleRefine();
+            });
+          }
+          let _refineTimer = null;
+          function scheduleRefine() {
+            if (_refineTimer) clearTimeout(_refineTimer);
+            _refineTimer = setTimeout(_refineLevels, 60);
+          }
+          if (!textures.some(Boolean)) { host.removeChild(canvas); return null; }
+
+          // Alt textures: the clickable "Masks" label CYCLES the cell through
+          // its alt rasters. Currently only ``data-alt-href`` is emitted (the
+          // pixel-exact ncolor raster), so this is a main↔ncolor toggle;
+          // ``data-alt2-href`` is an optional extra-state hook (handled here so
+          // adding a second raster needs no JS change). State 0 = main texture;
+          // 1..N = the alts. The GPU outlines draw afterward, so they stay on
+          // top of whichever is shown.
+          const altTexLists = new Array(cells.length).fill(null);   // [tex,…] per cell
+          const altState = new Array(cells.length).fill(0);         // 0=main; k=alt k-1
+          const altLoaders = new Array(cells.length).fill(null);    // deferred fetch fns
+          for (let i = 0; i < cells.length; i++) {
+            const im = imgs[i]; if (!im) continue;
+            const hrefs = [im.getAttribute('data-alt-href'),
+                           im.getAttribute('data-alt2-href')].filter(Boolean);
+            if (!hrefs.length) continue;
+            const texList = [];
+            for (let h = 0; h < hrefs.length; h++) {
+              const altHref = hrefs[h];
+              // The per-cell pixel-label raster (h>=1) wants NEAREST so the cell
+              // boundaries stay pixel-crisp ("exact pixel masks"); ncolor (h==0)
+              // keeps a smoothed minify so the flat fill reads cleanly.
+              const minF = (h >= 1) ? gl.NEAREST : gl.LINEAR;
+              const tex = gl.createTexture();
+              gl.bindTexture(gl.TEXTURE_2D, tex);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minF);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                            new Uint8Array([0,0,0,0]));
+              texList.push(tex);
+              const idx = i, myk = h + 1;
+              // The rasters fill on a bg thread → poll (204 = retry); blob URL is
+              // same-origin so the Image→texture upload doesn't taint.
+              let atries = 0;
+              const loadAlt = () => fetch(altHref).then(r => {
+                if (r.status === 204) { if (atries++ < 400) setTimeout(loadAlt, 200); return null; }
+                if (!r.ok) throw new Error('alt ' + r.status);
+                return r.blob();
+              }).then(blob => {
+                if (!blob) return;
+                const url = URL.createObjectURL(blob);
+                const img = new Image(); img.decoding = 'async';
+                img.onload = () => {
+                  gl.bindTexture(gl.TEXTURE_2D, tex);
+                  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                  URL.revokeObjectURL(url);
+                  if (altState[idx] === myk) redraw();
+                };
+                img.src = url;
+              }).catch(() => { if (atries++ < 400) setTimeout(loadAlt, 300); });
+              (altLoaders[i] || (altLoaders[i] = [])).push(loadAlt);  // DEFER (no eager fetch)
+            }
+            altTexLists[i] = texList;
+          }
+          function cycleAlt(i) {
+            if (i < 0 || i == null || !altTexLists[i]) return 0;
+            // Lazy: kick off the alt fetch(es) on the FIRST activation. This is
+            // what triggers the server-side ncolor compute, so it stays deferred
+            // until the user actually clicks "Masks" (default view = outlines).
+            if (altLoaders[i]) { altLoaders[i].forEach(fn => fn()); altLoaders[i] = null; }
+            const n = altTexLists[i].length;
+            altState[i] = (altState[i] + 1) % (n + 1);
+            redraw();
+            return altState[i];
+          }
+          // back-compat alias (old callers expect a boolean toggle)
+          const toggleAlt = cycleAlt;
+
+          // ─── GPU seg outlines (instanced expanded lines) ───────────────
+          // We parse the SHARED <defs> outline polygons (the same ones the
+          // SVG <use> references for export / no-WebGL fallback) into (p0,p1)
+          // line segments — no duplicate geometry payload — and expand each
+          // into a constant-screen-px quad on the GPU, so the FULL smoothed
+          // boundary stays crisp and free during zoom/rotate (no SVG
+          // re-raster). The SVG <use> on the tagged cells is hidden once this
+          // is live. Per-cell ncolor (filled) is not tagged → SVG handles it.
+          let lineProg = null, lineVAO = null, nSeg = 0, LU = null;
+          let outlineColor = [0.75, 0.75, 0.75, 1.0], outlineScreenPx = 1.0;
+          // >0 → width measured in IMAGE pixels (scales with zoom); else screen-px.
+          let outlineImagePx = parseFloat(svg.dataset.linkOutlineImagePx) || 0;
+          const _defsId = svg.dataset.linkOutlineDefs;
+          const _outStream = svg.dataset.linkOutlineStream === '1';
+          const outlineCell = Array.from(cells).map(c => c && c.dataset && c.dataset.outline === '1');
+          if ((_defsId || _outStream) && outlineCell.some(Boolean)) {
+            try {
+              let segData;
+              if (_defsId) {
+                const grp = document.getElementById(_defsId);
+                const dpolys = grp ? grp.querySelectorAll('polygon') : [];
+                const segs = [];
+                for (const poly of dpolys) {
+                  const ps = poly.getAttribute('points'); if (!ps) continue;
+                  const nums = ps.trim().split(/[\s,]+/).map(Number);
+                  const m = (nums.length / 2) | 0;
+                  for (let i = 0; i < m; i++) {
+                    const j = (i + 1) % m;     // closed loop
+                    segs.push(nums[2*i], nums[2*i+1], nums[2*j], nums[2*j+1]);
+                  }
+                }
+                segData = new Float32Array(segs);
+                if (segData.length === 0) throw new Error('no outline segments parsed');
+              } else {
+                segData = new Float32Array(0);   // stream: filled after /outline fetch
+                nSeg = 0;
+              }
+              const rgbaStr = (svg.dataset.linkOutlineRgba || '').split(',').map(Number);
+              if (rgbaStr.length === 4 && rgbaStr.every(v => !isNaN(v))) outlineColor = rgbaStr;
+              const spx = parseFloat(svg.dataset.linkOutlineScreenPx);
+              if (!isNaN(spx) && spx > 0) outlineScreenPx = spx;
+              // Miter-join ribbon: each instance is ONE edge that also knows its
+              // neighbour vertices (prev,p0,p1,next). The shader offsets each end
+              // along the JOINT miter (bisector) rather than the edge normal, so
+              // adjacent edges share the exact mitered vertex → they abut with no
+              // gap and no overlap. Result: a continuous, smooth outline whose
+              // coverage is uniform (correct under alpha — no joint double-blend),
+              // for the same per-edge cost as the old butt-cap segments but
+              // without the end-extension overdraw. Miter is clamped (limit ~4) so
+              // sharp turns truncate instead of spiking.
+              const LVS = '#version 300 es\n'
+                + 'in vec2 a_corner;in vec2 a_prev;in vec2 a_p0;in vec2 a_p1;in vec2 a_next;'
+                + 'uniform vec4 u_vp;uniform float u_rot;uniform vec2 u_cpx;uniform float u_hw;'
+                + 'out float v_perp;'
+                + 'vec2 toClip(vec2 s){vec2 f0=(s-u_vp.xy)/u_vp.zw;float ar=u_vp.z/u_vp.w;'
+                + 'vec2 d=(f0-0.5)*vec2(ar,1.0);float cs=cos(u_rot),sn=sin(u_rot);'
+                + 'vec2 dr=vec2(cs*d.x-sn*d.y,sn*d.x+cs*d.y);vec2 f=dr/vec2(ar,1.0)+0.5;'
+                + 'return vec2(f.x*2.0-1.0,1.0-f.y*2.0);}'
+                + 'vec2 toPx(vec2 s){return toClip(s)*u_cpx*0.5;}'   // clip→device px (isotropic)
+                + 'void main(){bool atP0=(a_corner.x<0.5);'
+                + 'vec2 cur=toPx(atP0?a_p0:a_p1);'
+                + 'vec2 aa=toPx(atP0?a_prev:a_p0);vec2 bb=toPx(atP0?a_p1:a_next);'
+                + 'vec2 dIn=cur-aa;vec2 dOut=bb-cur;'
+                + 'float lIn=length(dIn),lOut=length(dOut);'
+                + 'vec2 tIn=lIn>1e-5?dIn/lIn:vec2(0.0);vec2 tOut=lOut>1e-5?dOut/lOut:vec2(0.0);'
+                + 'if(lIn<=1e-5)tIn=tOut;if(lOut<=1e-5)tOut=tIn;'
+                + 'vec2 nIn=vec2(-tIn.y,tIn.x);vec2 nOut=vec2(-tOut.y,tOut.x);'
+                + 'vec2 mit=nIn+nOut;float ml=length(mit);'
+                + 'float hwAA=u_hw+0.5;vec2 mdir;float scl;'
+                + 'if(ml<1e-3){mdir=nOut;scl=1.0;}else{mdir=mit/ml;scl=1.0/max(dot(mdir,nOut),0.25);}'
+                + 'vec2 outpx=cur+a_corner.y*hwAA*scl*mdir;'
+                + 'v_perp=a_corner.y*hwAA;'                     // miter preserves perp width → AA ok
+                + 'gl_Position=vec4(outpx/(u_cpx*0.5),0.0,1.0);}';
+              // No MSAA on this context → AA in the shader: ramp the alpha over
+              // the outer 1px of the (perp) line width.
+              const LFS = '#version 300 es\nprecision highp float;in float v_perp;'
+                + 'out vec4 o;uniform vec4 u_color;uniform float u_hw;'
+                + 'void main(){float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0);'
+                + 'o=vec4(u_color.rgb,u_color.a*a);}';
+              const lvs = sh(gl.VERTEX_SHADER, LVS), lfs = sh(gl.FRAGMENT_SHADER, LFS);
+              if (lvs && lfs) {
+                lineProg = gl.createProgram();
+                gl.attachShader(lineProg, lvs); gl.attachShader(lineProg, lfs);
+                gl.linkProgram(lineProg);
+                if (!gl.getProgramParameter(lineProg, gl.LINK_STATUS)) { lineProg = null; }
+              }
+              if (lineProg) {
+                lineVAO = gl.createVertexArray();
+                gl.bindVertexArray(lineVAO);
+                const cbuf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, cbuf);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,-1, 1,-1, 0,1, 1,1]), gl.STATIC_DRAW);
+                const aC = gl.getAttribLocation(lineProg, 'a_corner');
+                gl.enableVertexAttribArray(aC); gl.vertexAttribPointer(aC, 2, gl.FLOAT, false, 0, 0);
+                // Per-edge instance = (prev,p0,p1,next), 8 floats / 32-byte stride.
+                const ibuf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+                ['a_prev', 'a_p0', 'a_p1', 'a_next'].forEach((nm, j) => {
+                  const loc = gl.getAttribLocation(lineProg, nm);
+                  if (loc < 0) return;
+                  gl.enableVertexAttribArray(loc);
+                  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 32, j * 8);
+                  gl.vertexAttribDivisor(loc, 1);
+                });
+                gl.bindVertexArray(null);
+                LU = { vp: gl.getUniformLocation(lineProg, 'u_vp'),
+                       rot: gl.getUniformLocation(lineProg, 'u_rot'),
+                       cpx: gl.getUniformLocation(lineProg, 'u_cpx'),
+                       hw: gl.getUniformLocation(lineProg, 'u_hw'),
+                       color: gl.getUniformLocation(lineProg, 'u_color') };
+                // Reconstruct closed loops from the (p0,p1) segment stream — a loop
+                // closes when an edge's p1 returns to the loop's first p0 — then
+                // emit (prev,p0,p1,next) per edge for the miter shader. The wire /
+                // <defs> format is unchanged (no Python / live-grid changes).
+                function segsToLoops(s) {
+                  const loops = []; let cur = null, sx = 0, sy = 0;
+                  const ne = (s.length / 4) | 0;
+                  for (let k = 0; k < ne; k++) {
+                    const x0 = s[4*k], y0 = s[4*k+1], x1 = s[4*k+2], y1 = s[4*k+3];
+                    if (!cur) { cur = [[x0, y0]]; sx = x0; sy = y0; }
+                    cur.push([x1, y1]);
+                    if (x1 === sx && y1 === sy) { cur.pop(); if (cur.length >= 2) loops.push(cur); cur = null; }
+                  }
+                  if (cur && cur.length >= 2) loops.push(cur);
+                  return loops;
+                }
+                function loopsToMiter(loops) {
+                  const o = [];
+                  for (const L of loops) {
+                    const m = L.length; if (m < 2) continue;
+                    for (let i = 0; i < m; i++) {
+                      const pv = L[(i-1+m)%m], a = L[i], b = L[(i+1)%m], nx = L[(i+2)%m];
+                      o.push(pv[0], pv[1], a[0], a[1], b[0], b[1], nx[0], nx[1]);
+                    }
+                  }
+                  return new Float32Array(o);
+                }
+                function uploadOutline(segArr) {
+                  const inst = loopsToMiter(segsToLoops(segArr));
+                  gl.bindVertexArray(lineVAO);
+                  gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+                  gl.bufferData(gl.ARRAY_BUFFER, inst, gl.STATIC_DRAW);
+                  gl.bindVertexArray(null);
+                  nSeg = (inst.length / 8) | 0;   // instances = edges
+                  if (window.__ocdLog) window.__ocdLog('outline (' + nSeg + ' edges)');
+                }
+                if (_defsId) uploadOutline(segData);
+                // GPU outlines live → hide the SVG <use> fallback on these cells.
+                for (let i = 0; i < cells.length; i++) {
+                  if (!outlineCell[i]) continue;
+                  cells[i].querySelectorAll('use').forEach(u => { u.style.display = 'none'; });
+                }
+                if (_outStream) {
+                  // Deferred outline: poll /outline (packed FOV-norm p0,p1 from
+                  // the bg thread), scale → RAS px, upload to the instance buffer.
+                  let s = '';
+                  for (const im of imgs) { if (im) { s = im.getAttribute('data-tile-src') || ''; if (s) break; } }
+                  const mm = s.match(/\/tile\/([0-9a-f]+)\//);
+                  const bm = s.match(/^(https?:\/\/[^/]+)/);
+                  if (mm && bm) {
+                    const _ob = bm[1] + '/outline/' + mm[1];
+                    const ourl = (window.__ocdResolveTileUrl ? window.__ocdResolveTileUrl(_ob) : _ob);
+                    let otries = 0;
+                    const fetchO = () => fetch(ourl).then(r => {
+                      if (r.status === 204) { if (otries++ < 600) setTimeout(fetchO, 150); return null; }
+                      return r.arrayBuffer();
+                    }).then(buf => {
+                      if (!buf) return;
+                      // Stream outline is already the miter-instance format
+                      // (prev,p0,p1,next, 8 floats/edge) in RAS px — built
+                      // vectorized in Python. Upload the buffer DIRECTLY; no
+                      // loop-reconstruction or scaling on the main thread (that
+                      // 200k+-edge JS loop stalled tile uploads).
+                      const inst = new Float32Array(buf);
+                      gl.bindVertexArray(lineVAO);
+                      gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+                      gl.bufferData(gl.ARRAY_BUFFER, inst, gl.STATIC_DRAW);
+                      gl.bindVertexArray(null);
+                      nSeg = (inst.length / 8) | 0;
+                      if (window.__ocdLog) window.__ocdLog('outline (' + nSeg + ' edges)');
+                      redraw();
+                    }).catch(() => { if (otries++ < 600) setTimeout(fetchO, 200); });
+                    fetchO();
+                  }
+                }
+              }
+            } catch (e) { console.warn('linkedGL outlines init failed:', e); lineProg = null; }
+          }
+
+          // Cell positions are stable during zoom/rotate/pan (only the
+          // content transforms) — cache them so redraw() doesn't call
+          // getBoundingClientRect per tile per frame. That per-frame query,
+          // right after the SVG viewBox writes, forced a synchronous layout
+          // of the 1000s of outline polygons → the zoom-out lag. Recompute
+          // only on resize.
+          let _svgR = null, _crects = null;
+          function _recompute() {
+            _svgR = svg.getBoundingClientRect();
+            _crects = [];
+            for (let i = 0; i < cells.length; i++) {
+              const cr = hits[i].getBoundingClientRect();
+              _crects[i] = { l: cr.left - _svgR.left, t: cr.top - _svgR.top, w: cr.width, h: cr.height };
+            }
+          }
+          // Paint SYNCHRONOUSLY on every redraw. plot_key_slices_live's render()
+          // is synchronous in the wheel handler, so the cached level scales in
+          // real time AS you zoom ("seamless mid-zoom"). An rAF-coalesced paint
+          // (the previous impl) lagged the tween by ~1 frame and effectively
+          // updated every OTHER frame → the GL canvas looked frozen until the
+          // gesture ended ("waits to finish a zoom event before updating"). Tile
+          // fills are already batched (one redraw per Promise.all), so a sync
+          // redraw does NOT re-introduce the N-uploads→N-redraws problem.
+          function redraw() {
+            scheduleRefine();                 // zoom-in may need a finer pyramid level
+            _redrawNow();
+          }
+          // Repaint WITHOUT scheduling a refine — used by the refine loop itself
+          // (it re-schedules on its own; painting a freshly cached level must not
+          // kick an extra refine pass).
+          function _paint() { _redrawNow(); }
+          function _redrawNow() {
+            if (!_svgR) _recompute();
+            if (!_svgR || _svgR.width < 1 || _svgR.height < 1) return;
+            const dpr = window.devicePixelRatio || 1;
+            const cw = Math.max(1, Math.round(_svgR.width * dpr));
+            const ch = Math.max(1, Math.round(_svgR.height * dpr));
+            if (canvas.width !== cw) canvas.width = cw;
+            if (canvas.height !== ch) canvas.height = ch;
+            canvas.style.width = _svgR.width + 'px';
+            canvas.style.height = _svgR.height + 'px';
+            gl.disable(gl.SCISSOR_TEST);
+            gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.enable(gl.SCISSOR_TEST);
+            // Image pass.
+            gl.useProgram(prog);
+            gl.bindVertexArray(imgVAO);
+            gl.uniform2f(U.img, RAS_W, RAS_H);
+            gl.uniform4f(U.vp, state.x, state.y, state.w, state.h);
+            gl.uniform1f(U.rot, state.r || 0);
+            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, lutTex);
+            gl.activeTexture(gl.TEXTURE0);
+            // Point each cell at the finest cached level ≤ its on-screen target —
+            // pure pointer swap (no GL upload), so pan/zoom repaints instantly from
+            // whatever is cached; _refineLevels fetches finer levels in the bg.
+            for (let i = 0; i < cells.length; i++) {
+              if (tileCache[i] && tileCache[i].size) _selectBest(i, _targetLevel(i));
+            }
+            for (let i = 0; i < cells.length; i++) {
+              if (!textures[i] || !_crects[i] || !tileMeta[i]) continue;
+              const m = tileMeta[i];
+              const _st = altState[i];
+              const _altTex = (_st > 0 && altTexLists[i]) ? altTexLists[i][_st - 1] : null;
+              const useAlt = !!_altTex;
+              if (useAlt) {
+                gl.uniform1i(U.mode, 1);            // mask RGBA → passthrough
+              } else if (m.mode === 'intensity') {
+                let lo = m.lo, hi = m.hi;
+                if (m.kind === 'readout') {
+                  if (NORMMODE === 'global' && RGLO < RGHI) { lo = RGLO; hi = RGHI; }
+                  else if (NORMMODE === 'bitdepth') { lo = 0; hi = m.bitmax || BITMAX; }
+                }
+                gl.uniform1i(U.mode, 0); gl.uniform1f(U.lo, lo); gl.uniform1f(U.hi, hi);
+              } else {
+                // RGB tile: linear Display-P3 — always OETF-encode (mode 2) so it
+                // displays with correct color. Passthrough (mode 1) showed the raw
+                // LINEAR values = too dark/wrong (the rgb_live=0 case). When the
+                // WebGPU exc layer is active (rgb_live=1) it draws on top of this
+                // anyway; this is the correct SDR fallback + the export source.
+                gl.uniform1i(U.mode, m.mode === 'rgb' ? 2 : 1);
+              }
+              const cr = _crects[i];
+              const x = Math.round(cr.l * dpr);
+              const wpx = Math.round(cr.w * dpr);
+              const hpx = Math.round(cr.h * dpr);
+              const yTop = Math.round(cr.t * dpr);
+              const y = canvas.height - (yTop + hpx);
+              gl.viewport(x, y, wpx, hpx);
+              gl.scissor(x, y, wpx, hpx);
+              gl.bindTexture(gl.TEXTURE_2D, useAlt ? _altTex : textures[i]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+            // Outline pass (GPU expanded lines) on tagged cells.
+            if (lineProg && nSeg > 0) {
+              gl.useProgram(lineProg);
+              gl.bindVertexArray(lineVAO);
+              gl.enable(gl.BLEND);
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+              gl.uniform4f(LU.vp, state.x, state.y, state.w, state.h);
+              gl.uniform1f(LU.rot, state.r || 0);
+              gl.uniform4f(LU.color, outlineColor[0], outlineColor[1], outlineColor[2], outlineColor[3]);
+              for (let i = 0; i < cells.length; i++) {
+                if (!outlineCell[i] || !_crects[i]) continue;
+                const cr = _crects[i];
+                const x = Math.round(cr.l * dpr);
+                const wpx = Math.round(cr.w * dpr);
+                const hpx = Math.round(cr.h * dpr);
+                const yTop = Math.round(cr.t * dpr);
+                const y = canvas.height - (yTop + hpx);
+                // Image-relative half-width: ``outlineImagePx`` image px → device
+                // px is (cell device width / RAS px visible), so the stroke grows
+                // when zoomed in and shrinks when zoomed out (tracks the pixels).
+                const hw = outlineImagePx > 0
+                  ? Math.max(0.4, outlineImagePx * (wpx / Math.max(state.w, 1e-6)) * 0.5)
+                  : Math.max(0.5, outlineScreenPx * dpr * 0.5);
+                gl.uniform1f(LU.hw, hw);
+                gl.viewport(x, y, wpx, hpx);
+                gl.scissor(x, y, wpx, hpx);
+                gl.uniform2f(LU.cpx, wpx, hpx);
+                gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nSeg);
+              }
+              gl.disable(gl.BLEND);
+            }
+            gl.bindVertexArray(null);
+          }
+          if (window.ResizeObserver) { try { new ResizeObserver(() => { _recompute(); redraw(); }).observe(svg); } catch (e) {} }
+          onWindow('resize', () => { _recompute(); redraw(); });
+          onWindow('scroll', () => { _recompute(); }, { passive: true });
+          // Live colormap / readout-norm control for the shell's picker + toggle.
+          function setCmap(name) { if (LUTS[name]) { CMAP = name; uploadLUT(name); redraw(); } }
+          function setNorm(mode) { NORMMODE = mode; redraw(); }
+          // EXPORT_OETF: sRGB-encode the linear RGB tile in the GL pass so a PNG
+          // composite of the GL canvas reproduces what the WebGPU exc layer shows.
+          function setExportOetf(b) { EXPORT_OETF = !!b; _redrawNow(); }   // sync: export reads next
+          return { redraw, redrawNow: _redrawNow, toggleAlt, cycleAlt, setCmap, setNorm, setExportOetf,
+                   cmaps: Object.keys(LUTS), getCmap: () => CMAP, getNorm: () => NORMMODE };
+        }
+        // Client render timeline logger (console: "[ocd-timing] <what> <ms>").
+        // T0 = now (figure JS running ≈ when the cell output appears), so the
+        // numbers are "ms after the figure showed up" — when each tile/outline/
+        // spectra actually paints, which the Python backend timing can't see.
+        window.__ocdT0 = performance.now();
+        window.__ocdLog = function (m) {
+          try { console.log('[ocd-timing]', m, (performance.now() - window.__ocdT0).toFixed(0) + 'ms'); }
+          catch (e) {}
+        };
+        let glLayer = null;
+        try { glLayer = createLinkedGLLayer(); }
+        catch (e) { console.warn('linkedGL init failed:', e); glLayer = null; }
+
+        // Live tile controls (cmap picker + readout-norm toggle), driving the
+        // GL layer's uniforms — same options as the standalone grid viewer.
+        if (glLayer && glLayer.setCmap && glLayer.cmaps && glLayer.cmaps.length) {
+          try {
+            const _host = svg.closest('.ocd-svgfig') || svg.parentElement;
+            const bar = document.createElement('div');
+            bar.className = 'ocd-tile-controls';
+            bar.style.cssText = 'display:flex;gap:12px;align-items:center;'
+              + 'margin-top:6px;font:12px system-ui,sans-serif;color:#888;'
+              + 'user-select:none;flex-wrap:wrap';
+            const sel = document.createElement('select');
+            sel.style.cssText = 'font:12px system-ui,sans-serif;';
+            glLayer.cmaps.forEach((k) => {
+              const o = document.createElement('option');
+              o.value = k; o.textContent = k;
+              if (k === glLayer.getCmap()) o.selected = true;
+              sel.appendChild(o);
+            });
+            sel.onchange = () => glLayer.setCmap(sel.value);
+            const cwrap = document.createElement('label');
+            cwrap.style.cssText = 'display:flex;gap:4px;align-items:center';
+            cwrap.appendChild(document.createTextNode('cmap'));
+            cwrap.appendChild(sel);
+            const NM = ['self', 'global', 'bitdepth'];
+            const NN = { self: 'self', global: 'global', bitdepth: 'bit-depth' };
+            const btn = document.createElement('button');
+            btn.style.cssText = 'font:12px system-ui,sans-serif;cursor:pointer;'
+              + 'background:none;border:1px solid #888;border-radius:3px;'
+              + 'color:inherit;padding:1px 7px';
+            let _ni = NM.indexOf(glLayer.getNorm()); if (_ni < 0) _ni = 0;
+            btn.textContent = 'key slice norm: ' + NN[NM[_ni]];
+            btn.onclick = () => {
+              _ni = (_ni + 1) % NM.length; glLayer.setNorm(NM[_ni]);
+              btn.textContent = 'key slice norm: ' + NN[NM[_ni]];
+            };
+            bar.appendChild(cwrap); bar.appendChild(btn);
+            _host.appendChild(bar);
+          } catch (e) { console.warn('tile controls:', e); }
+        }
+
+        // Clickable "Masks" label → CYCLE its cell through its alt rasters
+        // (currently: outlines ↔ ncolor pixel fill). ncolor is already a
+        // pixel-exact raster, so it IS the pixel-grid view. cycleAlt handles any
+        // number of alts; with one declared it's a plain toggle. A <title> child
+        // documents it on hover (the wiggle/bold CSS already flags it clickable).
+        const _maskToggle = svg.querySelector('text.ocd-mask-toggle');
+        if (_maskToggle && glLayer && glLayer.cycleAlt) {
+          _maskToggle.style.cursor = 'pointer';
+          const _altIdx = Array.from(cells).findIndex(c => c.querySelector('image[data-alt-href]'));
+          const _MODE_NAMES = ['outlines', 'ncolor pixel fill'];
+          try {
+            const _ttl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            _ttl.textContent = 'Masks: click to toggle outlines / ncolor pixel fill';
+            _maskToggle.appendChild(_ttl);
+          } catch (e) {}
+          _maskToggle.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const _st = glLayer.cycleAlt(_altIdx);
+            const _tt = _maskToggle.querySelector('title');
+            if (_tt) _tt.textContent = 'Masks: ' + (_MODE_NAMES[_st] || 'outlines');
+          });
+        }
+
+        // ─── WebGPU HDR sub-layer (adaptive EDR for data-hdr tiles) ─────
+        // A tile flagged ``data-hdr="1"`` carries a texture encoded as
+        // OETF(hdr_linear) with 1.0 = XDR peak (the gain-mapped RGB). The
+        // WebGL layer renders it SDR (1.0 = white). Here a per-HDR-cell
+        // WebGPU canvas (rgba16float + display-p3 + toneMapping:extended)
+        // re-interprets that same texture — EOTF → ×headroom → OETF — and
+        // sits on top of the WebGL render, below the SVG. ``headroom`` is
+        // the live display EDR headroom (screen API, polled), so highlights
+        // map to the available range, never clip, and follow brightness
+        // changes. No WebGPU / no adapter → the WebGL SDR render shows.
+        let hdrLayer = null;
+        async function createLinkedHDRLayer() {
+          if (!navigator.gpu) return null;
+          const hdrCells = [];
+          for (let i = 0; i < cells.length; i++) {
+            const im = cells[i].querySelector('image');
+            if (!im) continue;
+            // data-exc tiles carry per-excitation layers composited live; data-hdr
+            // tiles carry a single baked gain-mapped texture. Both ride this layer.
+            const isExc = im.getAttribute('data-exc') === '1';
+            if (im.getAttribute('data-hdr') === '1' || isExc)
+              hdrCells.push({ im, hit: hits[i], isExc });
+          }
+          if (!hdrCells.length) return null;
+          const adapter = await navigator.gpu.requestAdapter();
+          if (!adapter) return null;
+          const device = await adapter.requestDevice();
+          const host = svg.closest('.ocd-svgfig') || svg.parentElement;
+          if (!host) return null;
+          const code = `
+struct U { vp: vec4f, p: vec4f };
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var sm: sampler;
+@group(0) @binding(2) var<uniform> u: U;
+struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
+  var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  // uv.y flipped: texture row 0 is the TOP, clip y=+1 is the top.
+  var uv = array<vec2f,3>(vec2f(0,1), vec2f(2,1), vec2f(0,-1));
+  var o: VO; o.pos = vec4f(p[i],0,1); o.uv = uv[i]; return o;
+}
+fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }
+fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  // Rotate the sampling around the cell center (aspect-correct), inverse
+  // of the displayed rotation. u.p.y = rotation (rad), u.p.z = cell aspect.
+  let ar = u.p.z;
+  let p = (in.uv - vec2f(0.5)) * vec2f(ar, 1.0);
+  let cs = cos(u.p.y); let sn = sin(u.p.y);
+  let pr = vec2f(cs*p.x + sn*p.y, -sn*p.x + cs*p.y);     // R(-rot)
+  let f = pr / vec2f(ar, 1.0) + vec2f(0.5);
+  let uv = u.vp.xy + f * u.vp.zw;
+  let s = textureSample(t, sm, uv).rgb;     // sample first (uniform control flow)
+  let lin = vec3f(eotf(s.r), eotf(s.g), eotf(s.b)) * u.p.x;   // hdr_linear * headroom
+  let c = vec3f(oetf(lin.r), oetf(lin.g), oetf(lin.b));
+  // Outside the image (zoomed/panned/rotated past it) → black, not clamped edge.
+  let inb = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
+  return vec4f(select(vec3f(0.0), c, inb), 1.0);
+}`;
+          const module = device.createShaderModule({ code });
+          const sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+          // Per-excitation compose shader (data-exc tiles): same vp/rotation
+          // transform as the single-texture shader, but sums per-excitation
+          // linear-P3 layers over a mask, max-rescales (clipHigh in LINEAR),
+          // and lifts to the EDR headroom — eotf/oetf math identical in spirit.
+          const composeCode = `
+struct U { vp: vec4f, misc: vec4f, scales: array<vec4f,4>, ints: vec4u };
+@group(0) @binding(0) var t: texture_2d_array<f32>;
+@group(0) @binding(1) var sm: sampler;
+@group(0) @binding(2) var<uniform> u: U;
+struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
+  var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+  var uv = array<vec2f,3>(vec2f(0,1), vec2f(2,1), vec2f(0,-1));
+  var o: VO; o.pos = vec4f(p[i],0,1); o.uv = uv[i]; return o;
+}
+fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }
+@fragment fn fs(inp: VO) -> @location(0) vec4f {
+  let ar = u.misc.z;
+  let p = (inp.uv - vec2f(0.5)) * vec2f(ar, 1.0);
+  let cs = cos(u.misc.y); let sn = sin(u.misc.y);
+  let pr = vec2f(cs*p.x + sn*p.y, -sn*p.x + cs*p.y);
+  let f = pr / vec2f(ar, 1.0) + vec2f(0.5);
+  let uv = u.vp.xy + f * u.vp.zw;
+  let n = u.ints.x; let mask = u.ints.y;
+  var lin = vec3f(0.0);
+  for (var k: u32 = 0u; k < 16u; k = k + 1u) {
+    if (k >= n) { break; }
+    if ((mask & (1u << k)) == 0u) { continue; }
+    lin = lin + textureSampleLevel(t, sm, uv, k, 0.0).rgb * u.scales[k/4u][k%4u];
+  }
+  lin = lin / f32(u.ints.z);            // /total -> mean linear
+  lin = lin / max(u.misc.w, 1e-6);      // max-rescale (linear): brightest -> 1
+  lin = lin * u.misc.x;                 // * headroom (EDR)
+  let c = vec3f(oetf(lin.r), oetf(lin.g), oetf(lin.b));
+  let inb = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
+  return vec4f(select(vec3f(0.0), c, inb), 1.0);
+}`;
+          const composeModule = device.createShaderModule({ code: composeCode });
+          let N = 4.0;   // EDR headroom — declared before the cell loop so a synchronous exc-load redraw() can read it (the await-fetch hdr path defers past this)
+          for (const hc of hdrCells) {
+            const canvas = document.createElement('canvas');
+            canvas.style.position = 'absolute';
+            canvas.style.pointerEvents = 'none';
+            canvas.style.zIndex = '0';
+            // Hidden until it's positioned over its cell AND has rendered —
+            // otherwise it flashes at the host's top-left (0,0 / default
+            // 300x150) before _placeCanvases() runs (post async texture load).
+            canvas.style.visibility = 'hidden';
+            host.insertBefore(canvas, svg);   // above the WebGL canvas, below the SVG
+            const ctx = canvas.getContext('webgpu');
+            if (!ctx) continue;
+            try { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3',
+                                  alphaMode:'opaque', toneMapping:{ mode:'extended' } }); }
+            catch (e) { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3', alphaMode:'opaque' }); }
+            const ubuf = device.createBuffer({ size: hc.isExc ? 112 : 32, usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST });
+            const _mod = hc.isExc ? composeModule : module;
+            const pipe = device.createRenderPipeline({ layout:'auto',
+              vertex:{ module: _mod, entryPoint:'vs' },
+              fragment:{ module: _mod, entryPoint:'fs', targets:[{ format:'rgba16float' }] },
+              primitive:{ topology:'triangle-list' } });
+            hc.ctx = ctx; hc.ubuf = ubuf; hc.pipe = pipe; hc.canvas = canvas; hc.ready = false;
+            if (hc.isExc) {
+              // Per-excitation tile → texture_2d_array + CPU white point (max
+              // LINEAR luminance, subsampled). Loads at the FINEST level (full res)
+              // like plot_key_slices_live's loadExc — the demo RGB is "full res
+              // from the start" and renders the correct color. CRITICAL: the async
+              // ``scales`` (per-excitation weight) are read from /info AFTER the
+              // layers are fetched (i.e. after the bg thread has filled exc{k} and
+              // set its .scale meta). Reading /info BEFORE the fill returned meta
+              // with no scale → scales defaulted to 1 for every excitation → wrong
+              // weighting → hue shift (blue rendered PINK). vp/scales/mask are
+              // written per-frame in redraw().
+              (async () => {
+                try {
+                  const im = hc.im;
+                  const total = parseInt(im.getAttribute('data-exc-total'));
+                  const _base = im.getAttribute('data-exc-base'), _sid = im.getAttribute('data-exc-sid');
+                  const Nl = parseInt(im.getAttribute('data-exc-n'));
+                  const _async = im.getAttribute('data-exc-async') === '1';
+                  hc.excN = Nl; hc.excTotal = total;
+                  hc.excMask = (1 << Nl) - 1;   // all acquisitions on
+                  // Fetch one excitation layer at the FINEST level (99 → server
+                  // clamps). Async layers project on a bg thread (204 until ready) →
+                  // retry. Dims come from the X-Level headers (= full res here).
+                  const _fetchLayer = async (k) => {
+                    for (let t = 0; t < 600; t++) {
+                      const r = await fetch(`${_base}/tile/${_sid}/exc${k}/99?fmt=raw`, {cache:'no-store'});
+                      if (r.status === 200) return { buf: new Uint8Array(await r.arrayBuffer()),
+                        W: +r.headers.get('X-Level-Width'), H: +r.headers.get('X-Level-Height') };
+                      if (!_async) throw new Error('exc layer ' + k + ' status ' + r.status);
+                      await new Promise(s => setTimeout(s, 250));
+                    }
+                    throw new Error('exc layer ' + k + ' timeout');
+                  };
+                  const got = await Promise.all(Array.from({length: Nl}, (_, k) => _fetchLayer(k)));
+                  const layers = got.map(g => g.buf), W = got[0].W, H = got[0].H;
+                  // scales: emit-time attr when sync; else /info AFTER the fetch
+                  // above guaranteed the layers (and their .scale meta) exist.
+                  let scales;
+                  if (_async) {
+                    let info = {};
+                    try { info = await (await fetch(`${_base}/info/${_sid}`, {cache:'no-store'})).json(); } catch (e) {}
+                    scales = Array.from({length: Nl}, (_, k) => ((info.meta || {})['exc' + k] || {}).scale || 1);
+                  } else {
+                    scales = im.getAttribute('data-exc-scales').split(',').map(Number);
+                  }
+                  const tex = device.createTexture({ size:[W,H,Nl], format:'rgba8unorm',
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+                  for (let k=0;k<Nl;k++) device.queue.writeTexture({ texture: tex, origin:[0,0,k] },
+                    layers[k], { bytesPerRow: W*4, rowsPerImage: H }, [W,H,1]);
+                  hc.excScales = scales;
+                  // White point re-fit to the VISIBLE excitations (max LINEAR
+                  // luminance, subsampled) so toggling re-exposes instead of dimming.
+                  hc.recomputeClip = () => {
+                    let ch = 1e-6; const np = W*H, stp = Math.max(1, Math.floor(np/40000));
+                    for (let px=0; px<np; px+=stp) {
+                      let r=0,g=0,b=0; const base=px*4;
+                      for (let k=0;k<Nl;k++){ if((hc.excMask&(1<<k))===0) continue;
+                        const L=layers[k], sc=scales[k]/255; r+=L[base]*sc; g+=L[base+1]*sc; b+=L[base+2]*sc; }
+                      const mm = Math.max(r,g,b)/total; if (mm>ch) ch=mm;
+                    }
+                    hc.excClipHigh = ch;
+                  };
+                  hc.recomputeClip();
+                  hc.bg = device.createBindGroup({ layout: hc.pipe.getBindGroupLayout(0), entries:[
+                    { binding:0, resource: tex.createView() }, { binding:1, resource: sampler },
+                    { binding:2, resource:{ buffer: hc.ubuf } } ]});
+                  // Per-excitation toggle chips over the tile. Bar is click-through
+                  // (pointer-events:none); only the chips capture clicks, so the
+                  // rest of the tile still pans/zooms. Clicking flips a mask bit.
+                  const names = im.getAttribute('data-exc-names').split(',');
+                  const bar = document.createElement('div');
+                  bar.style.cssText = 'position:absolute;z-index:6;display:flex;gap:1px;flex-wrap:wrap;align-content:flex-start;pointer-events:none;';
+                  names.forEach((nm, k) => {
+                    const chip = document.createElement('button');
+                    chip.textContent = nm; chip.title = 'toggle ' + nm + ' nm';
+                    chip.style.cssText = 'pointer-events:auto;font:9px/1.1 system-ui;padding:1px 3px;margin:0;border:0;border-radius:2px;cursor:pointer;background:rgba(0,0,0,0.5);color:#fff;';
+                    chip.onpointerdown = (e) => e.stopPropagation();
+                    chip.onclick = (e) => { e.stopPropagation(); hc.excMask ^= (1 << k);
+                      chip.style.opacity = (hc.excMask & (1 << k)) ? '1' : '0.3';
+                      if (hc.recomputeClip) hc.recomputeClip(); redraw(); };
+                    bar.appendChild(chip);
+                  });
+                  host.appendChild(bar); hc.toggleBar = bar;
+                  hc.ready = true; hc.im.style.display = 'none'; redraw();
+                } catch (e) { console.warn('linkedExc load failed:', e); }
+              })();
+              continue;
+            }
+            const href = hc.im.getAttribute('href')
+              || hc.im.getAttributeNS('http://www.w3.org/1999/xlink','href');
+            // Decode with colorSpaceConversion:'none' so we get the RAW
+            // encoded pixels on every browser. Uploading an <img> directly
+            // let Safari apply the source's ICC/P3→sRGB conversion (Chrome
+            // didn't), so the same texture rendered different colors. The
+            // shader owns the color math (sRGB EOTF, P3 gamut), so we must
+            // hand it the untouched bytes.
+            (async () => {
+              try {
+                const blob = await (await fetch(href)).blob();
+                const bmp = await createImageBitmap(blob, {
+                  colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
+                const w = bmp.width, h = bmp.height;
+                const tex = device.createTexture({ size:[w,h], format:'rgba8unorm',
+                  usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+                device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
+                if (bmp.close) bmp.close();
+                hc.bg = device.createBindGroup({ layout: hc.pipe.getBindGroupLayout(0), entries:[
+                  { binding:0, resource: tex.createView() },
+                  { binding:1, resource: sampler },
+                  { binding:2, resource:{ buffer: hc.ubuf } } ]});
+                hc.ready = true;
+                hc.im.style.display = 'none';   // WebGPU renders this tile now
+                redraw();
+              } catch (e) { console.warn('linkedHDR texture load failed:', e); }
+            })();
+          }
+          function detectHeadroom(){ const sc = window.screen || {};
+            for (const k of ['highDynamicRangeHeadroom','dynamicRangeHeadroom','hdrHeadroom','currentEDRHeadroom']) {
+              const v = sc[k]; if (typeof v === 'number' && v > 0) return v; }
+            return null; }
+          // Cache each HDR cell's screen rect (stable during transform);
+          // position/size the canvas once on resize, not per frame.
+          function _placeCanvases() {
+            const hostR = host.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            for (const hc of hdrCells) {
+              const cr = hc.hit.getBoundingClientRect();
+              if (cr.width < 1 || cr.height < 1) { hc.rectOk = false; continue; }
+              hc.canvas.style.left = (cr.left - hostR.left) + 'px';
+              hc.canvas.style.top  = (cr.top  - hostR.top)  + 'px';
+              hc.canvas.style.width  = cr.width + 'px';
+              hc.canvas.style.height = cr.height + 'px';
+              const bw = Math.max(1, Math.round(cr.width*dpr)), bh = Math.max(1, Math.round(cr.height*dpr));
+              if (hc.canvas.width !== bw) hc.canvas.width = bw;
+              if (hc.canvas.height !== bh) hc.canvas.height = bh;
+              hc.cellAR = cr.width / Math.max(cr.height, 1e-6);
+              if (hc.toggleBar) {                       // pin the toggle chips over the tile's top-left
+                hc.toggleBar.style.left = (cr.left - hostR.left) + 'px';
+                hc.toggleBar.style.top  = (cr.top  - hostR.top)  + 'px';
+                hc.toggleBar.style.maxWidth = cr.width + 'px';
+              }
+              hc.rectOk = true;
+            }
+          }
+          function redraw(replace) {
+            // ``_placeCanvases`` reads getBoundingClientRect for every HDR cell,
+            // which FORCES a synchronous SVG reflow. Calling it on every frame of
+            // an interactive zoom (applyViewBox → hdrLayer.redraw) made the zoom
+            // lag — the HDR cell positions DON'T change during a zoom (only the
+            // content scales, via the vp uniform), so skip placement on the
+            // per-frame path (``replace===false``). Init/resize/scroll still
+            // re-place (default).
+            if (replace !== false) _placeCanvases();
+            for (const hc of hdrCells) {
+              if (!hc.ready || !hc.rectOk) continue;
+              if (hc.isExc) {
+                const buf = new ArrayBuffer(112);
+                new Float32Array(buf, 0, 8).set([ state.x/RAS_W, state.y/RAS_H, state.w/RAS_W, state.h/RAS_H,
+                  N, state.r || 0, hc.cellAR, hc.excClipHigh ]);   // vp + (headroom, rot, cellAR, clipHigh)
+                const sc = new Float32Array(16); sc.set(hc.excScales.slice(0, 16));
+                new Float32Array(buf, 32, 16).set(sc);
+                new Uint32Array(buf, 96, 4).set([ hc.excN, hc.excMask, hc.excTotal, 0 ]); // n, mask(live toggle), total
+                device.queue.writeBuffer(hc.ubuf, 0, buf);
+              } else {
+                device.queue.writeBuffer(hc.ubuf, 0, new Float32Array(
+                  [ state.x/RAS_W, state.y/RAS_H, state.w/RAS_W, state.h/RAS_H,
+                    N, state.r || 0, hc.cellAR, 0 ]));
+              }
+              const enc = device.createCommandEncoder();
+              const pass = enc.beginRenderPass({ colorAttachments:[{
+                view: hc.ctx.getCurrentTexture().createView(),
+                loadOp:'clear', clearValue:{ r:0, g:0, b:0, a:1 }, storeOp:'store' }]});
+              pass.setPipeline(hc.pipe); pass.setBindGroup(0, hc.bg); pass.draw(3); pass.end();
+              device.queue.submit([enc.finish()]);
+              hc.canvas.style.visibility = 'visible';   // positioned + rendered
+              if (!hc._logged && window.__ocdLog) {
+                hc._logged = true;
+                window.__ocdLog('webgpu ' + (hc.isExc ? 'exc/RGB' : 'hdr') + ' first render');
+              }
+            }
+          }
+          // HDR→SDR toggle: force EDR headroom to 1.0 (SDR white) on; RESTORE the
+          // last HDR headroom (``_hdrN``) off. Tracking ``_hdrN`` separately is
+          // essential — re-detecting on toggle-on returns 1.0 on displays/browsers
+          // with no headroom API, which would strand the figure in SDR.
+          let _sdr = false, _hdrN = N;          // N defaults to 4.0 above
+          function setSdr(s) { _sdr = !!s; N = _sdr ? 1.0 : _hdrN; redraw(); }
+          const d0 = detectHeadroom(); if (d0) { _hdrN = d0; N = d0; }
+          setInterval(() => { const d = detectHeadroom(); if (d) { _hdrN = d;
+            if (!_sdr && Math.abs(d - N) > 1e-3) { N = d; redraw(); } } }, 400);
+          if (window.ResizeObserver) { try {
+            const ro = new ResizeObserver(() => { redraw(); });
+            ro.observe(svg);
+            const _host = svg.closest('.ocd-svgfig'); if (_host) ro.observe(_host);
+          } catch (e) {} }
+          onWindow('resize', () => { redraw(); });
+          onWindow('scroll', () => { _placeCanvases(); }, { passive: true });
+          return { redraw, setSdr };
+        }
+        createLinkedHDRLayer().then(l => {
+          hdrLayer = l;
+          // Expose SDR toggle on the wrapper so the HDR button (different scope)
+          // can switch the exc/RGB layer to SDR (EDR headroom → 1.0).
+          if (l && l.setSdr) { const _w = svg.closest('.ocd-svgfig'); if (_w) _w.__hdrSetSdr = l.setSdr; }
+          if (l) { l.redraw();
+            // A few deferred redraws catch the responsive SVG settling its
+            // size after first paint (re-places the HDR canvas over its cell).
+            requestAnimationFrame(() => l.redraw());
+            setTimeout(() => l.redraw(), 150); setTimeout(() => l.redraw(), 500);
+          }
+        })
+                              .catch(e => console.warn('linkedHDR init failed:', e));
 
         function applyViewBox() {
           const vb = state.x.toFixed(3) + ' ' + state.y.toFixed(3) + ' '
                    + state.w.toFixed(3) + ' ' + state.h.toFixed(3);
-          for (let i = 0; i < cells.length; i++) {
-            cells[i].setAttribute('viewBox', vb);
+          // SVG outline rotation matches the GPU image rotation: rotate the
+          // cell content group around the viewport centre (source coords).
+          const _rdeg = (state.r || 0) * 180 / Math.PI;
+          const _rcx = (state.x + state.w * 0.5).toFixed(3);
+          const _rcy = (state.y + state.h * 0.5).toFixed(3);
+          const _rtf = _rdeg ? ('rotate(' + _rdeg.toFixed(3) + ' ' + _rcx + ' ' + _rcy + ')') : '';
+          // When the GL layer is active the cell content (image + outline) is all
+          // GPU-rendered (the SVG <image> is display:none, the outline is the GL
+          // line pass), so the nested-SVG viewBox/rotation are VESTIGIAL — writing
+          // them on every wheel event just dirties SVG layout → a full re-raster of
+          // the overlay per frame, which is the manual-zoom lag the bare-canvas
+          // plot_key_slices_live doesn't have. Skip them in GL mode; the SVG-image
+          // FALLBACK (glLayer === null) still needs them to zoom its <image>.
+          if (!glLayer) {
+            for (let i = 0; i < cells.length; i++) {
+              cells[i].setAttribute('viewBox', vb);
+              const g = cells[i].querySelector('g.ocd-cell-rot');
+              if (g) { if (_rtf) g.setAttribute('transform', _rtf); else g.removeAttribute('transform'); }
+            }
           }
+          // Optional outline screen-px floor: a stroke of ``sw`` viewBox
+          // units renders at ``sw * dispW / state.w`` screen px, so flooring
+          // that at ``_outlineMinPx`` means sw >= _outlineMinPx*state.w/dispW.
+          // Below the floor we keep the image-px width (scales with zoom).
+          // ``dispW`` (cell display width) only changes on RESIZE, not on zoom —
+          // cache it so we don't getBoundingClientRect (forced reflow) per frame.
+          if (_outlineMinPx > 0 && cells.length) {
+            if (!_dispWCache) _dispWCache = cells[0].getBoundingClientRect().width || 1;
+            const sw = Math.max(_outlineBase, _outlineMinPx * state.w / _dispWCache);
+            svg.style.setProperty('--ocd-osw', sw.toFixed(3));
+          }
+          if (glLayer) glLayer.redraw();
+          if (hdrLayer) hdrLayer.redraw(false);   // false = don't reflow-place; zoom only scales content
         }
 
         function startTween() {
@@ -2670,6 +4118,10 @@ void main() {
         // the popup viewer's gesture base.
         function onWheel(e) {
           e.preventDefault();
+          // During a Safari trackpad gesture, the gesturechange handler owns
+          // zoom (via e.scale). Safari ALSO emits ctrl+wheel for the same
+          // pinch — ignore it here so we don't double-zoom.
+          if (_gestureActive && e.ctrlKey) return;
           const hit = e.currentTarget;
           // base ^ (-deltaY) === Math.exp(deltaY * Math.log(base)*-1)
           // ln(1.01) ≈ 0.00995, ln(1.0015) ≈ 0.0015
@@ -2681,55 +4133,100 @@ void main() {
           const anchor = clientToSource(hit, e.clientX, e.clientY);
           const newX = anchor.x - (anchor.x - state.x) * actualRatio;
           const newY = anchor.y - (anchor.y - state.y) * actualRatio;
-          // Pinch: skip the tween for 1:1 finger-tracking responsiveness
-          // (high-rate event stream tweens itself naturally). Scroll
-          // wheel: tween for smoothing of discrete notch jumps.
-          setViewbox(newX, newY, newW, newH, !e.ctrlKey);
+          // INSTANT zoom (no tween) — matches plot_key_slices_live, which snaps
+          // the view on every wheel event and renders synchronously. The tween
+          // (a) lagged the GL paint and (b) kept resetting the refine debounce
+          // until it settled (~250 ms), so the resolution "waited to finish the
+          // zoom before updating". Instant settle → refine fires 60 ms after you
+          // stop, and the sync redraw scales the cached level in real time.
+          setViewbox(newX, newY, newW, newH, false);
         }
 
         // Pointer drag = pan. Updates state AND target simultaneously
         // for instant 1:1 cursor tracking (no tween lag).
         let dragId = null, dragLastX = 0, dragLastY = 0, dragHit = null;
-        function onPointerDown(e) {
-          if (e.button !== 0 && e.pointerType !== 'touch') return;
-          dragId = e.pointerId;
-          dragHit = e.currentTarget;
-          dragLastX = e.clientX;
-          dragLastY = e.clientY;
-          dragHit.setPointerCapture(e.pointerId);
-          dragHit.style.cursor = 'grabbing';
-          // Snap state to target before pan so we don't fight any
-          // in-flight zoom tween.
+        // Multitouch rotate: track active touch pointers; 2 fingers → rotate
+        // by the change in the angle between them (Chrome/Windows touch).
+        // Safari/Mac trackpad rotate uses gesture events (added below).
+        const _ptrs = new Map();
+        let _gr = null;     // { a0: start angle, r0: start rotation }
+        function _snapState() {
           state.x = target.x; state.y = target.y;
           state.w = target.w; state.h = target.h;
           if (_raf) { cancelAnimationFrame(_raf); _raf = 0; }
+        }
+        function onPointerDown(e) {
+          if (e.button !== 0 && e.pointerType !== 'touch') return;
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+          _ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          if (_ptrs.size >= 2) {                       // enter 2-finger pinch+rotate
+            dragId = null; if (dragHit) dragHit.style.cursor = 'grab'; dragHit = null;
+            const p = [..._ptrs.values()].slice(0, 2);
+            _snapState();
+            const dx = p[1].x - p[0].x, dy = p[1].y - p[0].y;
+            const mx = (p[0].x + p[1].x) / 2, my = (p[0].y + p[1].y) / 2;
+            const rc = e.currentTarget.getBoundingClientRect();
+            const fx = (mx - rc.left) / rc.width, fy = (my - rc.top) / rc.height;
+            const g0 = _unrotFrac(fx, fy, state.r || 0);
+            _gr = { a0: Math.atan2(dy, dx), r0: state.r || 0, d0: Math.hypot(dx, dy) || 1,
+                    w0: state.w, af: { x: fx, y: fy },
+                    as: { x: state.x + g0.x * state.w, y: state.y + g0.y * state.h } };
+            e.preventDefault();
+            return;
+          }
+          dragId = e.pointerId; dragHit = e.currentTarget;
+          dragLastX = e.clientX; dragLastY = e.clientY;
+          dragHit.style.cursor = 'grabbing';
+          _snapState();
           e.preventDefault();
         }
         function onPointerMove(e) {
+          if (_ptrs.has(e.pointerId)) { const p = _ptrs.get(e.pointerId); p.x = e.clientX; p.y = e.clientY; }
+          if (_gr && _ptrs.size >= 2) {                // pinch zoom + rotate, anchored
+            const p = [..._ptrs.values()].slice(0, 2);
+            const dx = p[1].x - p[0].x, dy = p[1].y - p[0].y;
+            const dist = Math.hypot(dx, dy) || 1;
+            const rNew = _gr.r0 + (Math.atan2(dy, dx) - _gr.a0);
+            const wNew = Math.max(MIN_W, Math.min(MAX_W, _gr.w0 * _gr.d0 / dist));
+            const hNew = wNew / cellAR;
+            const g1 = _unrotFrac(_gr.af.x, _gr.af.y, rNew);
+            state.r = rNew; state.w = wNew; state.h = hNew;
+            state.x = _gr.as.x - g1.x * wNew; state.y = _gr.as.y - g1.y * hNew;
+            target.x = state.x; target.y = state.y; target.w = wNew; target.h = hNew; target.r = rNew;
+            applyViewBox();
+            return;
+          }
           if (e.pointerId !== dragId) return;
           const r = dragHit.getBoundingClientRect();
           const dxClient = e.clientX - dragLastX;
           const dyClient = e.clientY - dragLastY;
           dragLastX = e.clientX;
           dragLastY = e.clientY;
-          const sx = state.w / r.width;   // source-px per client-px (X)
-          const sy = state.h / r.height;  // source-px per client-px (Y)
-          state.x -= dxClient * sx;
-          state.y -= dyClient * sy;
+          // Convert the SCREEN drag into source space, undoing the view
+          // rotation (aspect-correct) — otherwise drag follows the rotated
+          // axes after a rotation.
+          const rot = state.r || 0, c = Math.cos(rot), sn = Math.sin(rot);
+          const ax = (dxClient / r.width) * cellAR, ay = (dyClient / r.height);
+          const d0x = (c * ax + sn * ay) / cellAR;   // R(-rot), then un-aspect
+          const d0y = (-sn * ax + c * ay);
+          state.x -= d0x * state.w;
+          state.y -= d0y * state.h;
           target.x = state.x; target.y = state.y;
           applyViewBox();
         }
         function onPointerUp(e) {
-          if (e.pointerId !== dragId) return;
-          if (dragHit) {
-            try { dragHit.releasePointerCapture(e.pointerId); } catch {}
-            dragHit.style.cursor = 'grab';
+          _ptrs.delete(e.pointerId);
+          if (_gr && _ptrs.size < 2) _gr = null;
+          try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+          if (e.pointerId === dragId) {
+            if (dragHit) dragHit.style.cursor = 'grab';
+            dragId = null; dragHit = null;
           }
-          dragId = null; dragHit = null;
         }
 
-        // Reset to the initial ROI (double-click on any cell OR press 'H').
+        // Reset to the initial ROI + zero rotation (double-click / 'H').
         function resetView() {
+          state.r = 0; target.r = 0;
           setViewbox(initX, initY, initW, initH, true);
         }
         function onDblClick(e) {
@@ -2760,6 +4257,11 @@ void main() {
         // mutated by the controller but cells themselves carry no
         // listeners — events from the hit rect drive the shared state,
         // applyViewBox writes the new viewBox onto every cell SVG.
+        // Safari (Mac) fires gesture* for trackpad pinch+rotate. e.scale and
+        // e.rotation are cumulative since gesturestart. We drive BOTH zoom and
+        // rotation from it, anchored at the cursor (the source point under the
+        // gesture stays put), and suppress the duplicate ctrl+wheel.
+        let _gStartR = 0, _gStartW = 0, _gAf = null, _gAs = null;
         hits.forEach(hit => {
           hit.style.cursor = 'grab';
           hit.style.touchAction = 'none';
@@ -2769,26 +4271,131 @@ void main() {
           hit.addEventListener('pointerup', onPointerUp);
           hit.addEventListener('pointercancel', onPointerUp);
           hit.addEventListener('dblclick', onDblClick);
+          hit.addEventListener('gesturestart', (e) => {
+            e.preventDefault();
+            _snapState();
+            _gestureActive = true;
+            _gStartR = state.r || 0; _gStartW = state.w;
+            const rc = hit.getBoundingClientRect();
+            const fx = (e.clientX - rc.left) / rc.width, fy = (e.clientY - rc.top) / rc.height;
+            _gAf = { x: fx, y: fy };
+            const g0 = _unrotFrac(fx, fy, state.r || 0);
+            _gAs = { x: state.x + g0.x * state.w, y: state.y + g0.y * state.h };
+          });
+          hit.addEventListener('gesturechange', (e) => {
+            e.preventDefault();
+            if (!_gAf) return;
+            const rNew = _gStartR + (e.rotation || 0) * Math.PI / 180;
+            const wNew = Math.max(MIN_W, Math.min(MAX_W, _gStartW / (e.scale || 1)));
+            const hNew = wNew / cellAR;
+            const g1 = _unrotFrac(_gAf.x, _gAf.y, rNew);   // keep anchor under cursor
+            state.r = rNew; state.w = wNew; state.h = hNew;
+            state.x = _gAs.x - g1.x * wNew; state.y = _gAs.y - g1.y * hNew;
+            target.x = state.x; target.y = state.y; target.w = wNew; target.h = hNew; target.r = rNew;
+            applyViewBox();
+          });
+          hit.addEventListener('gestureend', (e) => { e.preventDefault(); _gestureActive = false; });
         });
         // Paint initial state on every cell.
         applyViewBox();
       }
     }
 
-    // Save: download .svg. Button may be absent when the caller built
-    // the shell with save_button=False (e.g. layouts where the first
-    // <svg> isn't a meaningful save target). Guard the binding so a
-    // missing button doesn't throw and abort the rest of the IIFE
-    // (including the tile click-to-zoom wiring below).
+    // Composite the LIVE figure (GL tiles + SVG vector + spectra/exc GPU
+    // canvases) into ONE canvas → "a PNG of exactly what we see". Rasterizing
+    // the SVG alone TAINTS the canvas (it has <foreignObject>) AND misses the
+    // GPU layers, so we draw each layer at its on-screen rect, in z-order, and
+    // replace each spectra <foreignObject> with an <image> of its density
+    // canvas (keeps refs/ticks on top, drops the foreignObject → no taint).
+    async function compositeFigure() {
+      const host = wrapper;
+      const fR = svg.getBoundingClientRect();
+      // Supersample 2× over device pixels so the saved PNG is crisp (sharper
+      // than the on-screen size, not below it) — vector layers re-rasterize at
+      // this resolution; raster layers scale up from their device-res backing.
+      const SS = (window.devicePixelRatio || 1) * 2;
+      const W = Math.max(1, Math.round(fR.width * SS));
+      const H = Math.max(1, Math.round(fR.height * SS));
+      const out = document.createElement('canvas'); out.width = W; out.height = H;
+      const ctx = out.getContext('2d');
+      const bg = getComputedStyle(host).backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') { ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H); }
+      function drawCv(cv) {
+        if (!cv || !cv.width || !cv.height) return;
+        const r = cv.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) return;
+        try { ctx.drawImage(cv, (r.left - fR.left) * SS, (r.top - fR.top) * SS, r.width * SS, r.height * SS); }
+        catch (e) { console.warn('composite drawImage:', e); }
+      }
+      // A PNG is SDR — force the exc/RGB layer to SDR (so it's sRGB-encoded, not
+      // left in HDR/extended range) for the capture, then restore the live state.
+      const _wasSdr = wrapper.classList.contains('ocd-sdr-mode');
+      try { if (wrapper.__hdrSetSdr) wrapper.__hdrSetSdr(true); } catch (e) {}
+      // The RGB tile is linear Display-P3; on screen the WebGPU exc layer OETFs
+      // it, but that HDR canvas can't be drawImage()'d to an SDR PNG without the
+      // browser re-tonemapping it darker/hue-shifted. So OETF the RGB in the GL
+      // pass and capture THAT (skipping the WebGPU readback below).
+      const _glOetf = !!(glLayer && glLayer.setExportOetf);
+      try { if (_glOetf) glLayer.setExportOetf(true); } catch (e) {}
+      // synchronous draw — we read the canvas immediately below (coalesced
+      // redraw() would defer to the next frame and capture a stale buffer)
+      try { if (glLayer && glLayer.redrawNow) glLayer.redrawNow(); } catch (e) {}
+      try { if (hdrLayer && hdrLayer.redraw) hdrLayer.redraw(); } catch (e) {}
+      const glcv = host.querySelector(':scope > canvas');     // GL tiles (z0)
+      drawCv(glcv);
+      const clone = svg.cloneNode(true);
+      clone.setAttribute('width', W); clone.setAttribute('height', H);  // rasterize at full res
+      const fos = Array.prototype.slice.call(clone.getElementsByTagName('foreignObject'));
+      const realFos = Array.prototype.slice.call(svg.getElementsByTagName('foreignObject'));
+      for (let i = 0; i < fos.length; i++) {
+        const fo = fos[i];
+        const dens = realFos[i] ? realFos[i].querySelector('canvas[data-spectra-density]') : null;
+        if (dens && dens.width) {
+          const im = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+          ['x', 'y', 'width', 'height'].forEach(a => im.setAttribute(a, fo.getAttribute(a)));
+          try { im.setAttribute('href', dens.toDataURL('image/png')); } catch (e) {}
+          fo.parentNode.replaceChild(im, fo);
+        } else if (fo.parentNode) { fo.parentNode.removeChild(fo); }
+      }
+      Array.prototype.slice.call(clone.querySelectorAll('image[data-tile-src], image[data-tile-async]'))
+        .forEach(im => { if (im.parentNode) im.parentNode.removeChild(im); });
+      const xml = new XMLSerializer().serializeToString(clone);
+      const svgImg = new Image();
+      await new Promise((res, rej) => {
+        svgImg.onload = res; svgImg.onerror = rej;
+        svgImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+      });
+      ctx.drawImage(svgImg, 0, 0, W, H);                       // SVG vector + density image
+      // Draw the WebGPU exc/RGB GPU canvases ONLY when the GL layer can't OETF
+      // the RGB itself (no WebGL) — otherwise the GL OETF capture above is the
+      // faithful SDR version and the HDR-canvas readback would just re-darken it.
+      if (!_glOetf) {
+        Array.prototype.slice.call(host.querySelectorAll('canvas')).forEach(cv => {
+          if (cv === glcv) return;
+          if (cv.closest && cv.closest('foreignObject')) return;  // spectra drawn via image
+          drawCv(cv);                                             // exc/RGB GPU layer
+        });
+      }
+      // restore the live HDR/SDR state
+      try { if (_glOetf) glLayer.setExportOetf(false); } catch (e) {}
+      try { if (wrapper.__hdrSetSdr && !_wasSdr) wrapper.__hdrSetSdr(false); } catch (e) {}
+      return out;
+    }
+
+    // Save: PNG of exactly what we see (composited). Button may be absent.
     const _savebtn = wrapper.querySelector('.ocd-savebtn');
-    if (_savebtn) _savebtn.addEventListener('click', () => {
-      const xml = new XMLSerializer().serializeToString(svg);
-      const blob = new Blob([xml], { type: 'image/svg+xml' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'figure.svg';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+    if (_savebtn) _savebtn.addEventListener('click', async (e) => {
+      const btn = e.currentTarget; btn.disabled = true;
+      try {
+        const out = await compositeFigure();
+        const png = await new Promise(res => out.toBlob(res, 'image/png'));
+        const url = URL.createObjectURL(png);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'figure.png';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) { console.error('SvgFigure save failed:', err); alert('Save failed: ' + err.message); }
+      finally { btn.disabled = false; }
     });
 
     // HDR toggle: flip CSS class .ocd-sdr-mode on both the inline
@@ -2802,30 +4409,36 @@ void main() {
       if (overlay) overlay.classList.toggle('ocd-sdr-mode', sdr);
       _hdrbtn.classList.toggle('ocd-hdr-off', sdr);
       _hdrbtn.title = sdr ? 'HDR: off (showing SDR base)' : 'HDR: on';
+      // The CSS dynamic-range-limit rule handles raster <image>/<img> tiles,
+      // but the GPU label canvases emit HDR via the shader — flip their
+      // boosts too so the outline / hover follow the toggle.
+      wrapper.querySelectorAll('canvas[data-label-tile]').forEach((cv) => {
+        if (cv.__labelSetSdr) cv.__labelSetSdr(sdr);
+      });
+      if (webglViewer && webglViewer.setSdr) webglViewer.setSdr(sdr);
+      // Linked-grid exc/RGB WebGPU layer (the streaming key-slice figure).
+      if (wrapper.__hdrSetSdr) wrapper.__hdrSetSdr(sdr);
+      // Live spectra density: swap the colormap LUT (HDR-lifted ↔ SDR-linear)
+      // and re-render on the same extended WebGPU canvas.
+      wrapper.querySelectorAll('canvas[data-spectra-density]').forEach((cv) => {
+        const c = cv.__sgCfg;
+        if (c && c.hdr && (c.lutHdr || c.lutSdr)) {
+          c.lut = (!sdr && c.lutHdr) ? c.lutHdr : c.lutSdr;
+          if (cv.__spectraDraw) cv.__spectraDraw();
+        }
+      });
     });
 
-    // Copy: rasterize SVG → PNG → clipboard. Requires the browser to be
-    // able to decode any embedded raster (PNG always works; embedded JXL
-    // works in Safari and Chrome-with-experimental-JXL-flag).
+    // Copy: PNG of exactly what we see (composited GL + SVG + GPU layers) →
+    // clipboard. The old SVG-rasterize path tainted the canvas (foreignObject)
+    // and dropped the GPU tiles/spectra; compositeFigure() avoids both.
     const _copybtn = wrapper.querySelector('.ocd-copybtn');
     if (_copybtn) _copybtn.addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
-        const xml = new XMLSerializer().serializeToString(svg);
-        const blob = new Blob([xml], { type: 'image/svg+xml' });
-        const url = URL.createObjectURL(blob);
-        const img = new Image();
-        await new Promise((res, rej) => {
-          img.onload = res; img.onerror = rej; img.src = url;
-        });
-        const vb = svg.viewBox && svg.viewBox.baseVal;
-        const canvas = document.createElement('canvas');
-        canvas.width = (vb && vb.width) || svg.clientWidth || 1000;
-        canvas.height = (vb && vb.height) || svg.clientHeight || 1000;
-        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(url);
-        const png = await new Promise(res => canvas.toBlob(res, 'image/png'));
+        const out = await compositeFigure();
+        const png = await new Promise(res => out.toBlob(res, 'image/png'));
         await navigator.clipboard.write([new ClipboardItem({ [png.type]: png })]);
       } catch (err) {
         console.error('SvgFigure copy failed:', err);
@@ -2838,11 +4451,513 @@ void main() {
 """.strip()
 
 
+def _load_label_gl_js():
+    """Read the shared WebGL2 label renderer (``ocdkit/plot/web/label_gl.js``).
+
+    Read FRESH on every call (per figure render), NOT cached at import —
+    so edits to label_gl.js take effect on the next ``imshow`` without a
+    kernel restart. The file is tiny and OS-cached, so the cost is
+    negligible (~0.01 ms warm).
+    """
+    import os
+    here = os.path.dirname(os.path.dirname(__file__))  # ocdkit/
+    path = os.path.join(here, "plot", "web", "label_gl.js")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+# Per-figure controller: finds every ``<canvas data-label-tile>`` in the
+# wrapper, decodes its label matrix + palette, and renders it live via the
+# shared LabelGLRenderer (palette fill + outlines), with hover-highlight.
+# One WebGL2 context per canvas (fine for the handful of label tiles a grid
+# carries; a shared context is a future optimization).
+_LABEL_CONTROLLER_JS = r"""
+(function () {
+  if (!self.LabelGL) return;
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  function b64bytes(s) {
+    var bin = atob(s), u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }
+  var tiles = wrapper.querySelectorAll('canvas[data-label-tile]');
+  tiles.forEach(function (cv) {
+    if (cv.__labelWired) return;
+    cv.__labelWired = true;
+    var cfg = self.LabelGL.decodeAttrs(cv);  // shared decode (also used by popup)
+    cv.__labelCfg = cfg;                      // popup reuses this config
+    var w = cfg.w, h = cfg.h;
+    cv.width = w; cv.height = h;              // native label resolution
+    var gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
+    if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
+    // HDR: float16 extended-range backbuffer so a >1.0 outline/highlight color
+    // (outline_hdr / highlight boost) emits TRUE HDR instead of clamping to
+    // SDR white. Needs EXT_color_buffer_float; allocate AFTER cv.width/height
+    // (set above) since setting them would reset it. SDR 8-bit fallback.
+    if (gl.drawingBufferStorage) {
+      try {
+        gl.getExtension('EXT_color_buffer_float');
+        gl.drawingBufferColorSpace = 'display-p3';
+        gl.drawingBufferStorage(gl.RGBA16F, w, h);
+      } catch (e) {}
+    }
+    var r;
+    try { r = self.LabelGL.buildRenderer(gl, cfg, function () { render(); }); }
+    catch (e) { console.warn('LabelGL:', e); return; }
+    function render() {
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      r.draw(self.LabelGL.ortho());
+    }
+    render();
+    cv.__labelRender = render;
+    cv.__labelRenderer = r;
+    // HDR toggle response: in SDR mode drop the boosts to 1.0 so the outline /
+    // hover emit at SDR white (≤1.0) instead of HDR-bright; in HDR mode use
+    // the configured boosts. Exposed for the shell's HDR button; applied now
+    // for the figure's initial state.
+    var _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
+    cv.__labelSetSdr = function (sdr) {
+      r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
+                      highlightBoost: sdr ? 1.0 : 1.8 });
+      render();
+    };
+    cv.__labelSetSdr(wrapper.classList.contains('ocd-sdr-mode'));
+    // hover-highlight + label-id tooltip (mirror the viewer's labelAt)
+    var tip = null;
+    function ensureTip() {
+      if (!tip) {
+        tip = document.createElement('div');
+        tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
+          + 'background:rgba(20,20,20,.92);color:#eee;font:11px sans-serif;'
+          + 'padding:2px 6px;border-radius:4px;display:none;';
+        document.body.appendChild(tip);
+      }
+      return tip;
+    }
+    var cur = 0;
+    cv.addEventListener('pointermove', function (e) {
+      var rect = cv.getBoundingClientRect();
+      var px = Math.floor((e.clientX - rect.left) / rect.width * w);
+      var py = Math.floor((e.clientY - rect.top) / rect.height * h);
+      var id = r.labelAt(px, py);
+      if (id !== cur) {
+        cur = id;
+        r.setUniforms({ highlightLabel: id });
+        render();
+      }
+      var t = ensureTip();
+      if (id > 0) {
+        t.textContent = 'label ' + id;
+        t.style.display = 'block';
+        t.style.left = (e.clientX + 12) + 'px';
+        t.style.top = (e.clientY + 12) + 'px';
+      } else { t.style.display = 'none'; }
+    });
+    cv.addEventListener('pointerleave', function () {
+      cur = 0; r.setUniforms({ highlightLabel: 0 }); render();
+      if (tip) tip.style.display = 'none';
+    });
+  });
+})();
+""".strip()
+
+
+def _load_spectra_gl_js():
+    """Read the shared WebGL2 spectra-density renderer
+    (``ocdkit/plot/web/spectra_density_gl.js``). Read FRESH per render (like
+    ``_load_label_gl_js``) so edits take effect without a kernel restart."""
+    import os
+    here = os.path.dirname(os.path.dirname(__file__))  # ocdkit/
+    path = os.path.join(here, "plot", "web", "spectra_density_gl.js")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+# Per-figure controller: finds every ``<canvas data-spectra-density>`` in the
+# wrapper and renders it live via the shared SpectraGL engine, at the canvas's
+# true on-screen resolution (getBoundingClientRect × devicePixelRatio). Re-renders
+# whenever the wrapper resizes (responsive SVG scaling / zoom), so the density
+# is always crisp at the displayed size — no fixed-resolution baked raster.
+_SPECTRA_CONTROLLER_JS = r"""
+(function () {
+  if (!self.SpectraGL) return;
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  var cvs = Array.prototype.slice.call(
+    wrapper.querySelectorAll('canvas[data-spectra-density]'));
+  if (!cvs.length) return;
+  // Streamed spectra (no base64): fetch the meta JSON + binary parts from
+  // ``data-spectra-src`` and assemble the SpectraGL cfg (all 3 norm variants
+  // cached on the canvas for the y-axis toggle). Returns a Promise<cfg|null>
+  // (null = 204 not-ready → caller retries).
+  function fetchSpectraCfg(cv, src) {
+    return fetch(src + '?part=meta')
+      .then(function (r) { return r.status === 204 ? null : r.json(); })
+      .then(function (meta) {
+        if (!meta) return null;
+        var parts = ['ylines_self', 'ylines_bitdepth', 'ylines_global',
+                     'xpix', 'lut', 'cellids', 'lut_hdr'];
+        return Promise.all(parts.map(function (p) {
+          return fetch(src + '?part=' + p).then(function (r) {
+            return r.ok ? r.arrayBuffer() : null; });
+        })).then(function (b) {
+          if (!b[0] || !b[3] || !b[4]) return null;   // a part wasn't ready → retry
+          var norm = cv.getAttribute('data-norm-mode') || meta.norm_mode || 'self';
+          var variants = { self: new Float32Array(b[0]),
+                           bitdepth: new Float32Array(b[1]),
+                           global: new Float32Array(b[2]) };
+          cv.__sgVariants = variants;     // for the y-axis norm toggle
+          // HDR (meta.hdr): both LUTs are linear-P3 float32 — lutSdr (≤1) and
+          // lutHdr (lifted, >1). SpectraGL OETFs the active one on an extended
+          // canvas; the HDR toggle swaps cfg.lut between them. SDR plot: lut is
+          // uint8 sRGB (the 2D readback path), no toggle.
+          var _lutSdr = meta.hdr ? new Float32Array(b[4]) : new Uint8Array(b[4]);
+          var _lutHdr = (meta.hdr && b[6]) ? new Float32Array(b[6]) : null;
+          var _sdrMode = wrapper.classList.contains('ocd-sdr-mode');
+          return {
+            numLines: meta.num_lines, numPoints: meta.num_points,
+            yLines: variants[norm] || variants.self,
+            xPix: new Float32Array(b[3]), plotW: meta.plot_w,
+            intervals: meta.intervals, lineWidth: meta.line_width,
+            yLo: meta.ylo, yHi: meta.yhi,
+            lut: (meta.hdr && !_sdrMode && _lutHdr) ? _lutHdr : _lutSdr,
+            lutSdr: _lutSdr, lutHdr: _lutHdr,
+            hdr: !!meta.hdr,
+            cellIds: b[5] ? new Int32Array(b[5]) : null,
+            cellLabels: meta.cell_labels || [],
+          };
+        });
+      });
+  }
+  // Shared hover tooltip (cell id + classification), position:fixed at cursor.
+  function _sgTooltip() {
+    var t = document.getElementById('sg-tooltip');
+    if (!t) {
+      t = document.createElement('div'); t.id = 'sg-tooltip';
+      t.style.cssText = 'position:fixed;z-index:99999;pointer-events:none;display:none;'
+        + 'background:rgba(20,20,22,0.92);color:#ddd;font:11px/1.35 system-ui,sans-serif;'
+        + 'padding:4px 7px;border-radius:4px;border:1px solid #444;white-space:nowrap;'
+        + 'box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+      document.body.appendChild(t);
+    }
+    return t;
+  }
+  cvs.forEach(function (cv) {
+    if (cv.__spectraWired) return;
+    cv.__spectraWired = true;
+    cv.__spectraDraw = function () {
+      // CRITICAL (JupyterLab): the spectra <canvas> lives in a <foreignObject>
+      // that Lab can leave 0-size for a LONG time. The old loop gated the FETCH
+      // on the canvas being laid out AND retried with requestAnimationFrame —
+      // each tick calling getBoundingClientRect — so a 0-size canvas became a
+      // ~60 forced-reflow/sec STORM that saturated the main thread, janking the
+      // tile zoom and delaying the refine's setTimeout callbacks (the inter-level
+      // gaps). Fix: (1) fetch the data IMMEDIATELY, decoupled from canvas size;
+      // (2) wait for size with setTimeout (≈4 Hz), never rAF; (3) cache the cfg.
+      var src = cv.getAttribute('data-spectra-src');
+      if (src) {                              // streamed line data (no base64)
+        if (!cv.__sgCfg && !cv.__sgFetching) {
+          cv.__sgFetching = true;
+          fetchSpectraCfg(cv, src).then(function (cfg) {
+            cv.__sgFetching = false;
+            if (!cfg) { setTimeout(cv.__spectraDraw, 250); return; }   // 204 → gentle retry
+            cv.__sgCfg = cfg;
+            if (window.__ocdLog && !cv.__sgFetchT) cv.__sgFetchT = 1, window.__ocdLog('spectra data ready');
+            cv.__spectraDraw();               // data ready → try to render
+          }).catch(function (e) {
+            cv.__sgFetching = false;
+            cv.__sgTries = (cv.__sgTries || 0) + 1;
+            if (cv.__sgTries < 600) setTimeout(cv.__spectraDraw, 250);
+            else console.warn('SpectraGL fetch (gave up):', e);
+          });
+        }
+      } else {
+        // Base64 fallback: re-decode each call so a norm swap (data-ylines-* →
+        // data-ylines) is picked up live. Cheap (no fetch).
+        try { cv.__sgCfg = self.SpectraGL.decodeAttrs(cv); }
+        catch (e) { console.warn('SpectraGL decode:', e); return; }
+        if (window.__ocdLog && !cv.__sgFetchT) cv.__sgFetchT = 1, window.__ocdLog('spectra data ready');
+      }
+      if (!cv.__sgCfg) return;                 // data not ready yet (fetch pending)
+      // Render only once the canvas actually has a size — wait with setTimeout,
+      // NOT requestAnimationFrame + per-frame getBoundingClientRect.
+      var r = cv.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) { setTimeout(cv.__spectraDraw, 250); return; }
+      Promise.resolve(self.SpectraGL.render(cv, cv.__sgCfg, r.width, r.height))
+        .then(function (ok) {
+          if (ok === false) console.warn('SpectraGL: WebGPU unavailable');
+          else if (window.__ocdLog && !cv.__sgRenderedT) { cv.__sgRenderedT = 1; window.__ocdLog('spectra rendered'); }
+        })
+        .catch(function (e) { console.warn('SpectraGL render:', e); });
+    };
+    cv.__spectraDraw();                         // kick off the fetch immediately
+
+    // Hover highlight on the sibling 2D overlay canvas (the density canvas is a
+    // WebGPU context; the highlight stroke is 2D). Pointer events land on the
+    // overlay (it's on top); we stroke the nearest spectrum there + show a
+    // tooltip with the highlighted cell's id and classification label.
+    var overlay = cv.parentNode ? cv.parentNode.querySelector('canvas[data-spectra-overlay]') : null;
+    var hlColor = cv.getAttribute('data-highlight-color') || 'rgba(255,64,64,0.95)';
+    if (overlay) {
+      overlay.addEventListener('pointermove', function (e) {
+        if (!cv.__sgState) return;          // density not rendered yet
+        var r = overlay.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        var mx = (e.clientX - r.left) / r.width * cv.__sgState.W;
+        var my = (e.clientY - r.top) / r.height * cv.__sgState.H;
+        var line = -1;
+        try { line = self.SpectraGL.highlight(cv, overlay, mx, my, hlColor); } catch (_) {}
+        var tip = _sgTooltip();
+        var cfg = cv.__sgCfg;               // current cfg (updated each draw / norm swap)
+        if (line >= 0 && cfg && cfg.cellIds) {
+          var lab = (cfg.cellLabels && cfg.cellLabels[line]) || '';
+          tip.innerHTML = 'Cell ' + cfg.cellIds[line] + (lab ? '<br>' + lab : '');
+          tip.style.display = 'block';
+          tip.style.left = (e.clientX + 14) + 'px';
+          tip.style.top = (e.clientY + 14) + 'px';
+          // Temporarily light up THIS cell's classification readouts' reference
+          // spectra (+ color their labels) while hovered.
+          if (wrapper.__refSetTemp) wrapper.__refSetTemp(lab.match(/R\d+/g) || []);
+        } else {
+          tip.style.display = 'none';
+          if (wrapper.__refClearTemp) wrapper.__refClearTemp();
+        }
+      });
+      overlay.addEventListener('pointerleave', function () {
+        try { self.SpectraGL.clearHighlight(overlay); } catch (_) {}
+        var tip = document.getElementById('sg-tooltip'); if (tip) tip.style.display = 'none';
+        if (wrapper.__refClearTemp) wrapper.__refClearTemp();
+      });
+    }
+  });
+  // The canvas lives in a <foreignObject> whose own box is in fixed SVG user
+  // units, so observing it won't catch the SVG scaling on cell resize. Observe
+  // the WRAPPER (real CSS px) and rerender every spectra canvas at the new
+  // device resolution.
+  if (self.ResizeObserver && !wrapper.__spectraRO) {
+    var raf = 0;
+    wrapper.__spectraRO = new ResizeObserver(function () {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(function () {
+        cvs.forEach(function (cv) { if (cv.__spectraDraw) cv.__spectraDraw(); });
+      });
+    });
+    wrapper.__spectraRO.observe(wrapper);
+  }
+})();
+""".strip()
+
+
+# Tile-URL resolver: tile/outline/stream URLs are baked server-side as the
+# kernel loopback ``http://127.0.0.1:PORT/...`` (the tile server binds 127.0.0.1).
+# That's reachable from a SAME-MACHINE browser but NOT from a remote one (there
+# 127.0.0.1 is the client, not the kernel) — so a remote page's tile fetches fail
+# and the figure stays on its coarse placeholder. ``window.__ocdResolveTileUrl``
+# rewrites such a URL to the Jupyter-origin proxy ``{baseUrl}ocdkit-tiles/PORT/...``
+# (served by ``ocdkit.tileserve.jupyter_ext``, riding the notebook's own auth+TLS)
+# whenever the page is served off-machine; local pages keep the direct loopback
+# UNCHANGED, so same-machine behaviour is byte-identical. Defined once (idempotent)
+# and prepended FIRST so every controller + the GL layer can call it.
+_TILE_BASE_RESOLVER_JS = r"""
+(function () {
+  if (window.__ocdResolveTileUrl) return;
+  function jbase() {
+    try { var el = document.getElementById('jupyter-config-data');
+      if (el) { var c = JSON.parse(el.textContent || '{}'); if (c.baseUrl) return c.baseUrl; } } catch (e) {}
+    var b = document.body && document.body.dataset && document.body.dataset.baseUrl; if (b) return b;
+    var m = location.pathname.match(/^(.*?\/)(lab|notebooks|tree|voila|files|nbclassic)(\/|$)/);
+    return m ? m[1] : '/';
+  }
+  window.__ocdJBase = jbase;
+  window.__ocdResolveTileUrl = function (s) {
+    if (!s) return s;
+    var m = /^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)(\/.*)$/.exec(s);
+    if (!m) return s;                       // relative / not a kernel-loopback URL
+    var h = location.hostname;
+    var isLocal = (h === '' || h === 'localhost' || h === '127.0.0.1' || h === '::1'
+                   || location.protocol === 'vscode-webview:');
+    if (isLocal) return s;                  // same machine: direct loopback works
+    var jb = jbase(); if (jb.slice(-1) !== '/') jb += '/';
+    return jb + 'ocdkit-tiles/' + m[1] + m[2];
+  };
+})();
+""".strip()
+
+
+# Async streamed tiles: each ``<image data-tile-async data-tile-src=URL>`` is a
+# linked-grid tile whose pixels project on a background thread, so URL returns
+# 204 until ready. Poll it; on 200 fetch the PNG once (blob → object URL) and set
+# ``href`` so the SVG paints it. This is what lets the SVG composite return
+# immediately (geometry only) and stream the heavy tile projection in after.
+_TILE_STREAM_CONTROLLER_JS = r"""
+(function () {
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  var XLINK = 'http://www.w3.org/1999/xlink';
+  var imgs = Array.prototype.slice.call(
+    wrapper.querySelectorAll('image[data-tile-async]'));
+  imgs.forEach(function (im) {
+    var src = (window.__ocdResolveTileUrl
+               ? window.__ocdResolveTileUrl(im.getAttribute('data-tile-src'))
+               : im.getAttribute('data-tile-src'));
+    if (!src) return;
+    var tries = 0;
+    function poll() {
+      fetch(src, { cache: 'no-store' }).then(function (r) {
+        if (r.status === 200) return r.blob();
+        if (tries++ < 400) setTimeout(poll, 250);   // 204 = not projected yet
+        return null;
+      }).then(function (blob) {
+        if (!blob) return;
+        var u = URL.createObjectURL(blob);
+        im.setAttribute('href', u);
+        im.setAttributeNS(XLINK, 'href', u);
+        im.removeAttribute('data-tile-async');
+        // The tile <image> is the full raster (rw×rh, often far larger than the
+        // cell) clipped by the parent nested-<svg> overflow. Some webviews
+        // (notably VS Code's) compute that clip when the cell is first laid out
+        // and DON'T re-clip when a large image loads late — so the image bleeds
+        // past the cell. Force a reflow of the cell so the clip re-applies now
+        // that the image is present.
+        var cell = im.closest('svg.ocd-linked-cell');
+        if (cell) { var d = cell.style.display; cell.style.display = 'none';
+                    void cell.getBoundingClientRect(); cell.style.display = d; }
+      }).catch(function () { if (tries++ < 400) setTimeout(poll, 400); });
+    }
+    poll();
+  });
+})();
+""".strip()
+
+
+# Click-to-cycle normalization on the spectra y-axis label
+# (``text.ocd-norm-toggle``): swaps the density canvas's line data between the
+# three precomputed norms (self / bit-depth / global) and redraws, updating the
+# label text. All three datasets ride on the canvas as data-ylines-*; no
+# server round-trip, no re-render of the rest of the figure.
+_NORM_TOGGLE_JS = r"""
+(function () {
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  var MODES = ['self', 'bitdepth', 'global'];
+  var DISP = { self: 'self-norm', bitdepth: 'bit-depth norm', global: 'global-norm' };
+  wrapper.querySelectorAll('text.ocd-norm-toggle').forEach(function (lab) {
+    lab.style.cursor = 'pointer';
+    lab.addEventListener('click', function () {
+      var cv = document.getElementById(lab.getAttribute('data-norm-target'));
+      if (!cv) return;
+      var cur = lab.getAttribute('data-norm-mode') || 'self';
+      var nxt = MODES[(MODES.indexOf(cur) + 1) % MODES.length];
+      if (cv.__sgVariants && cv.__sgVariants[nxt]) {
+        // Streamed: swap the cached norm variant into the live cfg (no re-fetch).
+        if (cv.__sgCfg) cv.__sgCfg.yLines = cv.__sgVariants[nxt];
+      } else {
+        var data = cv.getAttribute('data-ylines-' + nxt);
+        if (!data) return;
+        cv.setAttribute('data-ylines', data);     // base64: __spectraDraw re-decodes
+      }
+      cv.setAttribute('data-norm-mode', nxt);
+      lab.setAttribute('data-norm-mode', nxt);
+      var title = lab.getAttribute('data-norm-title') || 'Intensity';
+      lab.textContent = title + ' (' + DISP[nxt] + ')';
+      if (typeof cv.__spectraDraw === 'function') cv.__spectraDraw();
+    });
+  });
+})();
+""".strip()
+
+
+# Clickable readout labels (``.sg-rlabel[data-sg-readout]``) that toggle the
+# matching reference-spectra paths (``[data-sg-ref]``) on/off. Clicking a label
+# hides that readout's references and grays the label; clicking again restores.
+_REF_TOGGLE_JS = r"""
+(function () {
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  var labels = wrapper.querySelectorAll('.sg-rlabel[data-sg-readout]');
+  if (!labels.length) return;
+  var GRAY = '#666';
+  // Group reference paths + labels by readout.
+  var refsBy = {}, labelBy = {};
+  wrapper.querySelectorAll('[data-sg-ref]').forEach(function (r) {
+    var k = r.getAttribute('data-sg-ref'); (refsBy[k] || (refsBy[k] = [])).push(r);
+  });
+  labels.forEach(function (l) {
+    var k = l.getAttribute('data-sg-readout'); (labelBy[k] || (labelBy[k] = [])).push(l);
+  });
+  // Two independent "on" sources: ``pinned`` (label clicked) and ``temp`` (a
+  // cell is hovered → show its classification readouts). A readout's reference
+  // shows + its label colors when EITHER is set; otherwise OFF + gray.
+  var pinned = {}, temp = {};
+  function apply(ro) {
+    var on = pinned[ro] || temp[ro];
+    (refsBy[ro] || []).forEach(function (r) { r.style.display = on ? '' : 'none'; });
+    (labelBy[ro] || []).forEach(function (l) {
+      l.style.fill = on ? (l.getAttribute('data-sg-color') || '') : GRAY;
+    });
+  }
+  var allRo = {};
+  Object.keys(refsBy).forEach(function (k) { allRo[k] = 1; });
+  Object.keys(labelBy).forEach(function (k) { allRo[k] = 1; });
+  Object.keys(allRo).forEach(apply);          // default: all OFF + gray
+  labels.forEach(function (lab) {
+    if (lab.__sgRefWired) return; lab.__sgRefWired = true;
+    var ro = lab.getAttribute('data-sg-readout');
+    lab.style.cursor = 'pointer'; lab.style.userSelect = 'none';
+    lab.addEventListener('click', function () { pinned[ro] = !pinned[ro]; apply(ro); });
+  });
+  // Hover API for the spectra controller (temporarily light up a cell's readouts).
+  wrapper.__refSetTemp = function (roList) {
+    var next = {}; (roList || []).forEach(function (r) { next[r] = true; });
+    var changed = {};
+    Object.keys(temp).forEach(function (k) { changed[k] = 1; });
+    Object.keys(next).forEach(function (k) { changed[k] = 1; });
+    temp = next; Object.keys(changed).forEach(apply);
+  };
+  wrapper.__refClearTemp = function () {
+    var old = temp; temp = {}; Object.keys(old).forEach(apply);
+  };
+})();
+""".strip()
+
+
+_LUTS_JSON_CACHE = None
+
+
+def _luts_json() -> str:
+    """JSON ``{name: [256*4 uint8]}`` colormap LUTs for the live GPU tile
+    colormap (the linked GL layer + cmap picker). Built once, cached. Mirrors
+    the in-kernel tile server's ``_luts_json`` so the two viewers share maps."""
+    global _LUTS_JSON_CACHE
+    if _LUTS_JSON_CACHE is None:
+        import json
+        import numpy as np
+        from cmap import Colormap
+        x = np.linspace(0, 1, 256)
+        out = {}
+        for n in ("magma", "viridis", "gray", "plasma", "inferno", "cividis", "turbo"):
+            try:
+                out[n] = (Colormap(n)(x) * 255 + 0.5).astype(
+                    np.uint8).reshape(-1).tolist()
+            except Exception:
+                pass
+        _LUTS_JSON_CACHE = json.dumps(out)
+    return _LUTS_JSON_CACHE
+
+
 def interactive_shell(content_html: str, *,
                        save_button: bool = True,
                        copy_button: bool = True,
                        hdr_button: bool = True,
-                       wrapper_style: str = '') -> str:
+                       wrapper_style: str = '',
+                       center: bool = True) -> str:
     """Wrap arbitrary HTML in ocdkit's interactive figure shell.
 
     The shell adds:
@@ -2875,11 +4990,63 @@ def interactive_shell(content_html: str, *,
         flex/grid handles horizontal centring and need the wrapper to
         take full cell width so child ``max-width`` percentages resolve
         against the cell instead of the shrink-to-fit content box.
+    center
+        When ``True`` (default), wrap the shell in a
+        ``<div style="text-align:center">`` so the inline-block
+        ``.ocd-svgfig`` centres horizontally in its host container —
+        the convention for Jupyter / dashboard figure output. The fixed-
+        position zoom overlay is unaffected (it's anchored to the
+        viewport). Pass ``False`` for layouts that want left alignment.
     """
     import secrets
+    # lxml (SvgFigure.to_string) re-serializes empty elements self-closed
+    # (``<canvas/>``). That's valid XML, but ``<canvas>`` is NOT a void
+    # element in HTML — and this markup is delivered as ``text/html`` and
+    # parsed by the HTML parser. There, ``<canvas/>`` doesn't self-close: the
+    # parser keeps the canvas open and swallows the following ``</foreignObject>``
+    # and the title ``<text>`` as canvas/foreignObject HTML content, so the
+    # title renders in a leaked HTML context (no getBBox, fill forced black) =
+    # invisible. Expand to an explicit close tag so HTML parsing stays correct.
+    if '<canvas' in content_html:
+        content_html = re.sub(r'(<canvas\b[^>]*?)\s*/>',
+                              r'\1></canvas>', content_html)
     uid = secrets.token_hex(6)
     css = _SHELL_CSS.replace("__UID__", uid)
     js = _SHELL_JS.replace("__UID__", uid)
+    # Colormap LUTs for the live GPU tile colormap (the linked GL layer renders
+    # raw intensity tiles → normalize(lo,hi) → LUT, with a cmap picker + a
+    # self/global/bit-depth readout-norm toggle — all live uniform swaps).
+    if 'ocd-linked-cell' in content_html:
+        js = "window.OCD_LUTS=" + _luts_json() + ";\n" + js
+    # Prepend the shared WebGL2 label renderer + a per-figure controller so
+    # any ``<canvas data-label-tile>`` emitted by image_grid renders live
+    # (palette fill + outlines + hover-highlight), reusing the same engine
+    # as the viewer. Only included when the markup actually has a label tile.
+    if 'data-label-tile' in content_html:
+        js = (_load_label_gl_js() + "\n"
+              + _LABEL_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
+    # Same pattern for live WebGL2 spectra-density canvases (the "datashaded"
+    # spectra panel rendered client-side at on-screen dpi instead of a baked
+    # raster). Only included when the markup actually has one.
+    if 'data-spectra-density' in content_html:
+        js = (_load_spectra_gl_js() + "\n"
+              + _SPECTRA_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
+    # Async streamed linked-grid tiles: poll + swap each ``data-tile-async``
+    # image once its background projection lands on the tile server.
+    if 'data-tile-async' in content_html:
+        js = _TILE_STREAM_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js
+    # Click-to-cycle normalization on the spectra y-axis label.
+    if 'ocd-norm-toggle' in content_html:
+        js = _NORM_TOGGLE_JS.replace("__UID__", uid) + "\n" + js
+    # Clickable readout labels toggling their reference spectra. Independent of
+    # the live density (works for any SvgFigure that drew tagged labels/refs).
+    if 'data-sg-readout' in content_html:
+        js = _REF_TOGGLE_JS.replace("__UID__", uid) + "\n" + js
+    # Tile-URL resolver MUST be defined before any controller/GL fetch runs, so
+    # prepend it LAST (→ top of the concatenated script). Only needed when the
+    # markup carries baked tile URLs.
+    if 'data-tile-src' in content_html:
+        js = _TILE_BASE_RESOLVER_JS + "\n" + js
     actions = ''
     if save_button or copy_button or hdr_button:
         buttons = []
@@ -2891,7 +5058,7 @@ def interactive_shell(content_html: str, *,
                 f'{_SHELL_HDR_ICON}</button>')
         if save_button:
             buttons.append(
-                f'<button class="ocd-savebtn" title="Save as SVG">'
+                f'<button class="ocd-savebtn" title="Save as PNG">'
                 f'{_SHELL_SAVE_ICON}</button>')
         if copy_button:
             buttons.append(
@@ -2901,7 +5068,7 @@ def interactive_shell(content_html: str, *,
             f'<div class="ocd-svgfig-actions">{"".join(buttons)}</div>'
         )
     style_attr = f' style="{wrapper_style}"' if wrapper_style else ''
-    return (
+    shell_html = (
         f'<div class="ocd-svgfig" data-uid="{uid}"{style_attr}>'
         f'<style>{css}</style>'
         f'{content_html}'
@@ -2912,6 +5079,12 @@ def interactive_shell(content_html: str, *,
         f'</div>'
         f'<script>{js}</script>'
     )
+    if center:
+        # Wrap in a centring div so the inline-block ``.ocd-svgfig``
+        # centres in its parent. Jupyter / dashboard convention is to
+        # show figures middle-of-cell; without this they hug the left.
+        shell_html = f'<div style="text-align:center">{shell_html}</div>'
+    return shell_html
 
 
 # Internal alias kept for back-compat with any in-tree caller; new code
