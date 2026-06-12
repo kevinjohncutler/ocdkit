@@ -256,7 +256,8 @@ def make_app():
         return JSONResponse(out)
 
     @app.get("/tile/{sid}/{label}/{level}")
-    async def tile(sid: str, label: str, level: int, fmt: str = "raw", f32: int = 0):
+    async def tile(sid: str, label: str, level: int, fmt: str = "raw", f32: int = 0,
+                   crop: str = ""):
         src = get_source(sid)
         if src is None:
             return JSONResponse({"error": "unknown source"}, status_code=404)
@@ -284,6 +285,23 @@ def make_app():
             return JSONResponse({"error": f"no layer {label}"}, status_code=404)
         lh, lw, arr = lv
         m = src.meta.get(label, {"mode": "rgb"})
+        # ?crop=x0,y0,x1,y1 (FOV-norm [0,1]) → serve ONLY that sub-rect of the level,
+        # snapped to pixel edges. Lets a zoomed-in / snapped view fetch just the
+        # region in frame at full res instead of the whole-FOV tile. The actual
+        # served rect (after snapping + clamping) rides back in X-Crop so the client
+        # can place it; absent/invalid crop = the full level (unchanged behaviour).
+        croprect = "0,0,1,1"
+        if crop:
+            try:
+                cx0, cy0, cx1, cy1 = (float(v) for v in crop.split(","))
+                px0 = max(0, min(lw, int(round(cx0 * lw)))); px1 = max(0, min(lw, int(round(cx1 * lw))))
+                py0 = max(0, min(lh, int(round(cy0 * lh)))); py1 = max(0, min(lh, int(round(cy1 * lh))))
+                if px1 <= px0: px1 = min(lw, px0 + 1)
+                if py1 <= py0: py1 = min(lh, py0 + 1)
+                arr = arr[py0:py1, px0:px1]
+                croprect = f"{px0/lw:.6f},{py0/lh:.6f},{px1/lw:.6f},{py1/lh:.6f}"
+            except Exception:
+                croprect = "0,0,1,1"
         # float16 wire for scalar INTENSITY tiles: halves the transfer (the GPU
         # samples R16F as float, so the shader is unchanged). Display error is
         # ~0.01% of the value range and lo/hi ride exact in the headers, so the
@@ -294,10 +312,12 @@ def make_app():
             # but float16 maxes at 65504, so the top ~31 codes would overflow to
             # inf. Clamping costs ≤0.05% only at the absolute peak (lo/hi exact).
             arr = np.clip(arr, -65504.0, 65504.0).astype("<f2")
-        body, media = _encode_level(lh, lw, arr, fmt)
+        sh, sw = arr.shape[0], arr.shape[1]          # SERVED dims (cropped if cropping)
+        body, media = _encode_level(sh, sw, arr, fmt)
         ch = 1 if arr.ndim == 2 else arr.shape[2]
         return Response(content=body, media_type=media, headers={
-            "X-Level-Width": str(lw), "X-Level-Height": str(lh),
+            "X-Level-Width": str(sw), "X-Level-Height": str(sh),
+            "X-Crop": croprect,                       # FOV-norm rect this tile covers
             "X-Level": str(max(0, min(level, src.n_level(label) - 1))),
             "X-Channels": str(ch), "X-Dtype": str(arr.dtype),
             "X-Mode": str(m.get("mode", "rgb")),
