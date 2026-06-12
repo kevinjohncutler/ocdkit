@@ -70,6 +70,10 @@ _VIEWER_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>tile 
 <canvas id="c"></canvas><div id="hud">init…</div><div id="tabs"></div>
 <script>
 const SID="__SID__"; let LAYER="__LAYER__";
+// Base path for this viewer's own requests, derived from its page URL — so the
+// absolute routes work whether served at the origin root (/grid/<sid>) OR behind
+// a sub-path proxy (…/proxy/<port>/grid/<sid>, e.g. jupyter-server-proxy).
+const VBASE=location.pathname.replace(/(grid|viewgl|view)\/[^/]+\/?$/,'');
 const canvas=document.getElementById('c'), hud=document.getElementById('hud'), tabs=document.getElementById('tabs');
 let info=null, device=null, ctx=null, format=null, pipeline=null, sampler=null, ubuf=null;
 const texCache=new Map();                 // "layer/level" -> {tex,bg,w,h}
@@ -106,7 +110,7 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     vertex:{module:mod,entryPoint:'vs'},
     fragment:{module:mod,entryPoint:'fs',targets:[{format}]},
     primitive:{topology:'triangle-list'}});
-  info=await (await fetch('/info/'+SID)).json();
+  info=await (await fetch(VBASE+'info/'+SID)).json();
   if(!LAYER||!info.layers[LAYER]) LAYER=Object.keys(info.layers)[0];
   for(const L of Object.keys(info.layers)){
     const b=document.createElement('button'); b.textContent=L; b.dataset.l=L;
@@ -129,7 +133,7 @@ function pickLevel(){
 async function getTex(layer, level){
   const key=layer+'/'+level;
   if(texCache.has(key)) return texCache.get(key);
-  const r=await fetch('/tile/'+SID+'/'+layer+'/'+level+'?fmt=raw');
+  const r=await fetch(VBASE+'tile/'+SID+'/'+layer+'/'+level+'?fmt=raw');
   const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
   const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype');
   const buf=await r.arrayBuffer();
@@ -196,6 +200,10 @@ _VIEWER_GL_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>ti
 <canvas id="c"></canvas><div id="hud">init…</div><div id="tabs"></div>
 <script>
 const SID="__SID__"; let LAYER="__LAYER__";
+// Base path for this viewer's own requests, derived from its page URL — so the
+// absolute routes work whether served at the origin root (/grid/<sid>) OR behind
+// a sub-path proxy (…/proxy/<port>/grid/<sid>, e.g. jupyter-server-proxy).
+const VBASE=location.pathname.replace(/(grid|viewgl|view)\/[^/]+\/?$/,'');
 const canvas=document.getElementById('c'), hud=document.getElementById('hud'), tabs=document.getElementById('tabs');
 let info=null, gl=null, prog=null, uVp=null, texCache=new Map();
 let view={vx:0, vy:0, vw:1, vh:1};
@@ -218,7 +226,7 @@ void main(){ vec2 tc=u_vp.xy+vec2(uv.x,1.0-uv.y)*u_vp.zw;
   const lp=gl.getAttribLocation(prog,'p'); gl.enableVertexAttribArray(lp);
   gl.vertexAttribPointer(lp,2,gl.FLOAT,false,0,0);
   uVp=gl.getUniformLocation(prog,'u_vp'); gl.uniform1i(gl.getUniformLocation(prog,'tex'),0);
-  info=await (await fetch('/info/'+SID)).json();
+  info=await (await fetch(VBASE+'info/'+SID)).json();
   if(!LAYER||!info.layers[LAYER]) LAYER=Object.keys(info.layers)[0];
   for(const L of Object.keys(info.layers)){ const b=document.createElement('button');
     b.textContent=L; b.dataset.l=L; b.onclick=()=>{LAYER=L;syncTabs();draw();}; tabs.appendChild(b); }
@@ -233,7 +241,7 @@ function pickLevel(){ const dims=info.layers[LAYER]; const need=canvas.width/Mat
   for(let i=0;i<dims.length;i++){ if(dims[i][1]>=need) return i; } return dims.length-1; }
 async function getTex(layer,level){ const key=layer+'/'+level;
   if(texCache.has(key)) return texCache.get(key);
-  const r=await fetch('/tile/'+SID+'/'+layer+'/'+level+'?fmt=raw');
+  const r=await fetch(VBASE+'tile/'+SID+'/'+layer+'/'+level+'?fmt=raw');
   const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
   const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype'); const buf=await r.arrayBuffer();
   let bytes;
@@ -318,6 +326,8 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
 <script>__SCATTER_GL__</script>
 <script>
 const SID="__SID__";
+// Base path for this viewer's own requests (see _VIEWER_HTML) — root or proxied.
+const VBASE=location.pathname.replace(/(grid|viewgl|view)\/[^/]+\/?$/,'');
 const canvas=document.getElementById('c'), labs=document.getElementById('labs'), hud=document.getElementById('hud');
 const ovl=document.getElementById('ovl'), SVGNS='http://www.w3.org/2000/svg';
 let info=null, dpr=window.devicePixelRatio||1;
@@ -427,6 +437,8 @@ function _labelPos(x,y,w,h,lpos,pad){
 const TICKW=(()=>{ const v=parseFloat(new URLSearchParams(location.search).get('tickw')); return isNaN(v)?0:Math.max(0,v); })();
 // Snap-to-cell padding (image px around the cell bbox when zooming); ?snap_pad=.
 const SNAP_PAD=(()=>{ const v=parseFloat(new URLSearchParams(location.search).get('snap_pad')); return isNaN(v)?10:Math.max(0,v); })();
+// Snap-to-cell INITIAL state (?snap=1 → start enabled); the ctl button still toggles.
+const SNAP0=(new URLSearchParams(location.search).get('snap'))==='1';
 // ── render backend (API-agnostic seam) ───────────────────────────────────
 // The core below (layout / pan-zoom / cache / poll / controls / level pick /
 // normalization decision) is graphics-API-agnostic. A `backend` implements the
@@ -447,7 +459,9 @@ let backend=null;
 
 function GL2Backend(){
   let gl=null, prog=null, uVp=null, cprog=null, CU=null, lutTex=null, FLOAT_LINEAR=false;
-  let lprog=null, lineVAO=null, LU=null, nSeg=0;
+  // Named outline sets: 'default' = the full seg outline; hosts may upload extra
+  // per-group geometry (e.g. pass/fail cells) drawn with their own colours.
+  let lprog=null, lineCorner=null, LU=null, lineSets={};
   function sh(t,s){const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);
     if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))console.warn(gl.getShaderInfoLog(x));return x;}
   function mkprog(vs,fs){ const pr=gl.createProgram(); gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));
@@ -526,11 +540,9 @@ precision highp float; in float v_perp; out vec4 o; uniform vec4 u_color; unifor
 void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_color.a*a); }`;
     lprog=gl.createProgram(); gl.attachShader(lprog,sh(gl.VERTEX_SHADER,LVS));
     gl.attachShader(lprog,sh(gl.FRAGMENT_SHADER,LFS)); gl.linkProgram(lprog);
-    lineVAO=gl.createVertexArray(); gl.bindVertexArray(lineVAO);
-    const cbuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,cbuf);
+    lineCorner=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lineCorner);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([0,-1, 1,-1, 0,1, 1,1]),gl.STATIC_DRAW);
-    const aC=gl.getAttribLocation(lprog,'a_corner'); gl.enableVertexAttribArray(aC);
-    gl.vertexAttribPointer(aC,2,gl.FLOAT,false,0,0); gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER,null);
     LU={vp:gl.getUniformLocation(lprog,'u_vp'),cpx:gl.getUniformLocation(lprog,'u_cpx'),
         hw:gl.getUniformLocation(lprog,'u_hw'),color:gl.getUniformLocation(lprog,'u_color')};
     return true;
@@ -541,19 +553,27 @@ void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_c
     gl.activeTexture(gl.TEXTURE0);
   },
   createTile(m,buf){
-    const {w,h,ch,dt,mode,lo,hi,kind,bitmax}=m;
+    const {w,h,ch,dt,mode,lo,hi,kind,bitmax,downsample}=m;
+    // 'nearest' (label/ncolor) layers must NOT blend across edges — force a
+    // NEAREST min-filter so a single-level (no-pyramid) mask stays crisp when
+    // minified at zoom-out (a blended group index → a meaningless LUT colour).
+    const NEAR=(downsample==='nearest');
     const tex=gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,tex);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-    if(mode==='intensity' && dt==='float32'){
-      // raw scalar → R32F texture; colormap + normalize happen in the shader
-      const filt=FLOAT_LINEAR?gl.LINEAR:gl.NEAREST;
+    if(mode==='intensity' && (dt==='float32'||dt==='float16')){
+      // raw scalar → R32F / R16F texture; colormap + normalize happen in the
+      // shader (it samples a float either way). R16F halves the wire bytes and is
+      // core-filterable in WebGL2 (no float-linear extension needed).
+      const f16=(dt==='float16');
+      const filt=NEAR?gl.NEAREST:((f16||FLOAT_LINEAR)?gl.LINEAR:gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filt);
       gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
-      gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,w,h,0,gl.RED,gl.FLOAT,new Float32Array(buf));
+      if(f16) gl.texImage2D(gl.TEXTURE_2D,0,gl.R16F,w,h,0,gl.RED,gl.HALF_FLOAT,new Uint16Array(buf));
+      else    gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,w,h,0,gl.RED,gl.FLOAT,new Float32Array(buf));
       return {tex,w,h,mode:'intensity',lo,hi,kind,bitmax};
     }
-    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,NEAR?gl.NEAREST:gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
     let bytes;
     if(dt==='uint8'&&ch===4){ bytes=new Uint8Array(buf); }
@@ -565,9 +585,12 @@ void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_c
     gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,bytes);
     return {tex,w,h,mode:'rgb'};
   },
-  setOutline(buf){
-    nSeg=(buf.byteLength/32)|0;        // 8 floats/edge: prev,p0,p1,next
-    gl.bindVertexArray(lineVAO);
+  setOutline(buf,name){
+    // one VAO per named set: shared corner strip + this set's instance buffer
+    const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER,lineCorner);
+    const aC=gl.getAttribLocation(lprog,'a_corner'); gl.enableVertexAttribArray(aC);
+    gl.vertexAttribPointer(aC,2,gl.FLOAT,false,0,0);
     const ibuf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,ibuf);
     gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
     [['a_prev',0],['a_p0',8],['a_p1',16],['a_next',24]].forEach(([nm,off])=>{
@@ -575,8 +598,9 @@ void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_c
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc,2,gl.FLOAT,false,32,off); gl.vertexAttribDivisor(loc,1); });
     gl.bindVertexArray(null);
+    lineSets[name||'default']={vao, n:(buf.byteLength/32)|0};   // 8 floats/edge
   },
-  hasOutline(){ return lprog && nSeg>0; },
+  hasOutline(name){ const s=lineSets[name||'default']; return !!(lprog && s && s.n>0); },
   frameBegin(){
     gl.disable(gl.SCISSOR_TEST); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.enable(gl.SCISSOR_TEST); gl.bindVertexArray(null);
@@ -595,14 +619,15 @@ void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_c
       gl.bindTexture(gl.TEXTURE_2D,e.tex); gl.drawArrays(gl.TRIANGLES,0,3);
     }
   },
-  paintOutline(vp,rect,hwpx,color){
+  paintOutline(vp,rect,hwpx,color,name){
+    const s=lineSets[name||'default']; if(!s||!s.n) return;
     const [x,y,wpx,hpx]=rect;
-    gl.useProgram(lprog); gl.bindVertexArray(lineVAO);
+    gl.useProgram(lprog); gl.bindVertexArray(s.vao);
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.viewport(x,y,wpx,hpx); gl.scissor(x,y,wpx,hpx);
     gl.uniform4f(LU.vp, vp.x,vp.y,vp.w,vp.h); gl.uniform2f(LU.cpx, wpx,hpx);
     gl.uniform1f(LU.hw, hwpx); gl.uniform4f(LU.color, color[0],color[1],color[2],color[3]);
-    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nSeg);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, s.n);
     gl.disable(gl.BLEND); gl.bindVertexArray(null);
   },
   frameEnd(){},
@@ -618,7 +643,7 @@ function WebGPUBackend(){
   let rgbPipe=null, hdrPipe=null, intPipe=null, linePipe=null, composePipe=null, smp=null, lutSmp=null;
   let excTex=null, excBG=null, excUB=null, excN=0, excW=0, excH=0;   // RGB-cell live compose (per-excitation)
   let lutTex=null, lutBG=null;                    // group(1) for intensity
-  let cornerVB=null, segVB=null, nSeg=0;
+  let cornerVB=null, lineSets={};   // named outline sets (see GL2Backend)
   let draws=[];                                   // per-frame draw list
   let uPool=[], bgPool=[];                        // reused uniform buf + bindgroups
   const ALIGN=256;
@@ -662,6 +687,12 @@ function WebGPUBackend(){
     const intSmp=device.createSampler({magFilter:'nearest',
       minFilter:FLOAT_FILT?'linear':'nearest'});
     this._intSmp=intSmp;
+    // crisp label/ncolor sampler: NEAREST min too, so a single-level (no-pyramid)
+    // mask doesn't blend group colours when minified at zoom-out.
+    this._nearSmp=device.createSampler({magFilter:'nearest', minFilter:'nearest'});
+    // r16float is ALWAYS filterable (unlike r32float, which needs the
+    // 'float32-filterable' feature) → a linear sampler for float16 intensity tiles.
+    this._lin16Smp=device.createSampler({magFilter:'nearest', minFilter:'linear'});
     // ── RGB pipeline: textureSample → out (group0 tex+samp, group1 uniform vp)
     const RGB=`
 struct U{ vp:vec4f };
@@ -841,13 +872,18 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
       entries:[{binding:0,resource:lutTex.createView()},{binding:1,resource:lutSmp}]});
   },
   createTile(m,buf){
-    const {w,h,ch,dt,mode}=m;
-    if(mode==='intensity' && dt==='float32'){
-      const tex=device.createTexture({size:[w,h],format:'r32float',
+    const {w,h,ch,dt,mode,downsample}=m;
+    const NEAR=(downsample==='nearest');   // label/ncolor → NEAREST sampler (no blend)
+    if(mode==='intensity' && (dt==='float32'||dt==='float16')){
+      // R16F halves the wire vs R32F and is always filterable in WebGPU, so the
+      // intensity sampler (linear) binds fine even without 'float32-filterable'.
+      const f16=(dt==='float16');
+      const tex=device.createTexture({size:[w,h],format:f16?'r16float':'r32float',
         usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
-      padUpload(tex,w,h,new Uint8Array(buf),4);
+      padUpload(tex,w,h,new Uint8Array(buf),f16?2:4);
+      const smp=NEAR?this._nearSmp:(f16?(this._lin16Smp||this._intSmp):this._intSmp);
       const bg=device.createBindGroup({layout:intPipe.getBindGroupLayout(0),
-        entries:[{binding:0,resource:tex.createView()},{binding:1,resource:this._intSmp}]});
+        entries:[{binding:0,resource:tex.createView()},{binding:1,resource:smp}]});
       return {mode:'intensity',w,h,bg,lo:m.lo,hi:m.hi,kind:m.kind,bitmax:m.bitmax};
     }
     // HDR path: float RGB from make_rgb is peak-normalized *linear* Display-P3
@@ -863,7 +899,7 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
         usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
       padUpload(tex,w,h,new Uint8Array(half.buffer),8);
       const bg=device.createBindGroup({layout:hdrPipe.getBindGroupLayout(0),
-        entries:[{binding:0,resource:tex.createView()},{binding:1,resource:smp}]});
+        entries:[{binding:0,resource:tex.createView()},{binding:1,resource:NEAR?this._nearSmp:smp}]});
       return {mode:'rgb',w,h,bg,hdr:true};
     }
     let bytes;
@@ -877,15 +913,15 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
       usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
     padUpload(tex,w,h,bytes,4);
     const bg=device.createBindGroup({layout:rgbPipe.getBindGroupLayout(0),
-      entries:[{binding:0,resource:tex.createView()},{binding:1,resource:smp}]});
+      entries:[{binding:0,resource:tex.createView()},{binding:1,resource:NEAR?this._nearSmp:smp}]});
     return {mode:'rgb',w,h,bg};
   },
-  setOutline(buf){
-    nSeg=(buf.byteLength/32)|0;        // 8 floats/edge: prev,p0,p1,next
-    segVB=device.createBuffer({size:buf.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
-    device.queue.writeBuffer(segVB,0,new Uint8Array(buf));
+  setOutline(buf,name){
+    const vb=device.createBuffer({size:buf.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+    device.queue.writeBuffer(vb,0,new Uint8Array(buf));
+    lineSets[name||'default']={vb, n:(buf.byteLength/32)|0};   // 8 floats/edge
   },
-  hasOutline(){ return nSeg>0; },
+  hasOutline(name){ const s=lineSets[name||'default']; return !!(s && s.n>0); },
   // Upload the per-excitation layers into ONE texture_2d_array for the live RGB
   // compose. ``layers`` = array of Uint8Array (rgba8, w*h*4 each, one per exc).
   setExcArray(layers,w,h){
@@ -901,7 +937,7 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
   hasExc(){ return excN>0 && !!excBG; },
   frameBegin(){ draws=[]; },
   paint(e,vp,rect,lo,hi){ draws.push({kind:'tile',e,vp,rect,lo,hi}); },
-  paintOutline(vp,rect,hwpx,color){ draws.push({kind:'line',vp,rect,hw:hwpx,color}); },
+  paintOutline(vp,rect,hwpx,color,name){ draws.push({kind:'line',vp,rect,hw:hwpx,color,name}); },
   // Live RGB composite for the RGB cell: ``scales`` (per-exc linear), ``mask``
   // (bit per visible exc), ``total`` (channel count), ``clipHigh`` (white point).
   paintExc(vp,rect,scales,mask,total,clipHigh){
@@ -933,13 +969,14 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
           entries:[{binding:0,resource:{buffer:excUB}}]});
         pass.setPipeline(composePipe); pass.setBindGroup(0,excBG); pass.setBindGroup(1,slot.exc); pass.draw(3);
       } else if(d.kind==='line'){
+        const ls=lineSets[d.name||'default']; if(!ls||!ls.n) return;
         device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h,
           wpx,hpx, d.hw,0, d.color[0],d.color[1],d.color[2],d.color[3]]));
         if(!slot.line) slot.line=device.createBindGroup({layout:linePipe.getBindGroupLayout(0),
           entries:[{binding:0,resource:{buffer:ub}}]});
         pass.setPipeline(linePipe); pass.setBindGroup(0,slot.line);
-        pass.setVertexBuffer(0,cornerVB); pass.setVertexBuffer(1,segVB);
-        pass.draw(4,nSeg);
+        pass.setVertexBuffer(0,cornerVB); pass.setVertexBuffer(1,ls.vb);
+        pass.draw(4,ls.n);
       } else if(d.e.mode==='intensity'){
         device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, d.lo,d.hi,0,0]));
         if(!slot.int) slot.int=device.createBindGroup({layout:intPipe.getBindGroupLayout(2),
@@ -970,7 +1007,7 @@ async function init(){ try{
   // projection instead of blocking before them. The labeled grid FRAME (pure
   // DOM) paints the instant the FOV dims arrive — before any pipeline finishes
   // compiling — so first paint no longer waits on the GPU at all.
-  const infoP = fetch('/info/'+SID).then(r=>r.json());
+  const infoP = fetch(VBASE+'info/'+SID).then(r=>r.json());
   let gpuP = Promise.resolve(false);
   try{ if(navigator.gpu){ const b=WebGPUBackend();
     gpuP = b.init(canvas).then(ok=>{ if(ok) backend=b; return ok; })
@@ -1018,6 +1055,8 @@ async function init(){ try{
   try{ matchMedia('(dynamic-range: high)').addEventListener('change', pollHeadroom); }catch(e){}
   setCmap(CMAP); buildControls();
   fetchOutline();
+  fetchOutlineGroups();    // no-op unless info.has_outline_groups
+  fetchHighlightGroups();  // no-op unless info.has_highlight_groups
   loadSpectra();          // live spectra-density raster in the panel (static)
   loadExc();              // rgb_live per-excitation compose (retries until projected)
   loadCellInfo();         // cell bboxes + id map (snap-to-cell / hover-highlight)
@@ -1065,7 +1104,10 @@ function layout(){
   // collapsed it to a too-short strip when the iframe was short / the grid tall.
   // Compute the natural full-width layout, then a uniform scale ``k`` so the
   // grid + panel together fit the iframe height; center the grid horizontally.
-  const AX=info.spectra_axes, hasAx=!!(AX&&AX.bands&&AX.bands.length);
+  // panel axis spec — generic ``panel_axes`` (kind:'xy' = continuous numeric
+  // x/y) with back-compat for the spectra ``spectra_axes`` (bands/refs/top-axis).
+  const AX=info.panel_axes||info.spectra_axes, isXY=!!(AX&&AX.kind==='xy');
+  const hasAx=!!(AX&&(isXY||(AX.bands&&AX.bands.length)));
   // ── WIDTH-DRIVEN scale (aspect set by the COMPOSED ELEMENTS, not a fixed box).
   // The whole figure (tiles, gaps, axes, FONTS) is designed at a reference width
   // ``Wref`` and uniformly scaled by ``k=W0/Wref`` to the actual container width.
@@ -1087,15 +1129,17 @@ function layout(){
   const gridSpanH0=rows*cw0+Math.max(0,rows-1)*gap0;
   // Plot spans the TILE extent exactly (first tile's left → last tile's right),
   // i.e. contentW minus the outer gap on each side — x-axis box lines up with tiles.
-  const TA=hasAx?AX.top_axis:null;     // ported readout top-axis layout (band-grouped)
-  // With the top-axis present, the grid block's OWN bottom margin (gap0 below the
-  // last tile) is the gap ABOVE the labels, and the strip's bottom_pad (TA.gap=gap0)
-  // is the gap BELOW → equal spacing, so vgap0=0 (else it'd double the top gap).
-  const vgap0=TA?0:Math.max(6,PAD*cw0), plotW0=Math.max(20, contentW0-2*gap0);
+  const TA=(hasAx&&!isXY)?AX.top_axis:null;     // ported readout top-axis layout (band-grouped); xy has none
+  // Grid→panel spacing adapts to what actually sits between them. The grid block
+  // already ends with its own bottom margin (gap0 below the last tile row), so:
+  //  - top-axis labels present (spectra): the strip's measured height (incl. its
+  //    equal bottom pad) is inserted, vgap0=0 (gap0 above + TA.gap below = equal);
+  //  - xy panel (NO labels above the box): nothing extra — the panel sits exactly
+  //    gap0 below the tiles, identical to the tile-to-tile spacing;
+  //  - legacy spectra without a ported strip: the old fallback (vgap + TOPAX0).
+  const vgap0=(TA||isXY)?0:Math.max(6,PAD*cw0), plotW0=Math.max(20, contentW0-2*gap0);
   const plotH0=hasAx?gridSpanH0:0;                  // panel height = tile-grid height
-  // top-axis strip height comes from the ported layout (label block + equal bottom
-  // pad; the gap ABOVE == TA.gap == that bottom pad → equal spacing). TOPAX0=fallback.
-  const TOPAX_H0=(TA&&TA.top_axis_h!=null)?TA.top_axis_h:(hasAx?TOPAX0:0);
+  const TOPAX_H0=(TA&&TA.top_axis_h!=null)?TA.top_axis_h:((hasAx&&!isXY)?TOPAX0:0);
   const fullH0=hasAx?(totH0+vgap0+TOPAX_H0+plotH0+XLAB_H0):totH0;
   const W=W0, xoff=0;                                // fill width exactly (no centering)
   const padL=padL0*k, cw=cw0*k, gap=gap0*k, totH=totH0*k, vgap=vgap0*k, XLAB_H=XLAB_H0*k, TOPAX_H=TOPAX_H0*k;
@@ -1173,6 +1217,57 @@ function layout(){
     const yPix=v=>panelTop+(yhi-v)/((yhi-ylo)||1)*plotH;
     const SPN='#888', TXT='#bbb', FSF='system-ui,sans-serif', MONO='ui-monospace,Menlo,monospace';
     const tkw=TICKW>0?TICKW*k:bw;     // tick stroke width: configurable, default = axes width
+    if(isXY){
+      // ── generic continuous x/y axes (scatter / xy panel) — no bands, refs,
+      // top-axis or norm-toggle: a numeric x-axis (ticks+label, bottom) and a
+      // plain numeric y-axis (ticks+label, left), inside the shared plot box.
+      const _fmt=v=>{ const a=Math.abs(v);
+        return (a!==0&&(a<1e-2||a>=1e4))?v.toExponential(1)
+             : (Number.isInteger(v)?String(v):parseFloat(v.toFixed(3)).toString()); };
+      // plot box (4 spines) — same stroke/inset as the tile frames + spectra box.
+      ovl.appendChild(_svg('rect',{x:PX+bw/2,y:panelTop+bw/2,width:Math.max(0,plotW-bw),
+        height:Math.max(0,plotH-bw),fill:'none',stroke:SPN,'stroke-width':bw,rx:RX}));
+      // y ticks + plain (rotated) y-label, placed just left of the widest tick label.
+      const _yt=(AX.yticks||[ylo,(ylo+yhi)/2,yhi]);
+      let _ytw=0; _yt.forEach(tv=>{ _ytw=Math.max(_ytw,_measW(_fmt(tv),fs(10))); });
+      _yt.forEach(tv=>{ const yy=yPix(tv);
+        ovl.appendChild(_svg('line',{x1:PX-3*k,y1:yy,x2:PX,y2:yy,stroke:SPN,'stroke-width':tkw}));
+        _txt(PX-6*k, yy+fs(10)*0.35, _fmt(tv), {fill:TXT,'font-family':FSF,'font-size':fs(10),'text-anchor':'end'}); });
+      if(AX.ylabel){ const lx=Math.max(fs(11)*0.6, PX-6*k-_ytw-4*k-fs(11)*0.5), ly=panelTop+plotH/2;
+        const yl=_txt(lx, ly, AX.ylabel, {fill:TXT,'font-family':FSF,'font-size':fs(11),'text-anchor':'middle'});
+        yl.setAttribute('transform','rotate(-90 '+lx+' '+ly+')');
+        if(AX.scales&&AX.scales.y&&AX.scales.y.log){   // label = linear↔log toggle
+          yl.setAttribute('class','yscale'); yl.style.cursor='pointer';
+          yl.style.userSelect='none'; yl.style.pointerEvents='auto';  // #ovl is none
+          yl.addEventListener('click',()=>toggleAxisScale('y')); } }
+      // x ticks (bottom) + numeric labels, then a centered x-label below them.
+      const xlo=(AX.xlo!=null?AX.xlo:0), xhi=(AX.xhi!=null?AX.xhi:1);
+      const xPix=v=>PX+(v-xlo)/((xhi-xlo)||1)*plotW;
+      const _xt=(AX.xticks||[xlo,(xlo+xhi)/2,xhi]);
+      _xt.forEach(tv=>{ const xx=xPix(tv);
+        ovl.appendChild(_svg('line',{x1:xx,y1:panelTop+plotH,x2:xx,y2:panelTop+plotH+3*k,stroke:SPN,'stroke-width':tkw}));
+        _txt(xx, panelTop+plotH+fs(10)+6*k, _fmt(tv), {fill:TXT,'font-family':FSF,'font-size':fs(10),'text-anchor':'middle'}); });
+      if(AX.xlabel){ const xl=_txt(PX+plotW/2, panelTop+plotH+fs(10)+fs(11)+13*k, AX.xlabel,
+        {fill:TXT,'font-family':FSF,'font-size':fs(11),'text-anchor':'middle'});
+        if(AX.scales&&AX.scales.x&&AX.scales.x.log){   // label = linear↔log toggle
+          xl.setAttribute('class','xscale'); xl.style.cursor='pointer';
+          xl.style.userSelect='none'; xl.style.pointerEvents='auto';  // #ovl is none
+          xl.addEventListener('click',()=>toggleAxisScale('x')); } }
+      // optional decision-boundary overlays: shaded pass-region + dashed cutoffs
+      // (data coords). shade={x0,x1,y0,y1}; vlines/hlines = arrays of x/y cutoffs.
+      const DSH=(4*k).toFixed(1)+','+(3*k).toFixed(1);
+      if(AX.shade){ const s=AX.shade;
+        const sx0=xPix(s.x0!=null?s.x0:xlo), sx1=xPix(s.x1!=null?s.x1:xhi);
+        const sy0=yPix(s.y0!=null?s.y0:ylo), sy1=yPix(s.y1!=null?s.y1:yhi);
+        ovl.appendChild(_svg('rect',{x:Math.min(sx0,sx1),y:Math.min(sy0,sy1),
+          width:Math.abs(sx1-sx0),height:Math.abs(sy1-sy0),fill:'#888',opacity:0.12})); }
+      (AX.vlines||[]).forEach(xv=>{ const xx=xPix(xv);
+        ovl.appendChild(_svg('line',{x1:xx,y1:panelTop,x2:xx,y2:panelTop+plotH,
+          stroke:SPN,'stroke-width':tkw,'stroke-dasharray':DSH,opacity:0.85})); });
+      (AX.hlines||[]).forEach(yv=>{ const yy=yPix(yv);
+        ovl.appendChild(_svg('line',{x1:PX,y1:yy,x2:PX+plotW,y2:yy,
+          stroke:SPN,'stroke-width':tkw,'stroke-dasharray':DSH,opacity:0.85})); });
+    } else {
     AX.bands.forEach((b,i)=>{                     // x: excitation/channel bands
       const bx0=PX+b.x0*plotW, bx1=PX+b.x1*plotW, bmid=(bx0+bx1)/2;
       ovl.appendChild(_svg('rect',{x:bx0,y:panelTop,width:Math.max(0,bx1-bx0),height:plotH,
@@ -1245,6 +1340,7 @@ function layout(){
       });
     }
     _refApplyAll();   // re-apply persisted pinned/temp state after the rebuild
+    }
     // Live spectra-density raster fills the plot box (behind the axes/refs). Set
     // its rect (CSS px) and (re)render ONCE here — layout runs on init/resize,
     // NOT on zoom, so the density adds zero per-zoom-frame cost.
@@ -1276,6 +1372,7 @@ function setCmap(name){
 // LUT, its HDR path (cfg.hdr) a float LUT — match each from the viewer's LUTS.
 function applySpecCmap(name){
   if(!_specReady || !_specCfg || !PANEL) return;
+  if(_specFixedLut){ drawSpectra(); return; }   // categorical scatter keeps its own LUT
   if(_specCfg.hdr){
     if(LUTS[name]) _specLutHdr=Float32Array.from(LUTS[name]);
     if(LUTS_SDR[name]) _specLutSdr=Float32Array.from(LUTS_SDR[name]);
@@ -1300,7 +1397,7 @@ function buildControls(){
   // snap-to-cell toggle: hovering a spectra line zooms the grid to that cell's
   // bbox (+SNAP_PAD image px). Off by default (hover-zoom is opinionated).
   const snapBtn=document.createElement('button'); snapBtn.id='snapbtn';
-  snapBtn.textContent='snap: off'; snapBtn.title='hover a spectrum to zoom the grid to that cell';
+  snapBtn.textContent='snap: '+(_snap?'on':'off'); snapBtn.title='hover a spectrum to zoom the grid to that cell';
   snapBtn.onclick=()=>{ _snap=!_snap; snapBtn.textContent='snap: '+(_snap?'on':'off'); };
   bar.appendChild(document.createTextNode(' ')); bar.appendChild(snapBtn);
   // HDR gain (WebGPU HDR canvas only): forces the RGB-tile peak above SDR white
@@ -1330,15 +1427,16 @@ function buildControls(){
 // "hiccup" at the level switch.
 async function fetchTile(label, level){
   const key=label+'/'+level; if(texCache.has(key)) return null;
-  const r=await fetch('/tile/'+SID+'/'+label+'/'+level+'?fmt=raw');
+  const r=await fetch(VBASE+'tile/'+SID+'/'+label+'/'+level+'?fmt=raw');
   if(r.status===204 || !r.ok) return null;     // not projected yet — retry later
   const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
   const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype');
   const mode=r.headers.get('X-Mode')||'rgb';
   const lo=parseFloat(r.headers.get('X-Lo')||'0'), hi=parseFloat(r.headers.get('X-Hi')||'1');
   const kind=r.headers.get('X-Kind')||'reduction', bitmax=parseFloat(r.headers.get('X-Bitmax')||'1');
+  const downsample=r.headers.get('X-Downsample')||'mean';   // 'nearest' label layers → NEAREST min-filter
   const buf=await r.arrayBuffer();
-  return {key, label, level, meta:{w,h,ch,dt,mode,lo,hi,kind,bitmax}, buf};
+  return {key, label, level, meta:{w,h,ch,dt,mode,lo,hi,kind,bitmax,downsample}, buf};
 }
 // GPU UPLOAD (synchronous) of a pending tile → caches + returns the entry.
 function uploadTile(p){
@@ -1363,6 +1461,41 @@ async function getTex(label, level){
 // fills it via a one-shot WebGPU compute+render. Zero per-zoom-frame cost → grid
 // zoom timings are unchanged whether or not the spectra are present.
 let _specReady=false, _specCfg=null, _specRect=null;
+// Categorical scatter (e.g. pass/fail) ships its own fixed LUT via data-lut and
+// must NOT follow the cmap picker (which would re-index a binary value into the
+// active colormap → e.g. all points at magma[0]=black). Set from data-fixed-lut.
+let _specFixedLut=false;
+// xy-panel axis scales: clicking an axis LABEL toggles linear ↔ log (legacy
+// convention: natural-log VALUES on a linear axis). The host ships per-axis
+// variants in panel_axes.scales = {x:{linear:{lo,hi,ticks,label,lines,shade},
+// log:{...}|null}, y:{...}} plus log point coords (data-x-log / data-y-log;
+// NaN for non-positive values → those points don't draw in log mode).
+let _xyLog={x:false,y:false}, _xyArrs=null;
+function applyXYScatter(){
+  if(!_specCfg) return;
+  const cv=document.getElementById('speccv'); if(!cv) return;
+  const AX=info&&(info.panel_axes||info.spectra_axes); if(!AX) return;
+  if(!_xyArrs) _xyArrs={x:_specCfg.x, y:_specCfg.y,
+    xlog:cv.getAttribute('data-x-log')?_b64f32(cv.getAttribute('data-x-log')):null,
+    ylog:cv.getAttribute('data-y-log')?_b64f32(cv.getAttribute('data-y-log')):null};
+  _specCfg.x=(_xyLog.x&&_xyArrs.xlog)?_xyArrs.xlog:_xyArrs.x;
+  _specCfg.y=(_xyLog.y&&_xyArrs.ylog)?_xyArrs.ylog:_xyArrs.y;
+  _specCfg.xLo=AX.xlo; _specCfg.xHi=AX.xhi; _specCfg.yLo=AX.ylo; _specCfg.yHi=AX.yhi;
+}
+function toggleAxisScale(ax){
+  const AX=info&&(info.panel_axes||info.spectra_axes); if(!AX||!AX.scales) return;
+  const sc=AX.scales[ax]; if(!sc||!sc.log) return;
+  _xyLog[ax]=!_xyLog[ax];
+  const v=_xyLog[ax]?sc.log:sc.linear;
+  if(ax==='x'){ AX.xlo=v.lo; AX.xhi=v.hi; AX.xticks=v.ticks; AX.xlabel=v.label; AX.vlines=v.lines||[]; }
+  else        { AX.ylo=v.lo; AX.yhi=v.hi; AX.yticks=v.ticks; AX.ylabel=v.label; AX.hlines=v.lines||[]; }
+  const vx=_xyLog.x?AX.scales.x.log:AX.scales.x.linear,
+        vy=_xyLog.y?AX.scales.y.log:AX.scales.y.linear;
+  AX.shade=(vx&&vy&&vx.shade&&vy.shade)
+    ?{x0:vx.shade[0],x1:vx.shade[1],y0:vy.shade[0],y1:vy.shade[1]}:null;
+  applyXYScatter();
+  layout();           // rebuilds the axes overlay + re-renders the panel
+}
 // Spectra y-axis normalization toggle (clicking the y-label cycles it). All 3
 // variants (self/global/bitdepth) are shipped; swapping is a yLines swap + redraw.
 let _specMode='self', _specY=null;
@@ -1399,10 +1532,11 @@ function refSetTemp(roList){ const next={}; (roList||[]).forEach(r=>{ next[r]=tr
 function refClearTemp(){ const old=_refTemp; _refTemp={}; Object.keys(old).forEach(_refApply); }
 async function loadSpectra(){
   const cv=document.getElementById('speccv'); if(!cv) return;
-  const r=await fetch('/attach/'+SID+'/'+PANEL_KIND);
+  const r=await fetch(VBASE+'attach/'+SID+'/'+PANEL_KIND);
   if(r.status===204 || !r.ok){ setTimeout(loadSpectra, 400); return; }   // not ready — retry
   const a=await r.json();
   for(const k in a) cv.setAttribute(k, a[k]);
+  _specFixedLut=(a['data-fixed-lut']==='1');   // categorical scatter → don't follow the picker
   if(!PANEL){ console.warn('SpectraGL not injected'); return; }
   try{ _specCfg=PANEL.decodeAttrs(cv); }
   catch(e){ console.warn('spectra decode:', e); return; }
@@ -1465,19 +1599,19 @@ function drawSpectra(){
 })();
 // ── Cell info: per-cell bboxes + downsampled id map (snap-to-cell + reverse
 // spectrum highlight). Loaded once (204-retries while the seg processes).
-let _cellBoxes=null, _idMap=null, _idW=0, _idH=0, _snap=false, _id2line=null, _cellContours=null;
+let _cellBoxes=null, _idMap=null, _idW=0, _idH=0, _snap=SNAP0, _id2line=null, _cellContours=null;
 async function loadCellInfo(){
-  const r=await fetch('/attach/'+SID+'/cellboxes');
+  const r=await fetch(VBASE+'attach/'+SID+'/cellboxes');
   if(r.status===204 || !r.ok){ setTimeout(loadCellInfo, 600); return; }
   const a=new Int32Array(await r.arrayBuffer());
   _cellBoxes=new Map();
   for(let i=0;i+4<a.length;i+=5) _cellBoxes.set(a[i],[a[i+1],a[i+2],a[i+3],a[i+4]]);
-  try{ const r2=await fetch('/attach/'+SID+'/cellids');
+  try{ const r2=await fetch(VBASE+'attach/'+SID+'/cellids');
     if(r2.ok && r2.status!==204){
       _idW=+r2.headers.get('X-Map-W'); _idH=+r2.headers.get('X-Map-H');
       _idMap=new Int32Array(await r2.arrayBuffer()); } }catch(e){}
   // per-cell outline contours: [n int32][index n×(id,off,count)][verts M×2 f32]
-  try{ const r3=await fetch('/attach/'+SID+'/cellcontours');
+  try{ const r3=await fetch(VBASE+'attach/'+SID+'/cellcontours');
     if(r3.ok && r3.status!==204){
       const buf=await r3.arrayBuffer(), n=new DataView(buf).getInt32(0,true);
       const idx=new Int32Array(buf, 4, n*3), verts=new Float32Array(buf, 4+n*12);
@@ -1511,14 +1645,16 @@ function _clearHlEls(){ _hlEls.forEach(e=>{ try{e.remove();}catch(_){}}); _hlEls
 function clearCellHighlight(){ _clearHlEls(); _hlCellId=null; }
 function highlightCellInGrid(id){ _hlCellId=id; _drawCellHighlight(); }
 // build the static geometry once: points are the raw contour in FOV-norm [0,1];
-// a per-tile <g clip> keeps it inside its tile; vector-effect keeps the stroke a
-// constant screen width regardless of the transform scale.
+// a per-tile <g clip> keeps it inside its tile. vector-effect=non-scaling-stroke
+// pins the stroke width to CSS px (immune to the per-tile transform scale); the
+// width itself is set per-frame in _positionCellHighlight so it scales WITH zoom
+// (constant in IMAGE px, like the seg outline) instead of a fixed screen width.
 function _buildCellHighlight(){
   _clearHlEls();
   if(_hlCellId==null || !_cellContours || !info || !cells) return;
   const cv=_cellContours.get(_hlCellId); if(!cv || cv.length<6) return;   // ≥3 verts
   let raw=''; for(let i=0;i<cv.length;i+=2) raw+=cv[i].toFixed(5)+','+cv[i+1].toFixed(5)+' ';
-  raw=raw.trim(); const sw=Math.max(1, 1.5*_kNow);
+  raw=raw.trim();
   _hlPolys=[];
   cells.forEach((c,ti)=>{
     const clipId='hlclip_'+ti, clip=document.createElementNS(SVGNS,'clipPath');
@@ -1530,9 +1666,11 @@ function _buildCellHighlight(){
     const g=document.createElementNS(SVGNS,'g'); g.setAttribute('clip-path','url(#'+clipId+')');
     const poly=document.createElementNS(SVGNS,'polygon');
     poly.setAttribute('points',raw);
-    poly.setAttribute('fill','none'); poly.setAttribute('stroke','#fff');
-    poly.setAttribute('stroke-width',sw); poly.setAttribute('stroke-linejoin','round');
-    poly.setAttribute('vector-effect','non-scaling-stroke');
+    // stroke colour per TILE: a host highlight group (e.g. pass/fail on readout
+    // slices) colours this cell's contour there; default white elsewhere.
+    poly.setAttribute('fill','none'); poly.setAttribute('stroke',_hlColorFor(c.label,_hlCellId));
+    poly.setAttribute('stroke-linejoin','round');
+    poly.setAttribute('vector-effect','non-scaling-stroke');   // width set per-frame (CSS px)
     poly.setAttribute('pointer-events','none');
     g.appendChild(poly); ovl.appendChild(g); _hlEls.push(g);
     _hlPolys.push({poly, c});
@@ -1543,7 +1681,11 @@ function _buildCellHighlight(){
 // (the only thing that changes with zoom/pan). Geometry is untouched.
 function _positionCellHighlight(){
   if(!_hlPolys) return; const vp=vpFor();
+  // stroke width tracks zoom in IMAGE px (same convention as the seg outline:
+  // OUTLINE_IMG_PX source px → CSS px via sx/imgW, floored at OUTLINE_MIN_DPX).
+  const imgW=(info&&info.width)||1;
   for(const p of _hlPolys){ const c=p.c, sx=c.w/vp.w, sy=c.h/vp.h;
+    p.poly.setAttribute('stroke-width', Math.max(OUTLINE_MIN_DPX, OUTLINE_IMG_PX*sx/imgW).toFixed(3));
     p.poly.setAttribute('transform','translate('+(c.x-vp.x*sx).toFixed(2)+' '
       +(c.y-vp.y*sy).toFixed(2)+') scale('+sx.toFixed(5)+' '+sy.toFixed(5)+')'); }
 }
@@ -1687,7 +1829,7 @@ async function loadExc(){
   const layers=[]; let W=0,H=0;
   for(const l of labels){
     const dims=info.layers[l]; const lvl=dims.length-1;     // finest
-    const r=await fetch('/tile/'+SID+'/'+l+'/'+lvl+'?fmt=raw');
+    const r=await fetch(VBASE+'tile/'+SID+'/'+l+'/'+lvl+'?fmt=raw');
     if(r.status===204 || !r.ok){ setTimeout(loadExc, 300); return; }   // not projected yet
     W=+r.headers.get('X-Level-Width'); H=+r.headers.get('X-Level-Height');
     layers.push(new Uint8Array(await r.arrayBuffer()));
@@ -1698,7 +1840,7 @@ async function loadExc(){
   // ``/total`` → clipHigh=Infinity → a BLACK composite. (The SVG figure path
   // re-reads /info after the layers land for exactly this reason.)
   let meta=(info.meta||{});
-  try{ const fresh=await fetch('/info/'+SID).then(r=>r.json());
+  try{ const fresh=await fetch(VBASE+'info/'+SID).then(r=>r.json());
        if(fresh && fresh.meta) meta=fresh.meta; }catch(e){}
   const scales=[], names=[]; let total=0;
   labels.forEach(l=>{ const m=meta[l]||{};
@@ -1767,9 +1909,48 @@ function cellRectPx(cell){
   const y=canvas.height-Math.round((cell.y+cell.h)*dpr); return [x,y,wpx,hpx];
 }
 async function fetchOutline(){
-  const r=await fetch('/attach/'+SID+'/outline');
+  const r=await fetch(VBASE+'attach/'+SID+'/outline');
   if(r.status===204 || !r.ok){ setTimeout(fetchOutline, 300); return; }
   const buf=await r.arrayBuffer(); backend.setOutline(buf); render();
+}
+// Optional per-group outline colouring (e.g. pass/fail cells): the host attaches
+// ``outline_groups`` = JSON {groups:[{attach,color:[r,g,b,a],on:[labels]}],
+// default_on:[labels]} plus one geometry attachment per group (same miter-instance
+// format as ``outline``). Each group draws on its ``on`` tile labels in its colour;
+// the full white outline draws on ``default_on`` (default: Masks only). Polled only
+// when /info advertises it (info.has_outline_groups) — no blind retry loop.
+let OUTLINE_GROUPS=null;
+async function fetchOutlineGroups(){
+  if(!(info&&info.has_outline_groups)) return;
+  const r=await fetch(VBASE+'attach/'+SID+'/outline_groups');
+  if(r.status===204 || !r.ok){ setTimeout(fetchOutlineGroups, 500); return; }
+  const spec=await r.json();
+  for(const g of (spec.groups||[])){
+    try{ const rb=await fetch(VBASE+'attach/'+SID+'/'+g.attach);
+         if(rb.ok && rb.status!==204) backend.setOutline(await rb.arrayBuffer(), g.attach); }
+    catch(e){ console.warn('outline group', g.attach, e); }
+  }
+  OUTLINE_GROUPS=spec; render();
+}
+// Highlight-contour colouring per cell GROUP (e.g. pass/fail): the host attaches
+// ``highlight_groups`` = JSON {groups:[{ids:[...],color:[r,g,b,a],on:[labels]}]}.
+// Unlike outline_groups (whole-population geometry) this colours only the
+// HIGHLIGHTED cell's contour: on a tile in ``on``, a cell in ``ids`` strokes in
+// the group colour; elsewhere it stays white. Polled when /info advertises it.
+let HL_GROUPS=null;
+async function fetchHighlightGroups(){
+  if(!(info&&info.has_highlight_groups)) return;
+  const r=await fetch(VBASE+'attach/'+SID+'/highlight_groups');
+  if(r.status===204 || !r.ok){ setTimeout(fetchHighlightGroups, 500); return; }
+  const spec=await r.json();
+  HL_GROUPS=(spec.groups||[]).map(g=>{ const c=g.color||[1,1,1,1];
+    return {ids:new Set(g.ids||[]), on:new Set(g.on||[]),
+            color:'rgba('+Math.round(c[0]*255)+','+Math.round(c[1]*255)+','+Math.round(c[2]*255)+','+(c[3]!=null?c[3]:1)+')'}; });
+  _clearHlEls(); _drawCellHighlight();   // rebuild any live highlight with colours
+}
+function _hlColorFor(label,id){
+  if(HL_GROUPS) for(const g of HL_GROUPS){ if(g.on.has(label)&&g.ids.has(id)) return g.color; }
+  return '#fff';
 }
 function render(){
   if(!backend) return;
@@ -1803,14 +1984,19 @@ function render(){
   // FOV-fraction shown), so the stroke tracks the pixels — thin at the grid view,
   // thicker as you zoom into cells — with a small device-px floor so it stays
   // visible when the whole FOV is downsampled to one cell.
-  if(backend.hasOutline()){
-    const cell=cells.find(c=>c.label==='Masks');
-    if(cell){
+  {
+    const OG=OUTLINE_GROUPS;
+    const defOn=(OG&&OG.default_on)||['Masks'];   // tiles drawing the full white outline
+    const vw=Math.max(1e-6, Math.min(1, view.s));
+    for(const cell of cells){
+      const wantDef=defOn.includes(cell.label)&&backend.hasOutline();
+      const grps=OG?(OG.groups||[]).filter(g=>(g.on||[]).includes(cell.label)&&backend.hasOutline(g.attach)):[];
+      if(!wantDef && !grps.length) continue;
       const rpx=cellRectPx(cell);                 // [x,y,wpx,hpx] device px
-      const vw=Math.max(1e-6, Math.min(1, view.s));
       const RAS=(info&&info.width)||rpx[2];
       const hw=Math.max(OUTLINE_MIN_DPX*dpr, (OUTLINE_IMG_PX*0.5)*(rpx[2]/(RAS*vw)));
-      backend.paintOutline(vp, rpx, hw, [1,1,1,0.85]);
+      if(wantDef) backend.paintOutline(vp, rpx, hw, [1,1,1,0.85]);
+      for(const g of grps) backend.paintOutline(vp, rpx, hw, g.color||[1,1,1,0.85], g.attach);
     }
   }
   backend.frameEnd();
@@ -1881,28 +2067,48 @@ async function refine(){
 async function warmPyramid(){
   if(_warmRunning || _warmDone || !backend) return; _warmRunning=true;
   try{
+    // BUDGET for background full-res prefetch. Prefetching every layer's whole-FOV
+    // FINEST level makes a single-slice tile view buttery (zoom + snap are instant
+    // — full-res already cached), but for a big image grid (many layers) it's tens
+    // to hundreds of MB of needless traffic. So only when the finest-level total
+    // fits the budget do we prefetch full-res (FINEST FIRST, so a snap/zoom finds
+    // it ready); a big grid warms coarse→mid only and lets refine pull full-res on
+    // demand. (Cheap: re-visited tiles are browser-cached now, so no refetch.)
+    const BUDGET=32<<20;
+    let finestBytes=0;
+    for(const c of cells){ const d=info.layers[c.label]; if(d){ const f=d[d.length-1];
+      const mt=info.meta&&info.meta[c.label]; const bpp=(mt&&mt.mode==='intensity')?2:4;
+      finestBytes+=f[0]*f[1]*bpp; } }
+    const prefetchFinest=finestBytes<=BUDGET;
+    const buildWork=()=>{ const w=[], seen=new Set();
+      const push=(lbl,l)=>{ const k=lbl+'/'+l; if(!seen.has(k)&&!texCache.has(k)){ seen.add(k); w.push([lbl,l]); } };
+      if(prefetchFinest) for(const c of cells){ const d=info.layers[c.label]; if(d) push(c.label, d.length-1); }
+      for(const c of cells){ const d=info.layers[c.label]; if(!d) continue;
+        const top=prefetchFinest?d.length:Math.max(1,d.length-1);   // skip finest when over budget
+        for(let l=0;l<top;l++) push(c.label,l); }
+      return w; };
     for(let pass=0; pass<80 && !_warmDone; pass++){
+      const work=buildWork();
+      if(!work.length){ _warmDone=true; break; }
       let pending=false, uploaded=false;
-      for(const cell of cells){
-        const dims=info.layers[cell.label]; if(!dims) continue;
-        for(let l=0;l<dims.length;l++){
-          if(_warmStop) return;                       // interaction → bail
-          if(texCache.has(cell.label+'/'+l)) continue;
-          const p=await fetchTile(cell.label, l);
-          if(p){ uploadTile(p); uploaded=true; await new Promise(r=>requestAnimationFrame(r)); }
-          else { pending=true; }                       // not projected yet
-        }
+      for(const [lbl,l] of work){
+        if(_warmStop) return;                          // interaction → bail
+        const p=await fetchTile(lbl,l);
+        if(p){ uploadTile(p); uploaded=true; await new Promise(r=>requestAnimationFrame(r)); }
+        else { pending=true; }                          // not projected yet
       }
-      if(!pending){ _warmDone=true; break; }            // every level cached
+      if(!pending){ _warmDone=true; break; }
       if(!uploaded) await new Promise(r=>setTimeout(r, 400));   // wait for projections, retry
     }
-    if(_warmDone) console.log('WARM done @'+Math.round(performance.now())+'ms ('+texCache.size+' tiles cached)');
+    if(_warmDone) console.log('WARM done @'+Math.round(performance.now())+'ms ('+texCache.size+' tiles, '+(prefetchFinest?'full-res prefetched':'coarse-only')+')');
   } finally { _warmRunning=false; }
 }
-// Pause warming during interaction, resume after a short idle (cached tiles are
-// skipped on resume, so it picks up where it left off).
-function pauseWarm(){ _warmStop=true; if(_warmResumeT) clearTimeout(_warmResumeT);
-  _warmResumeT=setTimeout(()=>{ _warmStop=false; warmPyramid(); }, 700); }
+// Interaction does NOT pause warming — panning/zooming/hovering means the user
+// wants those full-res tiles SOONER, not later — so keep prefetching (GPU uploads
+// stay throttled to one/frame, and the browser caps in-flight fetches). This only
+// CLEARS a stop set elsewhere (the autozoom diagnostic) and ensures warm is live.
+function pauseWarm(){ _warmStop=false; if(_warmResumeT) clearTimeout(_warmResumeT);
+  if(!_warmRunning && !_warmDone) _warmResumeT=setTimeout(warmPyramid, 0); }
 
 // ── Auto-zoom diagnostic (?autozoom=1) ───────────────────────────────────
 // Self-runs a continuous zoom-IN → pause → zoom-OUT → pause loop so you can SEE
