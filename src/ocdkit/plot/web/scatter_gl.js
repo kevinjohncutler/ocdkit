@@ -79,7 +79,9 @@
     if (cfg.c && cfg.lut) {
       var t = (cfg.c[i] - cfg.cLo) / ((cfg.cHi - cfg.cLo) || 1);
       var li = Math.min(255, Math.max(0, (t * 255) | 0)) * 4;
-      return 'rgb(' + cfg.lut[li] + ',' + cfg.lut[li + 1] + ',' + cfg.lut[li + 2] + ')';
+      // include the LUT alpha so density→opacity ramps work (e.g. transparent_cmap-
+      // style cyan/red where low density is transparent, high density opaque).
+      return 'rgba(' + cfg.lut[li] + ',' + cfg.lut[li + 1] + ',' + cfg.lut[li + 2] + ',' + (cfg.lut[li + 3] / 255).toFixed(3) + ')';
     }
     var c = cfg.color; return 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')';
   }
@@ -118,7 +120,7 @@
     return bestD <= thr2 ? best : -1;
   }
 
-  function _ring(overlayCv, st, idx, color) {
+  function _mark(overlayCv, st, idx) {
     var W = st.W, H = st.H;
     if (overlayCv.width !== W) overlayCv.width = W;
     if (overlayCv.height !== H) overlayCv.height = H;
@@ -126,26 +128,28 @@
     ctx.clearRect(0, 0, W, H);
     if (idx < 0) return -1;
     var p = st.pts[idx];
-    ctx.strokeStyle = color || 'rgba(255,64,64,0.95)';
-    ctx.lineWidth = Math.max(2, (self.devicePixelRatio || 1) * 1.8);
-    ctx.beginPath(); ctx.arc(p.px, p.py, st.r + ctx.lineWidth + 1, 0, 6.283185307, false); ctx.stroke();
+    // highlight = the point ITSELF turns white (filled at its own footprint plus
+    // a hairline so it fully covers the coloured dot) — not a ring around it.
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(p.px, p.py, st.r + (self.devicePixelRatio || 1) * 0.5, 0, 6.283185307, false); ctx.fill();
     return idx;
   }
 
-  // hover: ring the nearest point on the overlay; returns the point INDEX (caller
-  // maps to a cell id via cfg.cellIds[index]).
+  // hover: turn the nearest point white on the overlay; returns the point INDEX
+  // (caller maps to a cell id via cfg.cellIds[index]). The ``color`` arg is part
+  // of the shared LinkedPanel signature but unused here (the mark is always white).
   function highlight(scatterCv, overlayCv, mx, my, color) {
     var st = scatterCv.__sgState; if (!st) return -1;
-    return _ring(overlayCv, st, nearestPoint(st, mx, my), color);
+    return _mark(overlayCv, st, nearestPoint(st, mx, my));
   }
 
-  // reverse link: ring the point belonging to a known cell id (hover-a-cell ->
+  // reverse link: whiten the point belonging to a known cell id (hover-a-cell ->
   // light its scatter point). Returns the point index, or -1.
   function highlightById(scatterCv, overlayCv, id, color) {
     var st = scatterCv.__sgState; if (!st) return -1;
     var pts = st.pts, idx = -1;
     for (var i = 0; i < pts.length; i++) { if (pts[i].id === id) { idx = i; break; } }
-    return _ring(overlayCv, st, idx, color);
+    return _mark(overlayCv, st, idx);
   }
 
   function clearHighlight(overlayCv) {

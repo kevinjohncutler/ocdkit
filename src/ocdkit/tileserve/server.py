@@ -38,6 +38,10 @@ class TileSource:
         self.n_levels = n_levels
         self._dims = pyramid_dims(self.height, self.width, n_levels)
         self._declared: list[str] = []
+        # Layers stored WITHOUT a pyramid (a single full-res level): label masks
+        # that swap in only at full res, big overlays, etc. — the host opts a
+        # layer in via ``single_level=`` at register time or ``meta['pyramid']``.
+        self._single: set[str] = set()
         self._pyr: dict[str, list] = {}
         # Per-layer display meta the client uses to colormap/normalize on the
         # GPU: {"mode": "intensity"|"rgb", "lo": float, "hi": float, ...}.
@@ -53,16 +57,26 @@ class TileSource:
         # Extra fields merged into /info (e.g. host panel-axis geometry).
         self.info_extra: dict = {}
 
-    def declare(self, label: str):
+    def declare(self, label: str, single_level: bool = False):
         if label not in self._declared:
             self._declared.append(label)
+        if single_level:
+            self._single.add(label)
 
     def add_layer(self, label: str, arr: np.ndarray, meta: dict | None = None):
         self.declare(label)
+        m = meta or {}
+        # A layer may opt OUT of the pyramid (build only the full-res level).
+        # ``meta['pyramid'] is False`` triggers it too, for hosts that decide at
+        # fill time — though ``single_level=`` at register time is preferred so
+        # /info reports a single level from the start.
+        if m.get("pyramid") is False:
+            self._single.add(label)
         # label-like layers set meta['downsample']='nearest' so coarse levels
         # keep exact values instead of blending across edges.
-        _ds = (meta or {}).get("downsample", "mean")
-        self._pyr[label] = image_pyramid(np.asarray(arr), self.n_levels, mode=_ds)
+        _ds = m.get("downsample", "mean")
+        _nl = 1 if label in self._single else self.n_levels
+        self._pyr[label] = image_pyramid(np.asarray(arr), _nl, mode=_ds)
         if meta is not None:
             self.meta[label] = meta
 
@@ -77,10 +91,12 @@ class TileSource:
         return list(self._declared)
 
     def level_dims(self, label: str):
-        return [list(d) for d in self._dims]      # same for every layer (FOV)
+        if label in self._single:
+            return [[self.height, self.width]]    # single full-res level (no pyramid)
+        return [list(d) for d in self._dims]      # same for every multi-level layer (FOV)
 
     def n_level(self, label: str) -> int:
-        return len(self._dims)
+        return 1 if label in self._single else len(self._dims)
 
     def level(self, label: str, level: int):
         """Return ``(lh, lw, ndarray)`` for a level, or None if not filled."""
@@ -100,9 +116,14 @@ _LAZY_STARTED: dict = {}  # (sid, label) -> True once compute kicked off
 
 
 def register(width: int, height: int, layers: dict[str, np.ndarray],
-             n_levels: int = 5) -> str:
-    """Register a source's full-res layers (handed in as ready arrays)."""
+             n_levels: int = 5, single_level=None) -> str:
+    """Register a source's full-res layers (handed in as ready arrays).
+
+    ``single_level`` is an optional collection of labels stored WITHOUT a
+    pyramid (one full-res level) — e.g. label masks that need no coarse levels.
+    """
     src = TileSource(width, height, n_levels=n_levels)
+    src._single |= set(single_level or ())      # mark before add_layer (sets level count)
     for label, arr in layers.items():
         if arr is not None:
             src.add_layer(label, arr)
@@ -113,15 +134,19 @@ def register(width: int, height: int, layers: dict[str, np.ndarray],
 
 
 def register_pending(width: int, height: int, labels, n_levels: int = 5,
-                     grid=None) -> str:
+                     grid=None, single_level=None) -> str:
     """Declare a source's layers (dims known) with NO data yet; returns sid.
 
     The viewer can lay out + request tiles immediately; data fills in
     asynchronously via :func:`fill`. ``grid`` is the optional 2D tile layout.
+    ``single_level`` is an optional collection of labels stored WITHOUT a
+    pyramid (one full-res level) — /info reports a single level for them, so the
+    viewer never requests a coarse tile that doesn't exist.
     """
     src = TileSource(width, height, n_levels=n_levels)
+    _single = set(single_level or ())
     for label in labels:
-        src.declare(label)
+        src.declare(label, single_level=(label in _single))
     src.grid = grid
     sid = uuid.uuid4().hex[:12]
     with _LOCK:
@@ -231,7 +256,7 @@ def make_app():
         return JSONResponse(out)
 
     @app.get("/tile/{sid}/{label}/{level}")
-    async def tile(sid: str, label: str, level: int, fmt: str = "raw"):
+    async def tile(sid: str, label: str, level: int, fmt: str = "raw", f32: int = 0):
         src = get_source(sid)
         if src is None:
             return JSONResponse({"error": "unknown source"}, status_code=404)
@@ -255,12 +280,22 @@ def make_app():
                                 print("[tileserve lazy]", _k[1], _e)
                         threading.Thread(target=_run, daemon=True,
                                          name=f"lazy-{label}").start()
-                return Response(status_code=204)
+                return Response(status_code=204, headers={"Cache-Control": "no-store"})
             return JSONResponse({"error": f"no layer {label}"}, status_code=404)
         lh, lw, arr = lv
+        m = src.meta.get(label, {"mode": "rgb"})
+        # float16 wire for scalar INTENSITY tiles: halves the transfer (the GPU
+        # samples R16F as float, so the shader is unchanged). Display error is
+        # ~0.01% of the value range and lo/hi ride exact in the headers, so the
+        # global-pool normalization is unaffected. raw fmt only; ?f32=1 opts out.
+        if (fmt == "raw" and m.get("mode") == "intensity" and arr.ndim == 2
+                and arr.dtype == np.float32 and not f32):
+            # clip to the float16 range first — raw 16-bit intensity reaches 65535
+            # but float16 maxes at 65504, so the top ~31 codes would overflow to
+            # inf. Clamping costs ≤0.05% only at the absolute peak (lo/hi exact).
+            arr = np.clip(arr, -65504.0, 65504.0).astype("<f2")
         body, media = _encode_level(lh, lw, arr, fmt)
         ch = 1 if arr.ndim == 2 else arr.shape[2]
-        m = src.meta.get(label, {"mode": "rgb"})
         return Response(content=body, media_type=media, headers={
             "X-Level-Width": str(lw), "X-Level-Height": str(lh),
             "X-Level": str(max(0, min(level, src.n_level(label) - 1))),
@@ -270,7 +305,12 @@ def make_app():
             "X-Hi": repr(float(m.get("hi", 1.0))),
             "X-Kind": str(m.get("kind", "reduction")),
             "X-Bitmax": repr(float(m.get("bit_max", 1.0))),
-            "Cache-Control": "no-store",
+            "X-Downsample": str(m.get("downsample", "mean")),
+            # a (sid, label, level, fmt) tile is IMMUTABLE once filled (sid is a
+            # fresh uuid per run) → let the browser cache it, so re-zooming /
+            # snapping back to a visited region is instant (no refetch). The 204
+            # "not filled yet" path stays no-store so it keeps retrying.
+            "Cache-Control": "private, max-age=86400, immutable",
         })
 
     @app.get("/attach/{sid}/{name}")
@@ -355,12 +395,19 @@ def ensure_server() -> str:
     with _SERVER_LOCK:
         if _SERVER is not None:
             return _SERVER["url"]
+        import os
         import time
         import socket
         import uvicorn
 
+        # Bind host: 127.0.0.1 (default, local-only) or 0.0.0.0 to also accept
+        # connections from OTHER machines — needed when the notebook is opened on a
+        # different host than the kernel (the iframe then targets the kernel host).
+        # Opt in via OCDKIT_TILESERVE_HOST=0.0.0.0 (no auth on this server, so only
+        # expose it on a trusted network).
+        host = os.environ.get("OCDKIT_TILESERVE_HOST", "127.0.0.1")
         port = _pick_port()
-        config = uvicorn.Config(make_app(), host="127.0.0.1", port=port,
+        config = uvicorn.Config(make_app(), host=host, port=port,
                                 log_level="warning")
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, daemon=True,
