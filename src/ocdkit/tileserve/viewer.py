@@ -458,7 +458,7 @@ const SNAP0=(new URLSearchParams(location.search).get('snap'))==='1';
 let backend=null;
 
 function GL2Backend(){
-  let gl=null, prog=null, uVp=null, cprog=null, CU=null, lutTex=null, FLOAT_LINEAR=false;
+  let gl=null, prog=null, uVp=null, uTr=null, cprog=null, CU=null, lutTex=null, FLOAT_LINEAR=false;
   // Named outline sets: 'default' = the full seg outline; hosts may upload extra
   // per-group geometry (e.g. pass/fail cells) drawn with their own colours.
   let lprog=null, lineCorner=null, LU=null, lineSets={};
@@ -474,29 +474,34 @@ function GL2Backend(){
     if(!gl){ return false; }
     const VS=`#version 300 es
 in vec2 p; out vec2 uv; void main(){ uv=vec2(p.x*0.5+0.5,p.y*0.5+0.5); gl_Position=vec4(p,0,1); }`;
+    // u_tr = the FOV-norm rect (x,y,w,h) this texture COVERS — (0,0,1,1) for a
+    // full-FOV tile, the crop rect for a detail crop. Sampling maps the FOV coord
+    // tc into the texture: st=(tc-u_tr.xy)/u_tr.zw; outside [0,1] → transparent so
+    // the coarse base shows through (a crop only paints its own sub-rect).
     const FS=`#version 300 es
-precision highp float; in vec2 uv; out vec4 o; uniform sampler2D tex; uniform vec4 u_vp;
-void main(){ vec2 tc=u_vp.xy+vec2(uv.x,1.0-uv.y)*u_vp.zw;
-  if(tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0){ o=vec4(0,0,0,0); return; } o=vec4(texture(tex,tc).rgb,1.0); }`;
+precision highp float; in vec2 uv; out vec4 o; uniform sampler2D tex; uniform vec4 u_vp; uniform vec4 u_tr;
+void main(){ vec2 tc=u_vp.xy+vec2(uv.x,1.0-uv.y)*u_vp.zw; vec2 st=(tc-u_tr.xy)/u_tr.zw;
+  if(st.x<0.0||st.x>1.0||st.y<0.0||st.y>1.0){ o=vec4(0,0,0,0); return; } o=vec4(texture(tex,st).rgb,1.0); }`;
     // colormap program: raw scalar intensity -> normalize(lo,hi) -> LUT lookup.
     // lo/hi/cmap are uniforms → contrast, colormap, and per-tile/global
     // normalization all toggle live with no re-colormap or re-upload.
     const CFS=`#version 300 es
 precision highp float; in vec2 uv; out vec4 o;
-uniform sampler2D tex; uniform sampler2D lut; uniform vec4 u_vp; uniform float u_lo,u_hi;
-void main(){ vec2 tc=u_vp.xy+vec2(uv.x,1.0-uv.y)*u_vp.zw;
-  if(tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0){ o=vec4(0,0,0,0); return; }
-  float v=texture(tex,tc).r; float n=clamp((v-u_lo)/max(u_hi-u_lo,1e-12),0.0,1.0);
+uniform sampler2D tex; uniform sampler2D lut; uniform vec4 u_vp, u_tr; uniform float u_lo,u_hi;
+void main(){ vec2 tc=u_vp.xy+vec2(uv.x,1.0-uv.y)*u_vp.zw; vec2 st=(tc-u_tr.xy)/u_tr.zw;
+  if(st.x<0.0||st.x>1.0||st.y<0.0||st.y>1.0){ o=vec4(0,0,0,0); return; }
+  float v=texture(tex,st).r; float n=clamp((v-u_lo)/max(u_hi-u_lo,1e-12),0.0,1.0);
   o=vec4(texture(lut, vec2(n,0.5)).rgb,1.0); }`;
     prog=mkprog(VS,FS); cprog=mkprog(VS,CFS);   // shared attrib loc 0 -> one vbo
     const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
     gl.useProgram(prog); uVp=gl.getUniformLocation(prog,'u_vp');
+    uTr=gl.getUniformLocation(prog,'u_tr');
     gl.uniform1i(gl.getUniformLocation(prog,'tex'),0);
     gl.useProgram(cprog);
     CU={vp:gl.getUniformLocation(cprog,'u_vp'),lo:gl.getUniformLocation(cprog,'u_lo'),
-        hi:gl.getUniformLocation(cprog,'u_hi')};
+        hi:gl.getUniformLocation(cprog,'u_hi'),tr:gl.getUniformLocation(cprog,'u_tr')};
     gl.uniform1i(gl.getUniformLocation(cprog,'tex'),0);
     gl.uniform1i(gl.getUniformLocation(cprog,'lut'),1);
     FLOAT_LINEAR=!!gl.getExtension('OES_texture_float_linear');
@@ -605,17 +610,24 @@ void main(){ float a=clamp(u_hw+0.5-abs(v_perp),0.0,1.0); o=vec4(u_color.rgb,u_c
     gl.disable(gl.SCISSOR_TEST); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT);
     gl.enable(gl.SCISSOR_TEST); gl.bindVertexArray(null);
   },
-  paint(e,vp,rect,lo,hi){
+  paint(e,vp,rect,lo,hi,texRect){
     const [x,y,wpx,hpx]=rect;
     gl.viewport(x,y,wpx,hpx); gl.scissor(x,y,wpx,hpx);
+    // texRect = the FOV-norm sub-rect this texture covers; a full-FOV tile passes
+    // nothing → [0,0,1,1] → st==tc → identical to the un-cropped path. A detail
+    // crop carries its X-Crop rect on e.rect so the shader paints only that
+    // sub-region (alpha 0 outside → the coarse base blends through).
+    const tr=(e.rect||texRect||[0,0,1,1]);
     if(e.mode==='intensity'){
       gl.useProgram(cprog); gl.uniform4f(CU.vp, vp.x,vp.y,vp.w,vp.h);
+      gl.uniform4f(CU.tr, tr[0],tr[1],tr[2],tr[3]);
       gl.uniform1f(CU.lo, lo); gl.uniform1f(CU.hi, hi);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,lutTex);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,e.tex);
       gl.drawArrays(gl.TRIANGLES,0,3);
     } else {
       gl.useProgram(prog); gl.uniform4f(uVp, vp.x,vp.y,vp.w,vp.h);
+      gl.uniform4f(uTr, tr[0],tr[1],tr[2],tr[3]);
       gl.bindTexture(gl.TEXTURE_2D,e.tex); gl.drawArrays(gl.TRIANGLES,0,3);
     }
   },
@@ -694,8 +706,11 @@ function WebGPUBackend(){
     // 'float32-filterable' feature) → a linear sampler for float16 intensity tiles.
     this._lin16Smp=device.createSampler({magFilter:'nearest', minFilter:'linear'});
     // ── RGB pipeline: textureSample → out (group0 tex+samp, group1 uniform vp)
+    // u.tr = FOV-norm sub-rect this texture covers (0,0,1,1 for a full-FOV tile,
+    // the X-Crop rect for a detail crop). st maps the FOV coord into the texture;
+    // outside [0,1] → transparent so the coarse base blends through.
     const RGB=`
-struct U{ vp:vec4f };
+struct U{ vp:vec4f, tr:vec4f };
 @group(0)@binding(0) var t:texture_2d<f32>;
 @group(0)@binding(1) var s:sampler;
 @group(1)@binding(0) var<uniform> u:U;
@@ -705,15 +720,16 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
   var o:VO; o.pos=vec4f(p[i],0,1); o.uv=vec2f(p[i].x*0.5+0.5, p[i].y*0.5+0.5); return o; }
 @fragment fn fs(in:VO)->@location(0) vec4f{
   let tc=u.vp.xy+vec2f(in.uv.x,1.0-in.uv.y)*u.vp.zw;
-  let oob=tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0;
-  let c=textureSample(t,s,clamp(tc,vec2f(0.0),vec2f(1.0)));   // sample in uniform ctrl flow
+  let st=(tc-u.tr.xy)/u.tr.zw;
+  let oob=st.x<0.0||st.x>1.0||st.y<0.0||st.y>1.0;
+  let c=textureSample(t,s,clamp(st,vec2f(0.0),vec2f(1.0)));   // sample in uniform ctrl flow
   return select(vec4f(c.rgb,1.0), vec4f(0,0,0,0), oob); }`;
     // ── HDR-RGB pipeline: peak-normalized linear-P3 [0,1] (1.0 = XDR peak) →
     // scale by display headroom → extended-sRGB OETF. On an SDR display
     // (headroom 1) this collapses to ordinary sRGB, byte-matching the 8-bit
     // path; on HDR it pushes the peak into the headroom (adaptive, no clip).
     const HDR=`
-struct U{ vp:vec4f, hr:vec4f };
+struct U{ vp:vec4f, hr:vec4f, tr:vec4f };
 @group(0)@binding(0) var t:texture_2d<f32>;
 @group(0)@binding(1) var s:sampler;
 @group(1)@binding(0) var<uniform> u:U;
@@ -727,13 +743,14 @@ fn oetf(v:vec3f)->vec3f{
   return select(12.92*a, 1.055*pow(a,vec3f(1.0/2.4))-0.055, a>vec3f(0.0031308)); }
 @fragment fn fs(in:VO)->@location(0) vec4f{
   let tc=u.vp.xy+vec2f(in.uv.x,1.0-in.uv.y)*u.vp.zw;
-  let oob=tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0;
-  let d=textureSample(t,s,clamp(tc,vec2f(0.0),vec2f(1.0))).rgb;
+  let st=(tc-u.tr.xy)/u.tr.zw;
+  let oob=st.x<0.0||st.x>1.0||st.y<0.0||st.y>1.0;
+  let d=textureSample(t,s,clamp(st,vec2f(0.0),vec2f(1.0))).rgb;
   let lin=d*u.hr.x;                                        // P3-linear, peak→headroom
   return select(vec4f(oetf(lin),1.0), vec4f(0,0,0,0), oob); }`;
     // ── intensity pipeline: R32F scalar → normalize(lo,hi) → LUT lookup
     const INT=`
-struct U{ vp:vec4f, lohi:vec4f };
+struct U{ vp:vec4f, lohi:vec4f, tr:vec4f };
 @group(0)@binding(0) var t:texture_2d<f32>;
 @group(0)@binding(1) var s:sampler;
 @group(1)@binding(0) var lut:texture_2d<f32>;
@@ -745,8 +762,9 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
   var o:VO; o.pos=vec4f(p[i],0,1); o.uv=vec2f(p[i].x*0.5+0.5, p[i].y*0.5+0.5); return o; }
 @fragment fn fs(in:VO)->@location(0) vec4f{
   let tc=u.vp.xy+vec2f(in.uv.x,1.0-in.uv.y)*u.vp.zw;
-  let oob=tc.x<0.0||tc.x>1.0||tc.y<0.0||tc.y>1.0;
-  let v=textureSample(t,s,clamp(tc,vec2f(0.0),vec2f(1.0))).r;   // sample in uniform ctrl flow
+  let st=(tc-u.tr.xy)/u.tr.zw;
+  let oob=st.x<0.0||st.x>1.0||st.y<0.0||st.y>1.0;
+  let v=textureSample(t,s,clamp(st,vec2f(0.0),vec2f(1.0))).r;   // sample in uniform ctrl flow
   let n=clamp((v-u.lohi.x)/max(u.lohi.y-u.lohi.x,1e-12),0.0,1.0);
   let col=textureSample(lut,lsmp,vec2f(n,0.5));
   return select(`+(HDR_CMAP?'vec4f(oetf(col.rgb),1.0)':'vec4f(col.rgb,1.0)')+`, vec4f(0,0,0,0), oob); }`
@@ -936,7 +954,7 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
   },
   hasExc(){ return excN>0 && !!excBG; },
   frameBegin(){ draws=[]; },
-  paint(e,vp,rect,lo,hi){ draws.push({kind:'tile',e,vp,rect,lo,hi}); },
+  paint(e,vp,rect,lo,hi,texRect){ draws.push({kind:'tile',e,vp,rect,lo,hi,texRect}); },
   paintOutline(vp,rect,hwpx,color,name){ draws.push({kind:'line',vp,rect,hw:hwpx,color,name}); },
   // Live RGB composite for the RGB cell: ``scales`` (per-exc linear), ``mask``
   // (bit per visible exc), ``total`` (channel count), ``clipHigh`` (white point).
@@ -978,19 +996,22 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
         pass.setVertexBuffer(0,cornerVB); pass.setVertexBuffer(1,ls.vb);
         pass.draw(4,ls.n);
       } else if(d.e.mode==='intensity'){
-        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, d.lo,d.hi,0,0]));
+        const tr=(d.e.rect||d.texRect||[0,0,1,1]);
+        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, d.lo,d.hi,0,0, tr[0],tr[1],tr[2],tr[3]]));
         if(!slot.int) slot.int=device.createBindGroup({layout:intPipe.getBindGroupLayout(2),
           entries:[{binding:0,resource:{buffer:ub}}]});
         pass.setPipeline(intPipe); pass.setBindGroup(0,d.e.bg);
         pass.setBindGroup(1,lutBG); pass.setBindGroup(2,slot.int); pass.draw(3);
       } else if(d.e.hdr){
         // peak-normalized linear RGB → OETF(d*headroom) in the HDR pipeline
-        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, HEADROOM,0,0,0]));
+        const tr=(d.e.rect||d.texRect||[0,0,1,1]);
+        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, HEADROOM,0,0,0, tr[0],tr[1],tr[2],tr[3]]));
         if(!slot.hdr) slot.hdr=device.createBindGroup({layout:hdrPipe.getBindGroupLayout(1),
           entries:[{binding:0,resource:{buffer:ub}}]});
         pass.setPipeline(hdrPipe); pass.setBindGroup(0,d.e.bg); pass.setBindGroup(1,slot.hdr); pass.draw(3);
       } else {
-        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h]));
+        const tr=(d.e.rect||d.texRect||[0,0,1,1]);
+        device.queue.writeBuffer(ub,0,new Float32Array([d.vp.x,d.vp.y,d.vp.w,d.vp.h, tr[0],tr[1],tr[2],tr[3]]));
         if(!slot.rgb) slot.rgb=device.createBindGroup({layout:rgbPipe.getBindGroupLayout(1),
           entries:[{binding:0,resource:{buffer:ub}}]});
         pass.setPipeline(rgbPipe); pass.setBindGroup(0,d.e.bg); pass.setBindGroup(1,slot.rgb); pass.draw(3);
@@ -1453,6 +1474,66 @@ function uploadTile(p){
 async function getTex(label, level){
   const key=label+'/'+level; if(texCache.has(key)) return texCache.get(key);
   return uploadTile(await fetchTile(label, level));
+}
+// ── Detail-crop fast-path (server ?crop=) ────────────────────────────────────
+// Zoomed in, the finest FULL tile is large but only a sub-rect is on screen.
+// Fetch JUST that rect at the target level so the visible region sharpens fast,
+// without waiting for the whole finest tile to stream over the wire. The crop is
+// PURELY ADDITIVE: it overlays the coarse pyramid base (painted only while it
+// fully covers the view — see render), and the normal refine() still pulls the
+// full tile in the background and supersedes it. Zoomed out, or once the full
+// target level is cached, requestDetail does NOTHING → zero extra work, so the
+// common grid view and small (prefetched) images are completely unaffected.
+let _detail=new Map();              // label -> {reqKey, level, e}  (e.rect/e.cover set)
+let _detailReq=new Set();           // in-flight request keys (dedup concurrent fetches)
+const CROP_S=0.6;                   // only crop when showing <60% of the FOV across a cell
+const CROP_PAD=0.25, CROP_Q=64;     // pad the window, then quantize corners to 1/Q (pan-stable key)
+function _detailKeyFor(){
+  if(view.s>=CROP_S) return null;                  // zoomed out → no crop (full tile is small enough)
+  const vp=vpFor();
+  let x0=vp.x-vp.w*CROP_PAD, y0=vp.y-vp.h*CROP_PAD;
+  let x1=vp.x+vp.w*(1+CROP_PAD), y1=vp.y+vp.h*(1+CROP_PAD);
+  x0=Math.max(0,x0); y0=Math.max(0,y0); x1=Math.min(1,x1); y1=Math.min(1,y1);
+  // quantize OUTWARD so the rect always ⊇ the padded window AND the key is stable
+  // across small pans (same crop reused → no refetch / no GPU re-upload).
+  x0=Math.floor(x0*CROP_Q)/CROP_Q; y0=Math.floor(y0*CROP_Q)/CROP_Q;
+  x1=Math.ceil(x1*CROP_Q)/CROP_Q;  y1=Math.ceil(y1*CROP_Q)/CROP_Q;
+  if(x1-x0>=1 && y1-y0>=1) return null;             // (near-)whole FOV → no benefit
+  return {x0,y0,x1,y1};
+}
+function requestDetail(){
+  if(!backend||!info) return;
+  const kk=_detailKeyFor();
+  for(const cell of cells){
+    if(cell.label==='RGB' && excState && backend.hasExc && backend.hasExc()) continue;  // live-compose: no pyramid crop
+    const L=_texOf(cell.label);
+    if(!info.layers[L]) continue;
+    const target=pickLevel(L, cell.w*dpr);
+    if(!kk || texCache.has(L+'/'+target)){ if(_detail.has(L)) _detail.delete(L); continue; }
+    const reqKey=L+'/'+target+'/'+kk.x0+','+kk.y0+','+kk.x1+','+kk.y1;
+    const cur=_detail.get(L);
+    if((cur && cur.reqKey===reqKey) || _detailReq.has(reqKey)) continue;   // already showing / in flight
+    _detailReq.add(reqKey);
+    (async()=>{
+      try{
+        const r=await fetch(VBASE+'tile/'+SID+'/'+L+'/'+target+'?fmt=raw&crop='+kk.x0+','+kk.y0+','+kk.x1+','+kk.y1);
+        if(r.status===204 || !r.ok) return;
+        const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
+        const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype');
+        const mode=r.headers.get('X-Mode')||'rgb';
+        const lo=parseFloat(r.headers.get('X-Lo')||'0'), hi=parseFloat(r.headers.get('X-Hi')||'1');
+        const kind=r.headers.get('X-Kind')||'reduction', bitmax=parseFloat(r.headers.get('X-Bitmax')||'1');
+        const downsample=r.headers.get('X-Downsample')||'mean';
+        const cr=(r.headers.get('X-Crop')||'0,0,1,1').split(',').map(Number);   // x0,y0,x1,y1 (snapped)
+        const buf=await r.arrayBuffer();
+        const e=backend.createTile({w,h,ch,dt,mode,lo,hi,kind,bitmax,downsample}, buf);
+        e.rect=[cr[0],cr[1],cr[2]-cr[0],cr[3]-cr[1]];   // FOV-norm origin+size → shader u_tr
+        e.cover=cr;                                      // x0,y0,x1,y1 → coverage test in render
+        _detail.set(L, {reqKey, level:target, e});
+        render();
+      } finally { _detailReq.delete(reqKey); }
+    })();
+  }
 }
 // ── Live spectra-density raster (rendered by SpectraGL into the panel box) ──
 // The density is INDEPENDENT of the grid zoom (it's the per-cell spectra, fixed),
@@ -1977,6 +2058,16 @@ function render(){
       else if(NORMMODE==='bitdepth'){ lo=0; hi=e.bitmax; }
     }
     backend.paint(e, vp, cellRectPx(cell), lo, hi);
+    // Detail-crop overlay: sharper visible region streamed via ?crop=. Painted
+    // ONLY while it fully covers the current window (with a tiny epsilon) — a pan
+    // that outruns the cached crop falls back to the coarse base rather than
+    // flashing transparent (the crop is opaque inside its rect, so no blend is
+    // needed; outside, the oob-discard would clobber the base, hence the gate).
+    const det=_detail.get(_TL);
+    if(det && det.e){ const cv=det.e.cover, eps=1e-4;
+      if(cv && cv[0]<=vp.x+eps && cv[1]<=vp.y+eps && cv[2]>=vp.x+vp.w-eps && cv[3]>=vp.y+vp.h-eps)
+        backend.paint(det.e, vp, cellRectPx(cell), lo, hi, det.e.rect);
+    }
   }
   // seg outline (GPU lines) on the Masks cell, synced to the shared viewport.
   // Half-width is constant in IMAGE px (scales with zoom): 1 image px spans
@@ -2024,9 +2115,9 @@ function draw(){
   // full-detail. (The old impl only had the debounce → refine fired solely on
   // the pause, which is why high-res appeared only when you stopped zooming.)
   const _now=(self.performance&&performance.now)?performance.now():Date.now();
-  if(_now-_refineLast>120){ _refineLast=_now; refine(); }
+  if(_now-_refineLast>120){ _refineLast=_now; refine(); requestDetail(); }
   if(_refineT) clearTimeout(_refineT);
-  _refineT=setTimeout(()=>{ _refineLast=(self.performance&&performance.now)?performance.now():Date.now(); refine(); }, 60);
+  _refineT=setTimeout(()=>{ _refineLast=(self.performance&&performance.now)?performance.now():Date.now(); refine(); requestDetail(); }, 60);
 }
 async function refine(){
   if(_refining) return; _refining=true;
