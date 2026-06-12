@@ -2812,7 +2812,11 @@ void main() {
     // Independent of the popup overlay — the click-to-zoom path still
     // works for single-cell deep-dive on top of linked panning.
     if (svg && svg.dataset && svg.dataset.linkAxes === '1') {
-      const cells = svg.querySelectorAll('svg.ocd-linked-cell');
+      // Array (not the raw NodeList): the GL refine path calls cells.every /
+      // cells.some (3152/3196), which NodeList lacks → "cells.every is not a
+      // function" would throw mid-refine, leaving tiles stuck on the coarse
+      // level (never sharpening to full res).
+      const cells = Array.from(svg.querySelectorAll('svg.ocd-linked-cell'));
       const hits = svg.querySelectorAll('rect.ocd-linked-cell-hit');
       if (cells.length > 0 && hits.length === cells.length) {
         const RAS_W = parseFloat(svg.dataset.linkRasterW) || 1;
