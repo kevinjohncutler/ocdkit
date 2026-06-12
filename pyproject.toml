@@ -68,6 +68,14 @@ ocdkit-viewer-gui = "ocdkit.viewer.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Auto-enable the tileserve Jupyter proxy extension on a REGULAR install (data
+# files don't land for editable installs — there, enable once with:
+#   jupyter server extension enable ocdkit.tileserve.jupyter_ext
+[tool.setuptools.data-files]
+"etc/jupyter/jupyter_server_config.d" = [
+    "jupyter-config/jupyter_server_config.d/ocdkit_tileserve.json",
+]
+
 [tool.setuptools.package-data]
 "ocdkit.viewer" = [
     "*.html",

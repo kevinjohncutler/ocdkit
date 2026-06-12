@@ -1,0 +1,7 @@
+{
+  "ServerApp": {
+    "jpserver_extensions": {
+      "ocdkit.tileserve.jupyter_ext": true
+    }
+  }
+}
