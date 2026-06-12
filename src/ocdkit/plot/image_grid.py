@@ -2,10 +2,10 @@
 on opt-in.
 
 The default ``backend='svg'`` produces an :class:`ocdkit.io.SvgFigure`
-with one composite JXL raster + vector outlines/labels. HDR is
-automatic when inputs are float linear-light Display-P3 arrays (or
-Scene-like objects carrying ``_rgb_linear_p3``); ``uint8`` inputs fall
-back to SDR ``jxl-p3`` (wider gamut than sRGB, same bit depth).
+with one composite raster per tile + vector outlines/labels. The codec
+is chosen per cell: float linear-light Display-P3 arrays (or Scene-like
+objects carrying ``_rgb_linear_p3``) encode as Ultra-HDR JPEG; ``uint8``
+inputs encode as lossless PNG (bit-exact, decodes everywhere).
 
 ``backend='matplotlib'`` delegates to
 :func:`image_grid_matplotlib` for the legacy per-axes layout — SDR
@@ -54,17 +54,23 @@ def image_grid(
     dx: int = 1,                           # raster stride (downsample)
     plot_labels=None,
     fontsize: float = 8,
-    # Default ``'currentColor'`` makes labels inherit the host's CSS
-    # ``color`` — JupyterLab swaps that with the active theme, so labels
-    # render light on dark backgrounds and dark on light without re-encoding
-    # the SVG. Pass an explicit color string (``'lightgray'``, ``'#808080'``)
-    # to pin a specific shade regardless of theme.
-    fontcolor: str = 'currentColor',
+    # ``fontcolor`` accepts four sentinel keywords plus any literal CSS color:
+    #   * ``'auto'`` (default): per-cell content-adaptive — sample image
+    #     luminance under each label and pick a near-white fill on dark
+    #     cells, near-black on light. Fill only; no stroke / halo.
+    #   * ``'light'`` / ``'dark'``: fixed near-white / near-black across
+    #     every cell. Use when content stays on one side of 50% luminance.
+    #   * ``'currentColor'``: CSS-driven path that inherits from the
+    #     host's ``color`` (JupyterLab / dashboard theme).
+    #   * Any other string: literal color (``'lightgray'``,
+    #     ``'#808080'``, ``'rgb(...)'`` etc.) passed through verbatim.
+    fontcolor: str = 'auto',
     lpos: str = 'top_middle',
     facecolor: str | None = None,
     outline: bool = False,
-    # Same theme-adaptive default as ``fontcolor`` — outlines follow the
-    # host text color via CSS ``currentColor`` unless explicitly overridden.
+    # ``outline_color`` accepts ``'currentColor'`` for CSS-theme driven
+    # outlines or any literal color. Per-cell adaptation doesn't apply
+    # (the outline spans the whole cell border).
     outline_color: str = 'currentColor',
     outline_width: float = 0.5,
     raster_format: str | None = None,     # None → autodetect from dtype
@@ -115,6 +121,18 @@ def image_grid(
 ):
     """Image grid with auto-selected SVG (default) or matplotlib backend."""
 
+    # Resolve the fixed-shade sentinels up front. ``'auto'`` is handled
+    # per-cell in the label-emission loop because it needs to sample each
+    # tile's pixel content; the other two are just nicely-named aliases.
+    if fontcolor == 'light':
+        fontcolor = _LIGHT_TEXT
+    elif fontcolor == 'dark':
+        fontcolor = _DARK_TEXT
+    if outline_color == 'auto':
+        # No content to sample for the whole-cell border — fall through
+        # to the CSS-theme path.
+        outline_color = 'currentColor'
+
     # ── normalize input shape (flat list vs nested list) ────────────────
     items = list(items)
     if items and isinstance(items[0], (list, tuple)):
@@ -131,15 +149,133 @@ def image_grid(
         if plot_labels and isinstance(plot_labels[0], (list, tuple)):
             plot_labels = [x for row in plot_labels for x in row]
 
+    # ── layered tiles: ``{'base': <img>, 'overlay': <RGBA uint8>}`` ──────
+    # A dict item is a two-layer cell. The overlay (a pre-rasterized RGBA
+    # array, e.g. ``outline_view(..., layered=True)`` boundaries) is
+    # alpha-composited INTO the base, and the combined tile is then forced
+    # to a *lossless* encode (lossless uhdr for HDR float, PNG for SDR
+    # uint8). Baking-then-lossless is what makes a colored outline both
+    # bit-exact/crisp AND bright over an HDR base: a separate SDR PNG
+    # overlay renders at SDR-white and looks dim against an HDR-boosted
+    # base, and a transparent HDR overlay is impossible (JPEG/uhdr carry
+    # no alpha). With the outline in the lossless SDR base, the gain map
+    # rides it up to the same HDR brightness as the rest of the tile —
+    # pure color, no blend desaturation. A dict can't collide with the
+    # nested-row syntax above (only list/tuple trigger that). The
+    # matplotlib backend has no compositing — it sees the bare base.
+    #
+    # A second dict shape — ``{'labels': int2d, 'palette':…, …}`` — is a
+    # LIVE GPU segmentation tile: the integer label matrix + palette ship
+    # to the browser and the shared WebGL2 LabelGLRenderer (the same engine
+    # as the ocdkit viewer) colorizes + outlines + hover-highlights it.
+    # No raster, no codec — lossless by construction, HDR-capable, free
+    # crisp outlines. Live-only (a <canvas>, not embeddable in a saved
+    # static SVG/.ipynb).
+    baked_lossless = [False] * len(items)
+    label_tiles = [None] * len(items)
+    if any(isinstance(it, dict) for it in items):
+        base_items = []
+        # ncolor.label is the dominant per-label-tile CPU cost, and a grid
+        # often shows the SAME segmentation in more than one tile (e.g. a fill
+        # view + an outline-over-image view). Cache the relabel by source-array
+        # identity so each distinct array is ncolor'd once, not once per tile.
+        _ncolor_cache = {}
+        for i, it in enumerate(items):
+            if isinstance(it, dict) and 'labels' in it:
+                inst = np.asarray(it['labels'])   # original per-cell instance ids
+                lbl = inst                        # color ids (== instance unless ncolor)
+                pal_opt = it.get('palette')
+                # Default coloring = ncolor relabel + sinebow (matches
+                # apply_ncolor): adjacent cells get distinct colors. Done in
+                # Python; the GPU then just looks up the small palette. Pass
+                # an explicit palette (array) to skip ncolor, or
+                # ``palette='raw'`` to color the raw label ids via the
+                # shader's procedural sinebow (no ncolor relabel).
+                #
+                # The ncolor relabel collapses many cells onto a few GROUP
+                # ids (that's how adjacent cells differ in color), so the
+                # group id can't drive hover — every cell sharing the group
+                # would light up. We keep the original INSTANCE ids (`inst`)
+                # separately so the GPU highlights a single cell, mirroring
+                # the viewer's nColorInstanceMask.
+                if pal_opt is None or (isinstance(pal_opt, str)
+                                       and pal_opt in ('ncolor', 'sinebow')):
+                    from .ncolor import ncolor_labels_and_palette
+                    _ck = id(it['labels'])   # same array in >1 tile → relabel once
+                    if _ck in _ncolor_cache:
+                        lbl, pal_opt = _ncolor_cache[_ck]
+                    else:
+                        lbl, pal_opt = ncolor_labels_and_palette(inst)
+                        _ncolor_cache[_ck] = (lbl, pal_opt)
+                elif isinstance(pal_opt, str) and pal_opt == 'raw':
+                    pal_opt = 'sinebow'   # shader procedural sinebow on raw ids
+                label_tiles[i] = {
+                    'labels': lbl,        # color/group ids (palette lookup)
+                    'instances': inst,    # original ids (hover/picking + outlines)
+                    'palette': pal_opt,
+                    'image': it.get('image'),   # optional base under the labels
+                    'opacity': float(it.get('opacity', 0.6)),
+                    'style': it.get('style', 'both'),
+                    'outlines': bool(it.get('outlines', True)),
+                    # Boundary brightness — defaults to the hover-highlight
+                    # boost (1.8) so outlines match the bright hover-fill.
+                    # >1 emits HDR-bright on an extended-range canvas; clamps
+                    # to a brighter edge on SDR. Set 1.0 to disable.
+                    'outline_hdr': float(it.get('outline_hdr', 1.8)),
+                    # Uniform contour color (matplotlib color spec or hex).
+                    # An outline-only overlay reads best as a single bright
+                    # color — a per-cell sinebow washes out over an image —
+                    # so ``style='outline'`` defaults to red. Other styles
+                    # keep per-cell palette outlines (None). Pass any color
+                    # (e.g. 'cyan', '#00ff88', (1,0,0)) to override.
+                    'outline_color': it.get(
+                        'outline_color',
+                        'red' if it.get('style', 'both') == 'outline' else None),
+                    # Whether a base image rides BEHIND the (transparent) GPU
+                    # label canvas as a normal raster tile (see below).
+                    'has_base': it.get('image') is not None,
+                }
+                # The base image (e.g. max projection) rides through the NORMAL
+                # tile raster pipeline — registered + HDR-encoded (uhdr/jxl) +
+                # served exactly like every other tile — so a float base keeps
+                # its gain-map HDR. It's painted as a plain <image> BEHIND the
+                # transparent GPU label canvas (the canvas draws only labels/
+                # outlines). Uploading it into the GPU canvas flattened it to
+                # SDR (the reported regression). No base → a zero placeholder
+                # (kept for layout; the label tile just won't emit the image).
+                _base = it.get('image')
+                if _base is not None:
+                    _base = np.asarray(_base)
+                    if _base.ndim == 2:
+                        _base = np.repeat(_base[..., None], 3, axis=2)
+                    elif _base.ndim == 3 and _base.shape[2] == 1:
+                        _base = np.repeat(_base, 3, axis=2)
+                    base_items.append(_base)
+                else:
+                    base_items.append(np.zeros(lbl.shape[:2] + (3,), np.uint8))
+            elif isinstance(it, dict) and 'base' in it:
+                base = np.asarray(it['base'])
+                ov = it.get('overlay')
+                if ov is not None:
+                    base = _composite_overlay(base, np.asarray(ov))
+                base_items.append(base)
+                baked_lossless[i] = True
+            else:
+                base_items.append(it)
+        items = base_items
+
     if backend == 'matplotlib':
         # Re-split for the legacy nested-list API.
         images = split_list(_to_array_only(items, dx=dx), ncol)
         labels = (split_list(list(plot_labels), ncol)
                   if plot_labels is not None else None)
-        # ``currentColor`` is a CSS keyword the SVG backend resolves at
-        # render time; matplotlib has no equivalent. Translate the SVG
-        # default back to neutral gray so matplotlib renders cleanly.
-        mpl_fontcolor = '#808080' if fontcolor == 'currentColor' else fontcolor
+        # The SVG-only sentinels (``'auto'``, ``'currentColor'``) have no
+        # matplotlib equivalent. Map them to a neutral gray so the legacy
+        # backend renders cleanly; pinned ``'light'`` / ``'dark'`` were
+        # already resolved to literals above.
+        mpl_fontcolor = (
+            '#808080' if fontcolor in ('auto', 'currentColor') else fontcolor
+        )
         return image_grid_matplotlib(
             images,
             plot_labels=labels,
@@ -160,13 +296,25 @@ def image_grid(
         target_tile_px = _config.target_tile_px
 
     # Resolve each item to a per-cell array + pick a raster_format if
-    # not explicitly set. Mixed-dtype grids stay on the float HDR path
-    # so SDR cells survive next to HDR ones (uint8 cells are promoted
-    # to linear-P3 float by the resolver below).
-    arrays, auto_fmt = _resolve_items(items, dx=dx,
-                                       target_px=int(target_tile_px))
+    # not explicitly set. Mixed-dtype grids keep HDR float cells on the
+    # uhdr path and route SDR uint8 cells (seg/outline tiles) to lossless
+    # PNG via ``cell_fmts`` — see ``_resolve_items``.
+    arrays, auto_fmt, cell_fmts = _resolve_items(items, dx=dx,
+                                                 target_px=int(target_tile_px))
     if raster_format is None:
         raster_format = auto_fmt
+    else:
+        # An explicit caller-supplied format overrides the per-cell
+        # auto-routing for every tile.
+        cell_fmts = [raster_format] * len(arrays)
+
+    # Baked layered tiles force a lossless encode so the composited
+    # outline survives byte-exact. Float bases → lossless uhdr (gain map
+    # still lifts the outline to HDR brightness); uint8 bases are already
+    # routed to lossless PNG, so nothing to change there.
+    for i, is_baked in enumerate(baked_lossless):
+        if is_baked and np.issubdtype(arrays[i].dtype, np.floating):
+            cell_fmts[i] = 'uhdr-lossless'
 
     # ── source-native cell dimensions ──────────────────────────────────
     # Each cell's SVG bbox is the source's native pixel dims (NOT the
@@ -281,19 +429,41 @@ def image_grid(
         if raster_format in ('jxl-hdr-pq', 'uhdr') else {}
     )
 
-    # Hi-res streaming: register each original ``item`` with the
-    # per-kernel figure server so SvgFigure's zoom overlay can fetch
-    # full-resolution bytes on demand. ``resolve_source`` prefers
-    # ``rgb_path`` (zero re-encode), then ``_rgb_linear_p3`` (linear-P3
-    # HDR), then ``.rgb`` (SDR), then raw ndarrays. Returns ``None`` if
-    # there's no useful source — that tile's zoom falls back to the
-    # inline thumbnail.
+    # Hi-res for click-to-expand: encode each item's full-resolution bytes and
+    # host them as tileserve ATTACHMENTS, NOT on the standalone figure_server.
+    # Why tileserve: it's the engine that ships with the ``ocdkit-tiles`` Jupyter
+    # proxy, so its ``/attach/<sid>/<name>`` URLs are reachable from a REMOTE
+    # browser (the figure shell's __ocdResolveTileUrl rewrites the baked
+    # 127.0.0.1 attach URL to {baseUrl}ocdkit-tiles/<port>/...). figure_server
+    # binds a random un-proxied port → unreachable off-machine, which is why
+    # remote zoom never got past the inline thumbnail. ``resolve_source`` prefers
+    # ``rgb_path`` (zero re-encode), then ``_rgb_linear_p3`` (HDR), ``.rgb``
+    # (SDR), then raw ndarrays; ``None`` → that cell's zoom falls back to the
+    # inline thumbnail. Each cell stays INDEPENDENT (its own attachment + its own
+    # click-to-expand popup) — no linked viewport.
     try:
-        from ..io.figure_server import register, resolve_source
-        hires_urls = [
-            (register(src) if (src := resolve_source(it)) else None)
-            for it in items
-        ]
+        from ..io.figure_server import resolve_source, ArraySource
+        from ..tileserve.server import ensure_server, register_pending, attach
+
+        def _hires_source(it, fmt):
+            if fmt == 'png' and isinstance(it, np.ndarray):
+                return ArraySource(it, fmt='png')
+            if fmt == 'uhdr-lossless' and isinstance(it, np.ndarray):
+                return ArraySource(it, fmt='uhdr', lossless=True)
+            return resolve_source(it)
+
+        _tbase = ensure_server()
+        # attachment-only source (1×1 placeholder layer never requested); the
+        # hi-res bytes ride as named attachments on it.
+        _tsid = register_pending(1, 1, ['_hires'])
+        hires_urls = []
+        for i, it in enumerate(items):
+            src = _hires_source(it, cell_fmts[i])
+            if src is None:
+                hires_urls.append(None)
+                continue
+            attach(_tsid, f'hires{i}', src.get_bytes(), media=src.content_type)
+            hires_urls.append(f'{_tbase}/attach/{_tsid}/hires{i}')
     except Exception:
         hires_urls = [None] * len(items)
 
@@ -303,18 +473,18 @@ def image_grid(
     # a fingerprint of the source state (rgb_path mtime + id of any
     # in-memory RGB caches) so a regenerated ``scene._rgb`` or a
     # touched ``rgb_path`` invalidates the URL and forces a re-encode.
-    cache_attr = f'_thumb_url_{raster_format}'
-    fp_attr = f'_thumb_url_{raster_format}_fp'
-
     def _get_or_build_url(idx):
         it = items[idx]
+        fmt = cell_fmts[idx]
+        cache_attr = f'_thumb_url_{fmt}'
+        fp_attr = f'_thumb_url_{fmt}_fp'
         if not isinstance(it, np.ndarray):
             fp_now = _source_fingerprint(it)
             if getattr(it, fp_attr, None) == fp_now:
                 cached = getattr(it, cache_attr, None)
                 if cached is not None:
                     return cached
-        url = _encode_thumb_url(arrays[idx], raster_format, sdr_white_nits)
+        url = _encode_thumb_url(arrays[idx], fmt, sdr_white_nits)
         if not isinstance(it, np.ndarray):
             try:
                 setattr(it, cache_attr, url)
@@ -396,7 +566,43 @@ def image_grid(
             f'<g class="fig-tile" data-bbox="{x:.2f} {y:.2f} {w:.2f} {h:.2f}"'
             f'{thumb_attr}{hires_attr}{upgrade_attr}>'
         )
-        if link_axes:
+        if label_tiles[i] is not None:
+            # Behind the (transparent) GPU label canvas:
+            #  * with a base image (e.g. max projection) — a plain <image>
+            #    using the normal registered + HDR-encoded raster URL, so a
+            #    float base keeps its gain-map HDR;
+            #  * without one — a SOLID themed backdrop so the semi-transparent
+            #    ncolor cells composite over a consistent surface instead of
+            #    the bare page. ``light-dark()`` → light in light mode, dark in
+            #    dark mode (matches the figure's canvas).
+            if label_tiles[i].get('has_base'):
+                svg.add(
+                    f'<image x="{x:.2f}" y="{y:.2f}" '
+                    f'width="{w:.2f}" height="{h:.2f}" href="{urls[i]}" '
+                    f'preserveAspectRatio="none" image-rendering="pixelated"/>')
+            else:
+                # ``Canvas`` = the CSS system page-background color: WHITE in
+                # light mode, BLACK (the page color) in dark mode. A real solid
+                # opaque fill that matches the page — so it blocks anything
+                # behind it (the earlier light-dark() fill rendered UNFILLED =
+                # see-through in some renderers; system colors always paint and
+                # auto-adapt to the color scheme).
+                svg.add(
+                    f'<rect x="{x:.2f}" y="{y:.2f}" '
+                    f'width="{w:.2f}" height="{h:.2f}" '
+                    f'fill="Canvas"/>')
+            # Live GPU segmentation tile — a transparent <canvas> the figure
+            # shell's LabelGLRenderer colorizes/outlines/highlights from the
+            # label matrix (see io/figure.py controller). The title is emitted
+            # as a normal SVG <text> AFTER the foreignObject (below) so it
+            # paints on top; SVG text lays out where an HTML <div> inside the
+            # foreignObject would collapse to zero size.
+            lt_title = (plot_labels[i]
+                        if plot_labels and i < len(plot_labels) else None)
+            svg.add(_label_tile_svg(label_tiles[i], x, y, w, h,
+                                    title=lt_title, fontsize_uu=fontsize_uu,
+                                    lpos=lpos))
+        elif link_axes:
             seg_overlay_inner = _link_axes_seg_overlay or ''
             # Nested <svg viewBox> turns each cell into its own clipped
             # viewport. The viewBox is the current ROI in source-pixel
@@ -489,18 +695,318 @@ def image_grid(
                      stroke_width=outline_width_uu)
         label = (plot_labels[i]
                  if plot_labels and i < len(plot_labels) else None)
+        if label and label_tiles[i] is not None and not label_tiles[i].get('has_base'):
+            # No-base segmentation tile sits on a SOLID ``Canvas`` (page-bg)
+            # backdrop (added behind the canvas above). The title uses
+            # ``CanvasText`` — the CSS system page-text color, the guaranteed
+            # contrast partner of ``Canvas`` (black on the light-mode white
+            # backdrop, white on the dark-mode black backdrop). System colors
+            # are universally honored as SVG fills and auto-adapt to the color
+            # scheme, unlike ``light-dark()`` (which some renderers drop).
+            tx, ty, anchor, baseline = _label_position(x, y, w, h, lpos)
+            from html import escape as _html_escape
+            svg.add(
+                f'<text x="{tx:.2f}" y="{ty:.2f}" class="fig-figure-text" '
+                f'font-size="{fontsize_uu}" text-anchor="{anchor}" '
+                f'dominant-baseline="{baseline}" fill="CanvasText">'
+                f'{_html_escape(str(label))}</text>'
+            )
+            label = None
+        # Label tiles WITH a base image fall through to the adaptive `if label:`
+        # path below — its luminance sampler reads the tile's base raster
+        # (``arr`` = the base image), giving the same adaptive light/dark title
+        # as raster tiles. Placed AFTER the foreignObject, the <text> paints on
+        # top of the GPU canvas (SVG text lays out where a foreignObject HTML
+        # div would collapse to zero size; see _label_tile_svg).
         if label:
             tx, ty, anchor, baseline = _label_position(x, y, w, h, lpos)
-            svg.text(tx, ty, str(label),
-                     fill=fontcolor, size=fontsize_uu,
-                     anchor=anchor, baseline=baseline,
-                     class_='fig-figure-text')
+            if fontcolor in ('auto', 'auto-cell', 'auto-letter'):
+                # Two adaptive modes — both pick from local 90th-percentile
+                # luminance so a few outlier pixels under the label don't
+                # blend a light fill into a bright spot:
+                #
+                #   * ``'auto'`` / ``'auto-letter'`` (default): per-LETTER.
+                #     Each character samples its own glyph footprint and
+                #     gets its own dark / light fill via a ``<tspan>``.
+                #     Best on labels that cross a dark→bright boundary.
+                #   * ``'auto-cell'``: single fill for the whole label,
+                #     picked from the full label-region 90th percentile.
+                #     Cheaper SVG payload; previous behaviour.
+                #
+                # Each emitted text / tspan carries inline CSS custom
+                # properties for both an SDR-render pick and an HDR-
+                # render pick; the shell stylesheet flips between them
+                # at render time so the label tracks the gain-map state
+                # without a Python round-trip.
+                #
+                # HDR detection is PER CELL via ``cell_fmts[i]``, not the
+                # grid-level ``raster_format``. PNG cells have no gain
+                # map so their displayed brightness is identical in HDR
+                # and SDR rendering — using the grid raster_format
+                # incorrectly flips SDR-only cell labels (e.g. a uint8
+                # segmentation in a mixed grid) when the HDR toggle
+                # changes, even though that cell never actually renders
+                # differently.
+                is_hdr_cell = cell_fmts[i] in ('uhdr', 'jxl-hdr-pq')
+                label_str = str(label)
+                per_letter = fontcolor != 'auto-cell'
+                from html import escape as _html_escape
+                if per_letter and label_str:
+                    picks = _per_letter_picks(
+                        arr, lpos, fontsize_uu, w, h, label_str,
+                        hdr_white_nits=(sdr_white_nits if is_hdr_cell else None),
+                    )
+                    tspans = ''.join(
+                        f'<tspan style="--ocd-tt-hdr:{hdr_p};--ocd-tt-sdr:{sdr_p}">'
+                        f'{_html_escape(ch)}</tspan>'
+                        for ch, (sdr_p, hdr_p) in zip(label_str, picks)
+                    )
+                    svg.add(
+                        f'<text x="{tx:.2f}" y="{ty:.2f}" '
+                        f'class="fig-figure-text ocd-adaptive-text" '
+                        f'font-size="{fontsize_uu}" '
+                        f'text-anchor="{anchor}" '
+                        f'dominant-baseline="{baseline}">'
+                        f'{tspans}</text>'
+                    )
+                else:
+                    sdr_lum = _label_region_luminance(
+                        arr, lpos, fontsize_uu, w, h, len(label_str),
+                        hdr_white_nits=None,
+                    )
+                    sdr_pick = _DARK_TEXT if sdr_lum > 0.5 else _LIGHT_TEXT
+                    if is_hdr_cell:
+                        hdr_lum = _label_region_luminance(
+                            arr, lpos, fontsize_uu, w, h, len(label_str),
+                            hdr_white_nits=sdr_white_nits,
+                        )
+                        hdr_pick = _DARK_TEXT if hdr_lum > 0.5 else _LIGHT_TEXT
+                    else:
+                        hdr_pick = sdr_pick
+                    style_attr = f'--ocd-tt-hdr:{hdr_pick};--ocd-tt-sdr:{sdr_pick}'
+                    svg.add(
+                        f'<text x="{tx:.2f}" y="{ty:.2f}" '
+                        f'class="fig-figure-text ocd-adaptive-text" '
+                        f'style="{style_attr}" '
+                        f'font-size="{fontsize_uu}" '
+                        f'text-anchor="{anchor}" '
+                        f'dominant-baseline="{baseline}">'
+                        f'{_html_escape(label_str)}</text>'
+                    )
+            else:
+                svg.text(tx, ty, str(label),
+                         fill=fontcolor, size=fontsize_uu,
+                         anchor=anchor, baseline=baseline,
+                         class_='fig-figure-text')
         svg.add('</g>')
 
     return SvgFigure(svg.finalize())
 
 
 # ─── helpers ────────────────────────────────────────────────────────
+
+
+# Fixed text shades used by ``fontcolor='auto'`` / ``'auto-cell'`` /
+# ``'auto-letter'`` / ``'light'`` / ``'dark'``. Pure black and pure white
+# — the contrast pick is binary (each glyph or label goes one way or the
+# other), so there's no reason to leave headroom; pure values give the
+# strongest contrast against any background.
+_DARK_TEXT = '#000000'
+_LIGHT_TEXT = '#ffffff'
+
+
+def _label_region_luminance(arr, lpos, fontsize_uu, w_vb, h_vb, label_len,
+                              *, hdr_white_nits=None):
+    """90th-percentile luminance under a label region, rescaled so the
+    caller's ``> 0.5`` threshold corresponds to "the pixel renders
+    brighter than an SDR label" — i.e. whichever side of 0.5 picks the
+    more contrasty fill.
+
+    Why 90th percentile, not mean: a label that sits over mostly-dark
+    pixels with a few bright outliers (a sky strip, a hot specular)
+    averages to "dark" but the light SDR label visibly blends into
+    those bright pixels. The 90th percentile is robust to a *few* dark
+    outliers but still catches significant bright content under the
+    label — which is what determines whether a light label is legible.
+
+    SDR (``hdr_white_nits=None``): Rec. 709 luminance, 90th percentile,
+    clamped to [0, 1].
+
+    HDR (``hdr_white_nits`` set, e.g. 1600 for the ``image_grid``
+    default): linear-light region values are converted to absolute
+    display nits (``nits = linear * hdr_white_nits``) then re-normalised
+    against ``SDR_REF_NITS = 500`` — empirically the SDR-reference
+    brightness an Apple display picks when compositing CSS/SVG colours
+    on top of an HDR gain-map layer. (The OS sets this; libuhdr / our
+    encoder don't control it. ``1600`` is what our encoder targets for
+    HDR peak — see ``svg.py:_p3_linear_to_pq_uint16`` — so the ratio
+    ``500 / 1600`` matches what shows up on screen.) With that
+    calibration, ``0.5`` lands at HDR-displayed brightness == SDR-label
+    brightness, where the contrast pick should flip.
+
+    Returns ``0.5`` (neutral) when sampling is not possible — placeholder
+    arrays from ``Source`` items, empty regions, or label positions that
+    sit outside the image (``'above_middle'``).
+    """
+    if arr is None or arr.size == 0:
+        return 0.5
+    ah, aw = arr.shape[:2]
+    if ah == 0 or aw == 0:
+        return 0.5
+
+    # Glyph width is roughly 0.6 × font-size for proportional fonts at
+    # typical aspect ratios; clamp to the cell so very long labels don't
+    # blow past the cell edges and skew the sample.
+    label_w_vb = min(0.6 * fontsize_uu * max(label_len, 1), w_vb)
+    label_h_vb = fontsize_uu * 1.2
+    pad = 3.0  # mirrors ``_label_position``
+
+    if lpos == 'top_middle':
+        x0_vb = (w_vb - label_w_vb) / 2
+        y0_vb = pad
+    elif lpos == 'top_left':
+        x0_vb = pad
+        y0_vb = pad
+    elif lpos == 'bottom_middle':
+        x0_vb = (w_vb - label_w_vb) / 2
+        y0_vb = h_vb - pad - label_h_vb
+    elif lpos == 'bottom_left':
+        x0_vb = pad
+        y0_vb = h_vb - pad - label_h_vb
+    else:
+        # ``'above_middle'`` etc.: label is outside the image, no content
+        # to sample.
+        return 0.5
+
+    x0_px = max(0, int(x0_vb / w_vb * aw))
+    y0_px = max(0, int(y0_vb / h_vb * ah))
+    x1_px = min(aw, int(np.ceil((x0_vb + label_w_vb) / w_vb * aw)))
+    y1_px = min(ah, int(np.ceil((y0_vb + label_h_vb) / h_vb * ah)))
+    if x1_px <= x0_px or y1_px <= y0_px:
+        return 0.5
+
+    region = arr[y0_px:y1_px, x0_px:x1_px]
+    if region.ndim == 3:
+        rgb = region[..., :3].astype(np.float32, copy=False)
+        if region.dtype == np.uint8:
+            rgb = rgb / 255.0
+        # Rec. 709 luminance — close enough to perceptual for a
+        # binary pick-light-or-dark decision.
+        lum = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+    else:
+        lum = region.astype(np.float32, copy=False)
+        if region.dtype == np.uint8:
+            lum = lum / 255.0
+
+    if hdr_white_nits is not None and np.issubdtype(arr.dtype, np.floating):
+        # HDR: convert the 90th-percentile linear value to display nits
+        # then renormalise so the decision flips at SDR-label brightness
+        # (~500 nits on Apple HDR displays — the OS-chosen reference for
+        # CSS/SVG colours composited over a gain-map layer). Above-SDR-
+        # white linear values stay unclipped so an HDR highlight properly
+        # biases the pick toward a dark label.
+        SDR_REF_NITS = 500.0
+        p90_nits = float(np.percentile(lum, 90)) * float(hdr_white_nits)
+        return p90_nits / (2.0 * SDR_REF_NITS)
+
+    # SDR: clamp so an accidental out-of-range value doesn't bias the
+    # percentile. 90th percentile is robust to dark outliers but still
+    # weights bright-under-label content correctly.
+    lum = np.clip(lum, 0.0, 1.0)
+    return float(np.percentile(lum, 90))
+
+
+def _per_letter_picks(arr, lpos, fontsize_uu, w_vb, h_vb, label_text,
+                       *, hdr_white_nits=None):
+    """Return ``[(sdr_pick, hdr_pick), ...]`` — one fill-colour pair per
+    character in ``label_text``, picked from the 90th-percentile
+    luminance under that glyph's slice of the label region.
+
+    Each character's footprint is approximated as an equal-width slice
+    of the total label bbox (``label_w_vb / n`` per character). For
+    proportional fonts this is off by a small amount per glyph, but the
+    visual win — every letter contrasts its own background — is robust
+    to the slop because the percentile is taken over a multi-pixel
+    region that includes neighbouring content anyway.
+
+    Whitespace returns the ``LIGHT`` fallback (fill is invisible regardless).
+    """
+    n = len(label_text)
+    fallback = (_LIGHT_TEXT, _LIGHT_TEXT)
+    if n == 0 or arr is None or arr.size == 0:
+        return [fallback] * max(n, 0)
+    ah, aw = arr.shape[:2]
+    if ah == 0 or aw == 0:
+        return [fallback] * n
+
+    label_w_vb = min(0.6 * fontsize_uu * n, w_vb)
+    label_h_vb = fontsize_uu * 1.2
+    pad = 3.0
+    if lpos == 'top_middle':
+        x0_vb = (w_vb - label_w_vb) / 2
+        y0_vb = pad
+    elif lpos == 'top_left':
+        x0_vb = pad
+        y0_vb = pad
+    elif lpos == 'bottom_middle':
+        x0_vb = (w_vb - label_w_vb) / 2
+        y0_vb = h_vb - pad - label_h_vb
+    elif lpos == 'bottom_left':
+        x0_vb = pad
+        y0_vb = h_vb - pad - label_h_vb
+    else:
+        return [fallback] * n
+
+    y0_px = max(0, int(y0_vb / h_vb * ah))
+    y1_px = min(ah, int(np.ceil((y0_vb + label_h_vb) / h_vb * ah)))
+
+    SDR_REF_NITS = 500.0
+    use_hdr = (
+        hdr_white_nits is not None
+        and np.issubdtype(arr.dtype, np.floating)
+    )
+
+    picks = []
+    for i, ch in enumerate(label_text):
+        if ch.isspace():
+            picks.append(fallback)
+            continue
+        cx0_vb = x0_vb + i * label_w_vb / n
+        cx1_vb = x0_vb + (i + 1) * label_w_vb / n
+        x0_px = max(0, int(cx0_vb / w_vb * aw))
+        x1_px = min(aw, int(np.ceil(cx1_vb / w_vb * aw)))
+        if x1_px <= x0_px or y1_px <= y0_px:
+            picks.append(fallback)
+            continue
+        region = arr[y0_px:y1_px, x0_px:x1_px]
+        if region.ndim == 3:
+            rgb = region[..., :3].astype(np.float32, copy=False)
+            if region.dtype == np.uint8:
+                rgb = rgb / 255.0
+            lum = (
+                0.2126 * rgb[..., 0]
+                + 0.7152 * rgb[..., 1]
+                + 0.0722 * rgb[..., 2]
+            )
+        else:
+            lum = region.astype(np.float32, copy=False)
+            if region.dtype == np.uint8:
+                lum = lum / 255.0
+
+        sdr_p90 = float(np.percentile(np.clip(lum, 0.0, 1.0), 90))
+        sdr_p = _DARK_TEXT if sdr_p90 > 0.5 else _LIGHT_TEXT
+
+        if use_hdr:
+            p90_nits = float(np.percentile(lum, 90)) * float(hdr_white_nits)
+            hdr_p = (
+                _DARK_TEXT
+                if (p90_nits / (2.0 * SDR_REF_NITS)) > 0.5
+                else _LIGHT_TEXT
+            )
+        else:
+            hdr_p = sdr_p
+        picks.append((sdr_p, hdr_p))
+    return picks
 
 
 def _native_dims(item, arr):
@@ -574,11 +1080,162 @@ def _source_fingerprint(item):
     return tuple(fp)
 
 
+def _is_discrete_color(arr, *, max_colors=64, sample=8192):
+    """Heuristic: does ``arr`` hold a small palette of discrete colors?
+
+    Used to route float tiles that are really categorical label maps
+    (e.g. ``apply_ncolor`` output, which returns float RGBA in [0, 1])
+    to lossless PNG instead of lossy uhdr. Quantizes to 8-bit and counts
+    unique colors over a strided sample.
+
+    The threshold sits below 256 on purpose: an n-colored label map uses
+    a tiny palette (~4-20 colors), while a continuous *grayscale* tile
+    spans up to 256 distinct levels — counting unique RGB rows can't tell
+    those apart at 256, but 64 cleanly separates the label palette from
+    any real gradient.
+    """
+    # Stride-sample FIRST (a cheap view), then quantize only the sample —
+    # never touch every pixel of a large tile just to peek at the palette.
+    flat = arr.reshape(-1, arr.shape[-1]) if arr.ndim == 3 else arr.reshape(-1, 1)
+    if flat.shape[0] > sample:
+        flat = flat[:: flat.shape[0] // sample]
+    if not (hasattr(flat, 'dtype') and flat.dtype == np.uint8):
+        flat = (np.clip(flat, 0.0, 1.0) * 255).astype(np.uint8)
+    return np.unique(np.ascontiguousarray(flat), axis=0).shape[0] <= max_colors
+
+
+def _label_tile_svg(lt, x, y, w, h, title=None, fontsize_uu=0.0, lpos='top_middle'):
+    """Build a ``<foreignObject>`` holding a live GPU segmentation tile.
+
+    The foreignObject wraps a relative ``<div>`` containing (a) a
+    ``<canvas data-label-tile>`` absolutely positioned to fill the cell and
+    (b) — when ``title`` is given — a normal-flow HTML title ``<div>`` laid
+    over it. The title MUST be HTML inside the same foreignObject: an SVG
+    ``<text>`` placed after a foreignObject is parsed in the leaked HTML
+    context (no ``getBBox``, fill forced to ``currentColor`` = black) and
+    renders invisible.
+
+    The canvas carries, as ``data-`` attrs (uint16 LE, base64):
+      * ``data-labels``    — COLOR/group ids (palette lookup)
+      * ``data-instances`` — original per-cell ids for hover/picking +
+        outline boundaries (omitted when identical to ``data-labels``)
+    plus the palette + display options. The figure shell's controller
+    instantiates a LabelGLRenderer over it. Live-only — a canvas isn't in
+    the static SVG.
+    """
+    import base64
+
+    labels = np.asarray(lt['labels'])
+    lh, lw = labels.shape[:2]
+    lbl_b64 = base64.b64encode(
+        np.ascontiguousarray(labels.astype('<u2')).tobytes()).decode('ascii')
+
+    # Instance ids for hover/picking. Only shipped when they differ from the
+    # color ids (i.e. ncolor relabel happened); otherwise the color ids
+    # double as instances on the GPU side, saving the extra payload. Clamp
+    # to 16-bit (renumber if a crop somehow exceeds 65535 cells).
+    inst_attr = ''
+    inst = lt.get('instances')
+    if inst is not None:
+        inst = np.asarray(inst)
+        if not np.array_equal(inst, labels):
+            if int(inst.max(initial=0)) > 65535:
+                import fastremap
+                inst = fastremap.renumber(inst, in_place=False)[0]
+            inst_b64 = base64.b64encode(
+                np.ascontiguousarray(inst.astype('<u2')).tobytes()).decode('ascii')
+            inst_attr = f' data-instances="{inst_b64}"'
+
+    pal = lt.get('palette')
+    if pal is None or (isinstance(pal, str) and pal == 'sinebow'):
+        pal_attr = 'sinebow'
+    else:
+        pal = np.asarray(pal)
+        if pal.dtype != np.uint8:
+            pal = (np.clip(pal, 0, 1) * 255).astype(np.uint8)
+        if pal.shape[-1] == 3:                       # RGB → RGBA
+            a = np.full(pal.shape[:-1] + (1,), 255, np.uint8)
+            pal = np.concatenate([pal, a], axis=-1)
+        pal_attr = base64.b64encode(
+            np.ascontiguousarray(pal).tobytes()).decode('ascii')
+
+    # The base image (max projection etc.) is NOT handled here: the caller
+    # paints it as a plain <image> behind this (transparent) canvas using the
+    # normal registered + HDR-encoded raster URL, so a float base keeps its
+    # gain-map HDR. The GPU canvas only draws labels/outlines.
+
+    # Uniform outline color (#rrggbb) — overrides per-cell palette on edges.
+    oc_attr = ''
+    oc = lt.get('outline_color')
+    if oc is not None:
+        import matplotlib.colors as _mcolors
+        oc_attr = f' data-outline-color="{_mcolors.to_hex(oc)}"'
+
+    # ``data-title`` lets the popup/expanded viewer label the tile (it can't
+    # read the GPU canvas; see io/figure.py openZoom). The visible inline
+    # title is a normal SVG <text> emitted by the CALLER right after this
+    # foreignObject — see the comment there. (An HTML title <div> inside the
+    # foreignObject is NOT used: a non-replaced child of a foreignObject
+    # collapses to a zero-size box in Blink when the figure SVG is sized via
+    # viewBox + CSS height:auto, so it never paints. SVG <text> always lays
+    # out and, placed after the foreignObject, paints on top.)
+    from html import escape as _html_escape2
+    title_attr = f' data-title="{_html_escape2(str(title))}"' if title else ''
+
+    return (
+        f'<foreignObject x="{x:.2f}" y="{y:.2f}" '
+        f'width="{w:.2f}" height="{h:.2f}">'
+        f'<canvas xmlns="http://www.w3.org/1999/xhtml" data-label-tile="1" '
+        f'data-w="{lw}" data-h="{lh}"{title_attr} '
+        f'data-labels="{lbl_b64}"{inst_attr} data-palette="{pal_attr}" '
+        f'data-opacity="{lt["opacity"]:.3f}" data-style="{lt["style"]}" '
+        f'data-outlines="{1 if lt["outlines"] else 0}" '
+        f'data-outline-hdr="{lt.get("outline_hdr", 1.0):.3f}"{oc_attr} '
+        f'style="width:100%;height:100%;image-rendering:pixelated;'
+        f'display:block"></canvas>'
+        f'</foreignObject>'
+    )
+
+
+def _composite_overlay(base, overlay_rgba):
+    """Alpha-composite an ``(H, W, 4)`` uint8 overlay onto ``base``.
+
+    Returns an array the same dtype/range as ``base`` so the combined
+    tile flows through the normal codec routing (float → lossless uhdr,
+    uint8 → PNG). The overlay's RGB is mapped onto the base's scale: for
+    a float base the 8-bit color is divided by 255 (so an opaque red
+    outline lands at ``1.0`` — the top of the base's range — and the
+    gain map lifts it to HDR brightness alongside everything else); for a
+    uint8 base it's used directly. ``out = base*(1-a) + color*a``.
+    """
+    base = np.asarray(base)
+    ov = np.asarray(overlay_rgba)
+    if ov.ndim != 3 or ov.shape[-1] != 4:
+        raise ValueError(
+            f"overlay must be (H, W, 4) RGBA; got {ov.shape}")
+    if base.ndim == 2:
+        base = np.repeat(base[..., None], 3, axis=2)
+    if base.shape[:2] != ov.shape[:2]:
+        raise ValueError(
+            f"overlay shape {ov.shape[:2]} must match base {base.shape[:2]}")
+
+    alpha = (ov[..., 3:4].astype(np.float32)) / 255.0
+    is_float = np.issubdtype(base.dtype, np.floating)
+    base_f = base[..., :3].astype(np.float32)
+    color = ov[..., :3].astype(np.float32)
+    if is_float:
+        color = color / 255.0          # 8-bit color → base's [0,1]+ scale
+    out = base_f * (1.0 - alpha) + color * alpha
+    if is_float:
+        return out.astype(np.float32)
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
 def _encode_thumb_url(arr, raster_format, sdr_white_nits):
     """Encode a per-tile array into a ``data:image/...;base64,...`` URL.
 
-    Mirrors :meth:`SVG.image` for the ``jxl-hdr-pq`` / ``jxl-p3`` /
-    ``uhdr`` paths but returns the URL string directly so callers
+    Mirrors :meth:`SVG.image` for the ``jxl-hdr-pq`` / ``uhdr`` / ``png``
+    paths but returns the URL string directly so callers
     (image_grid) can cache it on the scene object. The cached URL is
     reusable across re-renders of the same scenes with the same
     target/HDR settings, so warm renders skip both decode and encode
@@ -595,18 +1252,25 @@ def _encode_thumb_url(arr, raster_format, sdr_white_nits):
         return ("data:image/jpeg;base64,"
                 + base64.b64encode(thumb_bytes).decode('ascii'))
 
+    if raster_format == 'png':
+        # Lossless SDR tile (segmentation / outline overlay) in a mixed
+        # HDR grid. No gain map → no HDR boost → identical brightness to
+        # the matching PNG hi-res (no hover-dim), and bit-exact discrete
+        # colors / thin lines (no JPEG ringing). Tiny on flat content.
+        import base64
+        import imagecodecs
+        a = arr if (hasattr(arr, 'dtype') and arr.dtype == np.uint8) \
+            else (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+        if a.ndim == 3 and a.shape[2] == 4:
+            a = a[..., :3]
+        png = imagecodecs.png_encode(np.ascontiguousarray(a))
+        return "data:image/png;base64," + base64.b64encode(png).decode('ascii')
+
     from .svg import (jxl_data_url, uhdr_data_url, _p3_linear_to_pq_uint16,
-                      _srgb_to_display_p3_uint8,
                       _linear_p3_to_uint8_srgb_peaknorm,
                       _srgb_uint8_to_p3_linear)
     import opencodecs
 
-    # ``effort=1, lossless=True`` (the ``jxl_data_url`` defaults).  Bench
-    # on a 256² uint8 thumbnail: lossy ``distance=1.0`` → 40 ms / 30 kB,
-    # lossless effort=1 → 2 ms / ~150 kB.  The ~120 kB inline payload
-    # bump per tile is acceptable for the speed win (and matches the
-    # ArraySource hi-res encoder, so the auto-upgrade swap is now a
-    # bit-identical raster instead of a slight lossy→lossless shift).
     if raster_format == 'jxl-hdr-pq':
         arr_pq = _p3_linear_to_pq_uint16(arr, sdr_white_nits=sdr_white_nits)
         p3_pq = opencodecs.ColorSpec(
@@ -614,17 +1278,15 @@ def _encode_thumb_url(arr, raster_format, sdr_white_nits):
             rendering_intent=1, gamma=0.0,
         )
         return jxl_data_url(arr_pq, color=p3_pq, intensity_target=10000.0)
-    if raster_format == 'jxl-p3':
-        arr_u8 = arr if (hasattr(arr, 'dtype') and arr.dtype == np.uint8) \
-            else (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
-        arr_p3 = _srgb_to_display_p3_uint8(arr_u8)
-        return jxl_data_url(arr_p3, color='display-p3')
-    if raster_format == 'uhdr':
+    if raster_format in ('uhdr', 'uhdr-lossless'):
         # Ultra-HDR JPEG: cross-browser HDR (Safari + Chrome composite,
         # Firefox sees the SDR base). For uint8 cells in a mixed grid,
         # round-trip through linear-P3 so the gain map still encodes
         # (otherwise the SDR base + HDR are identical and no gain rides
         # on top — the file is still valid, just SDR-equivalent).
+        # ``uhdr-lossless`` is a baked layered tile: the SDR base is
+        # encoded losslessly so the composited outline stays bit-exact
+        # while the gain map still lifts it to HDR brightness.
         if hasattr(arr, 'dtype') and np.issubdtype(arr.dtype, np.floating):
             hdr = arr
         else:
@@ -638,9 +1300,19 @@ def _encode_thumb_url(arr, raster_format, sdr_white_nits):
         sdr_u8 = getattr(arr, '_sdr_base_p3_u8', None)
         if sdr_u8 is None:
             sdr_u8 = _linear_p3_to_uint8_srgb_peaknorm(hdr)
-        return uhdr_data_url(hdr, sdr_u8, sdr_white_nits=sdr_white_nits)
-    # Generic JXL (no colour-space tag).
-    return jxl_data_url(arr)
+        return uhdr_data_url(hdr, sdr_u8, sdr_white_nits=sdr_white_nits,
+                             lossless=(raster_format == 'uhdr-lossless'))
+    # Fallback (unrecognized format): lossless PNG. Universally decodable
+    # — we don't emit untagged JXL, which Chrome/Electron won't render
+    # without the experimental flag.
+    import base64
+    import imagecodecs
+    a = arr if (hasattr(arr, 'dtype') and arr.dtype == np.uint8) \
+        else (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+    if a.ndim == 3 and a.shape[2] == 4:
+        a = a[..., :3]
+    png = imagecodecs.png_encode(np.ascontiguousarray(a))
+    return "data:image/png;base64," + base64.b64encode(png).decode('ascii')
 
 
 def _resolve_items(items, *, dx, target_px=None):
@@ -765,20 +1437,37 @@ def _resolve_items(items, *, dx, target_px=None):
         arrays = [_resolve_one(items[0])]
 
     any_hdr = any(np.issubdtype(a.dtype, np.floating) for a in arrays)
-    # Default HDR codec is Ultra-HDR JPEG (ISO 21496-1): cross-browser HDR
-    # (Safari + Chrome composite the gain map, Firefox / Preview / Quick
-    # Look fall back to the SDR base cleanly) AND smaller than JXL-PQ at
-    # the same quality. Pass ``raster_format='jxl-hdr-pq'`` to force JXL.
-    raster_format = 'uhdr' if any_hdr else 'jxl-p3'
+    # Two codecs, picked per cell by dtype — float vs uint8:
+    #   * float (HDR) → Ultra-HDR JPEG (ISO 21496-1): cross-browser HDR
+    #     (Safari + Chrome composite the gain map, Firefox / Preview fall
+    #     back to the SDR base cleanly). ``raster_format='jxl-hdr-pq'``
+    #     forces JXL-PQ for the explicit Safari-native-HDR opt-in.
+    #   * uint8 (SDR) → lossless PNG: bit-exact discrete label colors and
+    #     thin outlines (no JPEG ringing), no gain map (so the inline
+    #     thumb and the hi-res render at identical brightness — no
+    #     hover-dim), decodes in every browser, and tiny on flat content.
+    # PNG replaces the old ``jxl-p3`` SDR path: JXL needs an experimental
+    # flag in Chrome/Electron (VS Code's renderer), so it never reliably
+    # displayed there — not worth the extra encode branch for a format we
+    # don't ship.
+    raster_format = 'uhdr' if any_hdr else 'png'
 
-    if any_hdr:
-        # Promote uint8 cells to float so they composite alongside HDR
-        # at the absolute SDR-white reference (uint8 1.0 → linear 1.0).
-        arrays = [
-            (a.astype(np.float32) / 255.0) if a.dtype == np.uint8 else a
-            for a in arrays
-        ]
-    return arrays, raster_format
+    def _fmt_for(a):
+        if not np.issubdtype(a.dtype, np.floating):
+            return 'png'          # uint8 SDR → lossless PNG
+        # Float tiles default to uhdr, EXCEPT discrete-color content with
+        # no HDR headroom (e.g. ``apply_ncolor`` label maps, which return
+        # float RGBA in [0, 1]). Lossy uhdr would ring at the hard color
+        # boundaries; route those to lossless PNG instead. A continuous
+        # SDR-range projection still goes to uhdr so the encoder can lift
+        # it to HDR linear light.
+        hi = float(np.nanmax(a)) if a.size else 0.0
+        if hi <= 1.0 + 1e-6 and _is_discrete_color(a):
+            return 'png'
+        return raster_format
+
+    cell_fmts = [_fmt_for(a) for a in arrays]
+    return arrays, raster_format, cell_fmts
 
 
 def _to_array_only(items, *, dx):

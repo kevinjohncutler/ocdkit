@@ -1743,6 +1743,11 @@ void main() {
       }
       currentTile = tile;
       let hiresHref = tile.getAttribute('data-hires-href');
+      // Remote pages: route a baked-loopback hi-res URL (e.g. a tileserve
+      // /attach/<sid>/<name> served on 127.0.0.1) through the Jupyter-origin
+      // proxy so click-to-expand loads full-res off-machine. No-op for local
+      // pages and for data:/relative hrefs.
+      if (hiresHref && window.__ocdResolveTileUrl) hiresHref = window.__ocdResolveTileUrl(hiresHref);
       // Live label tile → render in the popup via createLabelViewer (same
       // LabelGLRenderer as the inline tile), so the zoom gets palette fill
       // + outlines + HDR boundary AND live hover-highlight. No <image>
@@ -2716,7 +2721,10 @@ void main() {
       // image_grid -- default for single-image imshow) fires the
       // prefetch eagerly on load, so the grid lights up to hi-res
       // without any hover required.
-      const hiresHref = tile.getAttribute('data-hires-href');
+      let hiresHref = tile.getAttribute('data-hires-href');
+      // remote pages: resolve the baked-loopback hi-res URL to the Jupyter proxy
+      // (so the hover-prefetch / auto-upgrade swap works off-machine too)
+      if (hiresHref && window.__ocdResolveTileUrl) hiresHref = window.__ocdResolveTileUrl(hiresHref);
       if (hiresHref) {
         const autoUpgrade = (tile.getAttribute('data-auto-upgrade') === '1');
         let prefetched = false;
@@ -5047,9 +5055,10 @@ def interactive_shell(content_html: str, *,
     if 'data-sg-readout' in content_html:
         js = _REF_TOGGLE_JS.replace("__UID__", uid) + "\n" + js
     # Tile-URL resolver MUST be defined before any controller/GL fetch runs, so
-    # prepend it LAST (→ top of the concatenated script). Only needed when the
-    # markup carries baked tile URLs.
-    if 'data-tile-src' in content_html:
+    # prepend it LAST (→ top of the concatenated script). Needed whenever the
+    # markup carries baked loopback URLs — GL/stream tiles (data-tile-src) OR
+    # click-to-expand hi-res (data-hires-href, e.g. tileserve /attach).
+    if 'data-tile-src' in content_html or 'data-hires-href' in content_html:
         js = _TILE_BASE_RESOLVER_JS + "\n" + js
     actions = ''
     if save_button or copy_button or hdr_button:
