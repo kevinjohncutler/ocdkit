@@ -474,11 +474,31 @@ class ArraySource(Source):
         return self._cached
 
 
-# figure_server registry: RETIRED. The in-kernel HTTP registry
-# (LocalHttpRegistry / JupyterProxyRegistry / get_registry / set_registry /
-# register) has been removed -- image_grid now hosts hi-res + display tiles as
-# ocdkit.tileserve attachments, reachable from a remote browser via the
-# ocdkit-tiles Jupyter proxy. Only the Source resolution layer remains below.
+# figure_server HTTP registry: RETIRED. The stdlib-HTTP registry
+# (LocalHttpRegistry / JupyterProxyRegistry / get_registry / set_registry and
+# its jupyter-server-proxy auto-detect) is gone — it handed out 127.0.0.1 URLs
+# that a remote browser couldn't reach. ``register`` survives as a thin shim
+# that hosts a Source's bytes as an ocdkit.tileserve ATTACHMENT instead, so the
+# URL rides the ocdkit-tiles Jupyter proxy (remote-safe). One reused tileserve
+# source backs all registrations (attachment per token), mirroring the old
+# single-server design. Callers (the host Scene repr; back-compat) are unchanged.
+_COMPAT_SID = None
+
+
+def register(source: "Source") -> str:
+    """Host ``source``'s encoded bytes as a tileserve attachment and return a
+    URL the SvgFigure shell resolves through the ocdkit-tiles proxy. Replaces
+    the retired 127.0.0.1 HTTP registry — reachable from a remote browser."""
+    global _COMPAT_SID
+    import secrets
+    from ..tileserve.server import (ensure_server, register_pending, attach,
+                                    get_source)
+    base = ensure_server()
+    if _COMPAT_SID is None or get_source(_COMPAT_SID) is None:
+        _COMPAT_SID = register_pending(1, 1, ['_compat'])
+    name = "h_" + secrets.token_urlsafe(8)
+    attach(_COMPAT_SID, name, source.get_bytes(), media=source.content_type)
+    return f"{base}/attach/{_COMPAT_SID}/{name}"
 
 
 def _peek_jxl_size(path) -> Optional[tuple]:
@@ -1030,4 +1050,5 @@ __all__ = [
     "NpySliceSource",
     "CziSliceSource",
     "resolve_source",
+    "register",
 ]
