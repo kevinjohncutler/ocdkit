@@ -1077,6 +1077,13 @@ def _native_dims(item, arr):
         # source so the browser's thumb→bbox upscale is integer-exact
         # and the hires-on-zoom lands without sub-pixel shift.
         return item.shape[:2]
+    # In-memory render (scene._rgb, cached by make_rgb_scenes / make_rgb) is the
+    # source of truth and the CURRENT size — prefer it over the on-disk header
+    # peek, whose size gets cached on the Scene (``_rgb_jxl_size``) and goes
+    # stale when the file is re-saved at a different resolution.
+    _rgb_mem = getattr(item, "_rgb", None)
+    if _rgb_mem is not None and getattr(_rgb_mem, "ndim", 0) >= 2:
+        return (int(_rgb_mem.shape[0]), int(_rgb_mem.shape[1]))
     size = getattr(item, "_rgb_jxl_size", None)
     if size is not None:
         return size
