@@ -281,6 +281,7 @@ class SvgFigure:
         only affects what the rasterizer sees.
         """
         s = self.to_string()
+        s = _inline_async_tiles(s)
         s = _transcode_jxl_data_urls_to_png(s)
         return s.encode("utf-8")
 
@@ -299,6 +300,7 @@ class SvgFigure:
           for font-sizes (which are in SVG user units).
         """
         s = self.to_string()
+        s = _inline_async_tiles(s)
         s = _transcode_jxl_data_urls_to_png(s)
         s = re.sub(r'(<svg\b[^>]*?)\s+style="[^"]*"', r'\1', s, count=1)
         return s.encode("utf-8")
@@ -371,6 +373,36 @@ class SvgFigure:
 _DATA_URL_JXL_RE = re.compile(
     r'(?P<attr>(?:xlink:)?href)="data:image/jxl;base64,(?P<b64>[^"]+)"'
 )
+
+
+def _inline_async_tiles(svg_text: str) -> str:
+    """Inline ``<image data-tile-async data-tile-src="URL" .../>`` tiles for
+    headless rasterization (resvg runs no JS, so the live stream controller
+    that swaps in the href never fires). Fetch each tile's bytes from the
+    in-kernel tile server over loopback and embed them as a base64 ``href``.
+    No-op when there are no async tiles (e.g. the inline-base64 paths)."""
+    if "data-tile-async" not in svg_text:
+        return svg_text
+    import urllib.request
+    from base64 import b64encode
+
+    def _repl(m):
+        tag = m.group(0)
+        um = re.search(r'data-tile-src="([^"]+)"', tag)
+        if not um:
+            return tag
+        try:
+            r = urllib.request.urlopen(um.group(1), timeout=10)
+            data = r.read()
+            media = r.headers.get("Content-Type", "image/png")
+        except Exception:
+            return tag
+        href = "data:" + media + ";base64," + b64encode(data).decode("ascii")
+        tag = re.sub(r'\s*data-tile-async(="[^"]*")?', '', tag)
+        tag = re.sub(r'\s*data-tile-src="[^"]*"', '', tag)
+        return tag[:-2] + f' href="{href}"/>'   # self-closing <image .../>
+
+    return re.sub(r'<image\b[^>]*\bdata-tile-async\b[^>]*/>', _repl, svg_text)
 
 
 def _transcode_jxl_data_urls_to_png(svg_text: str) -> str:
@@ -1864,9 +1896,12 @@ void main() {
       // why we don't read it here). Falls back to inline <image href>
       // for older SVGs / direct ``<g class="fig-tile">`` usage that
       // doesn't set data-thumb-href.
-      const thumbHref = tile.getAttribute('data-thumb-href')
+      let thumbHref = tile.getAttribute('data-thumb-href')
                      || (tile.querySelector('image')
                           && tile.querySelector('image').getAttribute('href'));
+      // remote pages: a tileserve-hosted thumb URL routes through the proxy
+      // (no-op for data:/relative thumbs)
+      if (thumbHref && window.__ocdResolveTileUrl) thumbHref = window.__ocdResolveTileUrl(thumbHref);
       const viewerAtOpen = webglViewer;
       // Defer the visible backdrop until the first frame of content
       // is ready. Otherwise the user sees a dark backdrop with empty

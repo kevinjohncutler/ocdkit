@@ -441,9 +441,11 @@ def image_grid(
     # (SDR), then raw ndarrays; ``None`` → that cell's zoom falls back to the
     # inline thumbnail. Each cell stays INDEPENDENT (its own attachment + its own
     # click-to-expand popup) — no linked viewport.
+    _tbase = _tsid = _tsattach = None
     try:
         from ..io.figure_server import resolve_source, ArraySource
         from ..tileserve.server import ensure_server, register_pending, attach
+        _tsattach = attach
 
         def _hires_source(it, fmt):
             if fmt == 'png' and isinstance(it, np.ndarray):
@@ -499,6 +501,36 @@ def image_grid(
             urls = list(ex.map(_get_or_build_url, range(len(arrays))))
     else:
         urls = [_get_or_build_url(0)]
+
+    # Kill the heavy inline base64 thumb for a PURE scene grid (no linked
+    # viewport, no label tiles — the ``image_grid([scenes])`` case): host each
+    # cell's display thumbnail as a tileserve ATTACHMENT and load it via
+    # ``data-tile-async`` (the stream controller routes it through the
+    # __ocdResolveTileUrl proxy → reachable remotely). The SVG then carries a
+    # short URL per cell instead of a multi-KB base64 blob — a fraction of the
+    # payload — and the cell display works off-machine. The link_axes / label
+    # paths keep base64 (they have their own GL / overlay wiring). Export still
+    # works: _rasterizable_svg inlines these tiles server-side for resvg.
+    _disp_async = False
+    if (_tsid is not None and _tsattach is not None
+            and not link_axes
+            and not any(lt is not None for lt in label_tiles)):
+        try:
+            import base64 as _b64
+            import re
+            _du = []
+            for _i, _u in enumerate(urls):
+                _mm = re.match(r'data:([^;]+);base64,(.*)$', _u or '', re.S)
+                if _mm:
+                    _tsattach(_tsid, f'disp{_i}', _b64.b64decode(_mm.group(2)),
+                              media=_mm.group(1))
+                    _du.append(f'{_tbase}/attach/{_tsid}/disp{_i}')
+                else:
+                    _du.append(_u)
+            urls = _du
+            _disp_async = True
+        except Exception:
+            _disp_async = False
 
     # Pre-compute each row's vertical offset (cumulative row heights +
     # gaps) since rows can vary in height for non-uniform grids.
@@ -683,12 +715,23 @@ def image_grid(
             # test the actual sampling convention, every non-zero shift
             # trades one artifact for another. Block edges aligned with
             # hires pixel boundaries is the cleanest swap behaviour.
-            svg.add(
-                f'<image x="{x:.2f}" y="{y:.2f}" '
-                f'width="{w:.2f}" height="{h:.2f}" '
-                f'href="{urls[i]}" preserveAspectRatio="none" '
-                f'image-rendering="pixelated"/>'
-            )
+            if _disp_async:
+                # tileserve-hosted display tile: no inline href — the stream
+                # controller fetches data-tile-src (via the proxy resolver) and
+                # sets href. data-tile-async lets the SVG compose immediately.
+                svg.add(
+                    f'<image x="{x:.2f}" y="{y:.2f}" '
+                    f'width="{w:.2f}" height="{h:.2f}" '
+                    f'data-tile-async="1" data-tile-src="{urls[i]}" '
+                    f'preserveAspectRatio="none" image-rendering="pixelated"/>'
+                )
+            else:
+                svg.add(
+                    f'<image x="{x:.2f}" y="{y:.2f}" '
+                    f'width="{w:.2f}" height="{h:.2f}" '
+                    f'href="{urls[i]}" preserveAspectRatio="none" '
+                    f'image-rendering="pixelated"/>'
+                )
         if outline:
             svg.rect(x, y, w, h,
                      fill='none', stroke=outline_color,
