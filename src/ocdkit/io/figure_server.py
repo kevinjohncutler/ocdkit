@@ -1,53 +1,22 @@
-"""Pluggable hi-res tile-byte transport for SvgFigure zoom.
+"""Source resolution for SvgFigure / image_grid raster tiles.
 
-Why this exists
----------------
-SvgFigure embeds raster tiles inline as ``<image href="data:image/...">``
-data URIs. That's perfect for thumbnails (everything self-contained, no
-network) but bad if you want full-resolution zoom — embedding a 14×4MB
-JXL composite as base64 bloats the notebook output to ~75MB and chokes
-the browser.
+This module turns a heterogeneous grid item (a raw ndarray, a Scene-like
+object carrying ``_rgb_linear_p3`` / ``.rgb``, an on-disk ``rgb_path``, a
+lazy slice source, …) into encoded image bytes — via :class:`Source`
+subclasses (:class:`ArraySource`, :class:`PathSource`, …) and the
+:func:`resolve_source` dispatcher — plus cheap header peeks
+(:func:`_peek_jxl_size`) for native-dimension estimates.
 
-This module exposes a tiny pluggable registry that hands out URLs the
-browser can fetch on demand. The shape of that URL is determined by the
-*active* registry — a :class:`FigureSourceRegistry` instance — which
-the calling application picks at boot time (or relies on auto-detection
-to pick).
-
-Available registries
---------------------
-* :class:`LocalHttpRegistry` (default) — runs a stdlib HTTP server on
-  ``127.0.0.1`` and hands out absolute ``http://127.0.0.1:PORT/...``
-  URLs. Works whenever the browser can reach the kernel's localhost:
-  a Jupyter kernel on the same machine as the browser, a script that
-  also runs the browser, etc. Fails for remote kernels accessed over
-  SSH tunnels (browser's localhost ≠ kernel's localhost).
-* :class:`JupyterProxyRegistry` — subclass that rewrites URLs to
-  ``/proxy/PORT/...`` (relative to the Jupyter origin) so they survive
-  remote-kernel + tunneled JupyterLab setups. Requires the
-  ``jupyter-server-proxy`` package installed in the kernel; the proxy
-  forwards requests from Jupyter's origin to ``127.0.0.1:PORT``.
-* **Your own registry** — implement the :class:`FigureSourceRegistry`
-  protocol however your app serves bytes (a dashboard's existing
-  HTTP server, a CDN, a Comm-based pipe, …) and install it with
-  :func:`set_registry`. Every ``image_grid(...)`` call then routes
-  through it.
-
-Auto-detection
---------------
-:func:`get_registry` lazily picks a sensible default:
-
-1. If a Jupyter kernel is detected AND ``jupyter-server-proxy`` is
-   importable → :class:`JupyterProxyRegistry`.
-2. Otherwise → :class:`LocalHttpRegistry`.
-
-Applications that want explicit control call
-:func:`ocdkit.plot.setup(registry=...)` (or :func:`set_registry`
-directly) before any ``image_grid`` calls.
-
-When the chosen registry produces URLs the browser can't reach, the
-SvgFigure JS overlay silently falls back to the embedded thumbnail —
-nothing breaks, but the zoomed image is at thumbnail resolution.
+Hi-res / display transport
+---------------------------
+``image_grid`` no longer serves these bytes from a per-kernel HTTP
+registry. It hosts them as **ocdkit.tileserve attachments**
+(``/attach/<sid>/<name>``) on the engine's stable, allowlisted port, so
+the figure shell's ``__ocdResolveTileUrl`` can route them through the
+``ocdkit-tiles`` Jupyter proxy and they're reachable from a remote
+browser (the standalone ``127.0.0.1`` registry never was). The old
+``LocalHttpRegistry`` / ``JupyterProxyRegistry`` registry has been
+removed; this module is now purely the byte-resolution layer.
 """
 
 from __future__ import annotations
@@ -367,14 +336,21 @@ class ArraySource(Source):
     """
 
     def __init__(self, arr, *, sdr_white_nits: float = 1600.0,
-                 fmt: str = "uhdr", quality: int = 95):
+                 fmt: str = "uhdr", quality: int = 95, lossless: bool = False):
         self.arr = np.asarray(arr)
         self.sdr_white_nits = float(sdr_white_nits)
-        if fmt not in ("jxl", "uhdr"):
-            raise ValueError(f"ArraySource fmt must be 'jxl' or 'uhdr', got {fmt!r}")
+        if fmt not in ("jxl", "uhdr", "png"):
+            raise ValueError(
+                f"ArraySource fmt must be 'jxl', 'uhdr', or 'png', got {fmt!r}")
         self.fmt = fmt
         self.quality = int(quality)
-        self.content_type = "image/jxl" if fmt == "jxl" else "image/jpeg"
+        # ``lossless`` (uhdr only): encode the SDR base bit-exact so a
+        # baked-in outline survives while the gain map still lifts it to
+        # HDR brightness. Matches the layered-tile thumb encoder.
+        self.lossless = bool(lossless)
+        self.content_type = {
+            "jxl": "image/jxl", "uhdr": "image/jpeg", "png": "image/png",
+        }[fmt]
         self._cached: Optional[bytes] = None
         self._error: Optional[BaseException] = None
         self._thread = threading.Thread(
@@ -397,10 +373,45 @@ class ArraySource(Source):
 
         arr = self.arr
 
+        if self.fmt == "png":
+            # Lossless SDR tile (segmentation labels / outline overlays).
+            # PNG decodes in every browser, is bit-exact, and is far
+            # smaller than lossless JPEG/JXL on discrete-color content.
+            # No gain map → no HDR boost → the inline thumb and this
+            # hi-res render at identical brightness (kills the hover-dim
+            # the float-promoted uhdr path caused for SDR cells).
+            import imagecodecs  # type: ignore
+            a = arr if arr.dtype == np.uint8 else \
+                (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+            if a.ndim == 3 and a.shape[2] == 4:
+                a = a[..., :3]
+            return imagecodecs.png_encode(np.ascontiguousarray(a))
+
         if self.fmt == "uhdr":
             import opencodecs.uhdr as uhdr
             if np.issubdtype(arr.dtype, np.floating):
                 hdr = np.ascontiguousarray(arr.astype(np.float32, copy=False))
+                if self.lossless:
+                    # Baked layered tile. Mirror ``uhdr_data_url`` exactly
+                    # (same rescale + peak-norm SDR base + max_content_boost)
+                    # so this hi-res is visually identical to the inline
+                    # thumb — only the resolution differs. Lossless SDR
+                    # base keeps the composited outline bit-exact; the gain
+                    # map still lifts it to HDR brightness.
+                    from ..plot.svg import _linear_p3_to_uint8_srgb_peaknorm
+                    scale = self.sdr_white_nits / 203.0
+                    hdr_rescaled = np.ascontiguousarray(
+                        (hdr * scale).astype(np.float32))
+                    sdr_u8 = _linear_p3_to_uint8_srgb_peaknorm(hdr)
+                    peak = float(hdr_rescaled.max()) if hdr_rescaled.size else 1.0
+                    return uhdr.encode_native(
+                        hdr_rescaled, sdr=np.ascontiguousarray(sdr_u8),
+                        gamut="display-p3",
+                        sdr_white_nits=self.sdr_white_nits,
+                        quality=self.quality, lossless=True,
+                        min_content_boost=1.0,
+                        max_content_boost=max(peak, 1.0 + 1e-6),
+                    )
                 # encode_native: custom Cython fused-kernel fast path
                 # (~30-40 ms / 2k², 3-4x faster than uhdr.encode()'s
                 # libuhdr-driven reference path). Same byte output.
@@ -463,193 +474,11 @@ class ArraySource(Source):
         return self._cached
 
 
-# ─── registry protocol + default + Jupyter-proxy variant ─────────────
-
-
-class FigureSourceRegistry(Protocol):
-    """Pluggable backend that maps :class:`Source` objects to URLs the
-    browser can fetch from.
-
-    Applications (dashboards, custom servers) implement this protocol
-    and install their instance with :func:`set_registry`. The plotting
-    layer (``ocdkit.plot.image_grid``) only ever calls ``register``.
-    """
-
-    def register(self, source: Source) -> str:
-        """Register a source; return a URL the browser will GET."""
-        ...
-
-
-class LocalHttpRegistry:
-    """Stdlib HTTP server on ``127.0.0.1`` (random port). Default
-    registry; works when the browser can reach the kernel's localhost."""
-
-    def __init__(self):
-        self._sources: dict[str, Source] = {}
-        # Reverse map: stable source-identity key → existing token, so
-        # repeated ``register(source)`` calls for the same path return
-        # the same URL. Without this, every ``image_grid()`` re-render
-        # generates fresh tokens and the browser HTTP cache always
-        # misses on hi-res. Key format: ``"path:{abspath}@{mtime}"``.
-        self._token_by_key: dict[str, str] = {}
-        self._lock = threading.Lock()
-        self._port: Optional[int] = None
-        self._server: Optional[socketserver.ThreadingTCPServer] = None
-        self._thread: Optional[threading.Thread] = None
-
-    def _ensure_server(self) -> int:
-        if self._port is not None:
-            return self._port
-        with self._lock:
-            if self._port is not None:
-                return self._port
-            registry = self  # capture for handler
-
-            class _Handler(http.server.BaseHTTPRequestHandler):
-                # HTTP/1.1 enables keep-alive so the browser reuses one
-                # TCP connection across all hi-res tile fetches in a
-                # grid, saving the per-request handshake (~1 ms each on
-                # localhost, more on first-time TLS / cold sockets).
-                # ``Content-Length`` is already set on every response,
-                # so message framing works without chunked encoding.
-                protocol_version = "HTTP/1.1"
-
-                def do_GET(self):  # noqa: N802 (Handler API)
-                    parts = self.path.strip("/").split("/")
-                    if len(parts) != 2 or parts[0] != "svgfig":
-                        self.send_error(404, "not a figure_server URL")
-                        return
-                    token = parts[1].split(".", 1)[0]
-                    with registry._lock:
-                        source = registry._sources.get(token)
-                    if source is None:
-                        self.send_error(404, f"unknown token {token!r}")
-                        return
-                    try:
-                        data = source.get_bytes()
-                    except Exception as exc:  # pragma: no cover
-                        self.send_error(500, f"{type(exc).__name__}: {exc}")
-                        return
-                    self.send_response(200)
-                    self.send_header("Content-Type", source.content_type)
-                    self.send_header("Content-Length", str(len(data)))
-                    self.send_header("Cache-Control", "public, max-age=3600")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    self.wfile.write(data)
-
-                def log_message(self, *args, **kwargs):  # noqa: A003
-                    return  # quiet the request log
-
-            server = socketserver.ThreadingTCPServer(
-                ("127.0.0.1", 0), _Handler,
-            )
-            port = server.server_address[1]
-            thread = threading.Thread(
-                target=server.serve_forever, daemon=True,
-                name=f"ocdkit.figure_server:{port}",
-            )
-            thread.start()
-            self._port = port
-            self._server = server
-            self._thread = thread
-            return port
-
-    def register(self, source: Source) -> str:
-        port = self._ensure_server()
-        key = _stable_source_key(source)
-        with self._lock:
-            if key is not None:
-                existing = self._token_by_key.get(key)
-                if existing is not None and existing in self._sources:
-                    # Same path+mtime → reuse token so the browser
-                    # gets the same URL and its HTTP cache hits.
-                    self._sources[existing] = source  # refresh reference
-                    ext = _CTYPE_TO_EXT.get(source.content_type, "bin")
-                    return f"http://127.0.0.1:{port}/svgfig/{existing}.{ext}"
-            token = secrets.token_urlsafe(16)
-            self._sources[token] = source
-            if key is not None:
-                self._token_by_key[key] = token
-        ext = _CTYPE_TO_EXT.get(source.content_type, "bin")
-        return f"http://127.0.0.1:{port}/svgfig/{token}.{ext}"
-
-
-class JupyterProxyRegistry(LocalHttpRegistry):
-    """Like :class:`LocalHttpRegistry` but emits URLs relative to the
-    Jupyter origin via ``jupyter-server-proxy``.
-
-    The stdlib HTTP server still binds to ``127.0.0.1``; the proxy
-    extension forwards requests from Jupyter's origin to it. URLs are
-    of the form ``/proxy/<port>/svgfig/<token>.<ext>``.
-
-    Requires ``jupyter-server-proxy`` installed in the kernel's
-    environment AND served by the Jupyter server hosting the notebook.
-    """
-
-    def register(self, source: Source) -> str:
-        absolute = super().register(source)
-        p = urlparse(absolute)
-        return f"/proxy/{p.port}{p.path}"
-
-
-# ─── active registry + auto-detect ───────────────────────────────────
-
-
-_registry: Optional[FigureSourceRegistry] = None
-_registry_lock = threading.Lock()
-
-
-def get_registry() -> FigureSourceRegistry:
-    """Return the active registry, lazily creating one via
-    :func:`_auto_registry` on first call."""
-    global _registry
-    if _registry is None:
-        with _registry_lock:
-            if _registry is None:
-                _registry = _auto_registry()
-    return _registry
-
-
-def set_registry(registry: Optional[FigureSourceRegistry]) -> None:
-    """Install an explicit registry. Pass ``None`` to reset to
-    auto-detect on the next :func:`get_registry` call."""
-    global _registry
-    with _registry_lock:
-        _registry = registry
-
-
-def _detect_jupyter() -> bool:
-    """Best-effort: are we running inside a Jupyter / IPython kernel?"""
-    if "JPY_PARENT_PID" in os.environ or "JUPYTER_SERVER_ROOT" in os.environ:
-        return True
-    try:
-        from IPython import get_ipython  # type: ignore
-        ip = get_ipython()
-        if ip is not None and "ZMQ" in type(ip).__name__:
-            return True
-    except ImportError:
-        pass
-    return False
-
-
-def _auto_registry() -> FigureSourceRegistry:
-    """Pick a sensible default registry for the runtime environment."""
-    if _detect_jupyter():
-        try:
-            import jupyter_server_proxy  # noqa: F401
-            return JupyterProxyRegistry()
-        except ImportError:
-            pass
-    return LocalHttpRegistry()
-
-
-# ─── convenience pass-throughs (used by image_grid) ─────────────────
-
-
-def register(source: Source) -> str:
-    """Shortcut for ``get_registry().register(source)``."""
-    return get_registry().register(source)
+# figure_server registry: RETIRED. The in-kernel HTTP registry
+# (LocalHttpRegistry / JupyterProxyRegistry / get_registry / set_registry /
+# register) has been removed -- image_grid now hosts hi-res + display tiles as
+# ocdkit.tileserve attachments, reachable from a remote browser via the
+# ocdkit-tiles Jupyter proxy. Only the Source resolution layer remains below.
 
 
 def _peek_jxl_size(path) -> Optional[tuple]:
@@ -1200,11 +1029,5 @@ __all__ = [
     "BytesSource",
     "NpySliceSource",
     "CziSliceSource",
-    "FigureSourceRegistry",
-    "LocalHttpRegistry",
-    "JupyterProxyRegistry",
-    "get_registry",
-    "set_registry",
-    "register",
     "resolve_source",
 ]

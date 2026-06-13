@@ -33,26 +33,23 @@ _config = _PlotConfig()
 def setup(*, registry=None, target_tile_px=None):
     """Configure ocdkit.plot defaults for the current process.
 
-    Optional — auto-detection handles the common cases without a
-    ``setup`` call (Jupyter + jupyter-server-proxy → JupyterProxy; else
-    LocalHttp). Use ``setup`` to inject a custom transport or to bump
-    default tile resolution.
-
     Parameters
     ----------
     registry
-        A :class:`ocdkit.io.figure_server.FigureSourceRegistry`
-        instance to use for hi-res tile streaming. Passing ``None``
-        leaves the active registry unchanged (call
-        :func:`ocdkit.io.figure_server.set_registry(None)` to reset
-        to auto-detect).
+        Deprecated / ignored. The per-kernel hi-res HTTP registry has
+        been retired — ``image_grid`` hosts hi-res + display tiles as
+        ocdkit.tileserve attachments (reachable remotely via the
+        ``ocdkit-tiles`` Jupyter proxy). Accepted for backward
+        compatibility but has no effect.
     target_tile_px
         Default pixel height for ``image_grid`` tiles. Higher = sharper
-        thumbnails and a sharper fallback when no hi-res transport is
-        reachable; larger SVG payload.
+        thumbnails; larger payload.
     """
     if registry is not None:
-        from ..io.figure_server import set_registry
-        set_registry(registry)
+        import warnings
+        warnings.warn(
+            "ocdkit.plot.setup(registry=...) is retired and ignored; image_grid "
+            "now serves tiles via ocdkit.tileserve attachments.",
+            DeprecationWarning, stacklevel=2)
     if target_tile_px is not None:
         _config.target_tile_px = int(target_tile_px)
