@@ -1084,21 +1084,12 @@ def _native_dims(item, arr):
     _rgb_mem = getattr(item, "_rgb", None)
     if _rgb_mem is not None and getattr(_rgb_mem, "ndim", 0) >= 2:
         return (int(_rgb_mem.shape[0]), int(_rgb_mem.shape[1]))
-    size = getattr(item, "_rgb_jxl_size", None)
+    # On-disk header peek, cached on the item but mtime-invalidated, so a
+    # re-saved RGB (new resolution) re-peeks instead of returning a stale size.
+    from ..io.figure_server import _peek_jxl_size_cached
+    size = _peek_jxl_size_cached(item)
     if size is not None:
         return size
-    rgb_path = getattr(item, "rgb_path", None)
-    if rgb_path:
-        from ..io.figure_server import _peek_jxl_size
-        import os as _os
-        if _os.path.exists(str(rgb_path)):
-            size = _peek_jxl_size(rgb_path)
-            if size is not None:
-                try:
-                    item._rgb_jxl_size = size
-                except Exception:
-                    pass
-                return size
     return arr.shape[:2]
 
 
@@ -1434,7 +1425,8 @@ def _resolve_items(items, *, dx, target_px=None):
             # source-longest // target_px gives an integer stride that
             # produces ≥ target_px output. Clamped at 1.
             if target_px is not None:
-                src_size = (getattr(it, '_rgb_jxl_size', None)
+                from ..io.figure_server import _peek_jxl_size_cached
+                src_size = (_peek_jxl_size_cached(it)
                             or _native_dims(it, np.zeros((1, 1, 3))))
                 src_longest = max(int(src_size[0]), int(src_size[1]))
                 ds = max(1, src_longest // int(target_px))

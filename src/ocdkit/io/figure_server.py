@@ -544,6 +544,34 @@ def _peek_jxl_size(path) -> Optional[tuple]:
         return None
 
 
+def _peek_jxl_size_cached(item) -> Optional[tuple]:
+    """``_peek_jxl_size(item.rgb_path)`` cached on the item, but INVALIDATED
+    when the file's mtime changes. A plain ``item._rgb_jxl_size`` cache is set
+    once and never refreshed, so re-saving the RGB at a different resolution
+    leaves a stale size (which then mis-sizes the cell / picks the wrong
+    downsample). Keying the cache on mtime keeps the peek cheap (one ``stat`` vs
+    a header parse) while staying correct across re-saves. Returns ``None`` if
+    there's no ``rgb_path`` or it can't be peeked."""
+    rgb_path = getattr(item, "rgb_path", None)
+    if not rgb_path:
+        return None
+    try:
+        mtime = os.path.getmtime(str(rgb_path))
+    except OSError:
+        return getattr(item, "_rgb_jxl_size", None)
+    if (getattr(item, "_rgb_jxl_size", None) is not None
+            and getattr(item, "_rgb_jxl_size_mtime", None) == mtime):
+        return item._rgb_jxl_size
+    size = _peek_jxl_size(rgb_path)
+    if size is not None:
+        try:
+            item._rgb_jxl_size = size
+            item._rgb_jxl_size_mtime = mtime
+        except Exception:
+            pass
+    return size
+
+
 def _pick_downsample(src_h: int, src_w: int, target_px: int = 0) -> int:
     """Pick the libjxl-native downsample ratio.
 
@@ -837,18 +865,9 @@ def resolve_linear_p3(item, *,
         if target_px is not None:
             rgb_path = getattr(item, "rgb_path", None)
             if rgb_path and os.path.exists(str(rgb_path)):
-                # Cache the header-peek size on the item: ~6 ms per
-                # peek (NAS open + JXL header parse) × N scenes adds
-                # up. Same scene, same file = same size, so once is
-                # enough for the life of the Scene object.
-                size = getattr(item, "_rgb_jxl_size", None)
-                if size is None:
-                    size = _peek_jxl_size(rgb_path)
-                    if size is not None:
-                        try:
-                            item._rgb_jxl_size = size
-                        except Exception:
-                            pass
+                # Header-peek size, cached on the item but mtime-invalidated
+                # (a re-save at a new resolution must not keep the stale size).
+                size = _peek_jxl_size_cached(item)
                 downsample = (_pick_downsample(size[0], size[1], target_px)
                               if size else 1)
             else:
