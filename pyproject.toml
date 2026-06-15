@@ -39,6 +39,8 @@ dependencies = [
     "lxml",
     # python-pptx: figs_to_deck PPTX export (ocdkit.io.pptx)
     "python-pptx",
+    # freetype-py: glyph metrics for ocdkit.plot.text_metrics (measure_text etc.)
+    "freetype-py",
 ]
 
 [project.optional-dependencies]
