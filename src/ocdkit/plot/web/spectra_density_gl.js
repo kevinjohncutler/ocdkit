@@ -410,7 +410,7 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
 @vertex fn vs(@builtin(vertex_index) i:u32)->VO{
   var p=array<vec2f,3>(vec2f(-1.,-1.),vec2f(3.,-1.),vec2f(-1.,3.));
   var o:VO; o.pos=vec4f(p[i],0.,1.); o.uv=vec2f(p[i].x*0.5+0.5, 1.0-(p[i].y*0.5+0.5)); return o; }
-@fragment fn fs(in:VO)->@location(0) vec4f{ let c=textureSample(t,s,in.uv); return vec4f(oetf(c.rgb), c.a); }`;
+@fragment fn fs(in:VO)->@location(0) vec4f{ let c=textureSample(t,s,in.uv); return vec4f(oetf(c.rgb)*c.a, c.a); }`;  // premultiplied (canvas alphaMode='premultiplied') so the coverage alpha feathers edges
     var dispPipe = null, dispSmp = null;
     try {
       dispPipe = device.createRenderPipeline({ layout: 'auto',
@@ -430,9 +430,17 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     return _gpu;
   }
 
-  // Float colorize — same eq-hist CDF as colorize(), but emits Float32 RGBA from
-  // a lifted linear-P3 LUT (values >1), for the HDR display pipeline.
-  function colorizeF(counts, n, lut) {
+  // Float colorize — the SAME raw eq-hist CDF mapping as the original (no
+  // core-floor lift: the lifted HDR LUT already provides the glow/visibility, so
+  // adding a core-floor here double-lifts and reads as log/washed). The ONLY
+  // change vs the original is the AA: instead of a hardcoded alpha=1, carry the
+  // ext-based coverage alpha (per mode) so HDR trace edges feather exactly like
+  // the SDR 2D path. Emits straight-alpha Float32 RGBA from a (possibly lifted,
+  // >1) linear-P3 LUT; the display pass premultiplies for the premultiplied-
+  // alpha canvas. The same path renders SDR-on-the-HDR-surface (a non-lifted
+  // LUT) when the HDR toggle is off, so it then matches the plain SDR colormap.
+  function colorizeF(counts, ext, n, lut, mode) {
+    mode = mode || 'alpha';
     var maxC = 0, nz = 0, i;
     for (i = 0; i < n; i++) { var c = counts[i]; if (c > 0) { nz++; if (c > maxC) maxC = c; } }
     var out = new Float32Array(n * 4);
@@ -442,9 +450,23 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     var acc = 0, cdf = new Float64Array(nb);
     for (i = 1; i < nb; i++) { acc += hist[i]; cdf[i] = acc / nz; }
     for (i = 0; i < n; i++) {
-      var d = counts[i] | 0; if (d <= 0) continue;
-      var idx = Math.min(255, Math.max(0, (cdf[d] * 255.0) | 0)) * 4, o = i * 4;
-      out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2]; out[o + 3] = 1;
+      var e0 = ext ? ext[i] : (counts[i] > 0 ? 1 : 0);
+      if (e0 <= 0) continue;
+      var d = counts[i] | 0, alpha;
+      if (mode === 'solid') {                 // alpha = AA coverage everywhere (smoothest)
+        alpha = Math.min(1, e0);
+      } else if (mode === 'crisp') {          // opaque, distance-thresholded (no feather)
+        if (!(d > 0 || e0 >= 0.5)) continue;
+        alpha = 1;
+      } else {                                // 'alpha': opaque core, feathered outer edge
+        alpha = ((d > 0) || (e0 >= 0.75)) ? 1 : Math.min(1, e0);
+      }
+      // colour = raw eq-hist CDF (UNCHANGED); d=0 edge pixels take the lowest
+      // colour (cdf[1]) so they feather instead of being dropped.
+      var cc = Math.min(Math.max(d, 1), nb - 1);
+      var idx = Math.min(255, Math.max(0, (cdf[cc] * 255.0) | 0)) * 4, o = i * 4;
+      out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2];
+      out[o + 3] = alpha * lut[idx + 3];      // straight coverage alpha (× LUT's own alpha)
     }
     return out;
   }
@@ -654,7 +676,7 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
       // canvas is WebGPU here (never 2D), so no context conflict.
       if (!g.dispPipe || typeof Float16Array === 'undefined' || !cfg.lut) return false;
       try {
-        var fc = colorizeF(counts, W * H, cfg.lut);
+        var fc = colorizeF(counts, ext, W * H, cfg.lut, cfg.aa);
         var half = new Float16Array(fc.length);
         for (var k = 0; k < fc.length; k++) half[k] = fc[k];
         var ctxg = cv.getContext('webgpu'); if (!ctxg) return false;
