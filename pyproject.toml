@@ -37,6 +37,8 @@ dependencies = [
     "platformdirs",
     "cryptography",
     "lxml",
+    # python-pptx: figs_to_deck PPTX export (ocdkit.io.pptx)
+    "python-pptx",
 ]
 
 [project.optional-dependencies]
