@@ -309,6 +309,12 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
    font:12px system-ui,sans-serif;padding:2px 8px}
  #ctl select,#ctl button{background:#222;color:#ddd;border:1px solid #555;
    border-radius:3px;font:inherit;padding:1px 6px;cursor:pointer}
+ /* Global figure title — a strip at the very TOP (figtitle → ctl → #wrap → hud),
+    normal document flow so it never overlays the tiles; height/font scale with k
+    in _sizeBars() and the Python embed aspect reserves TITLE_H0 when present. */
+ #figtitle{display:flex;align-items:center;justify-content:center;box-sizing:border-box;
+   color:#ddd;font:600 16px system-ui,sans-serif;padding:0 10px;white-space:nowrap;
+   overflow:hidden;text-overflow:ellipsis;pointer-events:none}
  /* HDR/save/copy action buttons (icons), bottom-right; mirrors ocdkit's
     .ocd-svgfig-actions styling. Outside #wrap → excluded from the capture. */
  #acts{position:fixed;right:10px;bottom:10px;display:flex;gap:8px;justify-content:flex-end;
@@ -408,12 +414,15 @@ let view={cx:0.5, cy:0.5, s:1.0};          // shared: centre (FOV-norm) + scale 
 const OUTLINE_IMG_PX=0.75, OUTLINE_MIN_DPX=0.25;
 // ctl/hud strip heights in Wref units (scaled by k; the Python embed aspect
 // reserves CTL_H0+HUD_H0 too, so flow-stacking ctl+figure+hud fits exactly).
-const CTL_H0=30, HUD_H0=22;
+const CTL_H0=30, HUD_H0=22, TITLE_H0=26;
 let _kNow=1;
 function _sizeBars(){
   const c=document.getElementById('ctl');
   if(c){ c.style.height=(CTL_H0*_kNow)+'px'; c.style.fontSize=Math.max(9,12*_kNow)+'px'; }
   hud.style.height=(HUD_H0*_kNow)+'px'; hud.style.fontSize=Math.max(8,11*_kNow)+'px';
+  const t=document.getElementById('figtitle');
+  if(t){ const h=(TITLE_H0*_kNow)+'px'; t.style.height=h; t.style.lineHeight=h;
+         t.style.fontSize=Math.max(11,16*_kNow)+'px'; }
 }
 // Tile / plot-box corner radius (CSS px), exposed via ?rx=. The tile DATA is
 // clipped to this radius with a CSS mask (rounded white rects over the canvas),
@@ -1075,7 +1084,7 @@ async function init(){ try{
   // headroom is often event-driven, not poll-readable — listen for changes too
   try{ screen.addEventListener && screen.addEventListener('change', pollHeadroom); }catch(e){}
   try{ matchMedia('(dynamic-range: high)').addEventListener('change', pollHeadroom); }catch(e){}
-  setCmap(CMAP); buildControls();
+  setCmap(CMAP); buildControls(); buildTitle();
   fetchOutline();
   fetchOutlineGroups();    // no-op unless info.has_outline_groups
   fetchHighlightGroups();  // no-op unless info.has_highlight_groups
@@ -1429,6 +1438,18 @@ function applySpecCmap(name){
     _specCfg.lut=Uint8Array.from(LUTS[name]);
   }
   drawSpectra();
+}
+// Global figure title strip (info.title). Inserted at the very top of the flow
+// (before ctl if present, else before #wrap) so it sits above everything without
+// overlaying the tiles. No-op when /info carries no title.
+function buildTitle(){
+  const t = (typeof info!=='undefined' && info && info.title) ? String(info.title) : '';
+  if(!t) return;
+  let el=document.getElementById('figtitle');
+  if(!el){ el=document.createElement('div'); el.id='figtitle';
+    const ref=document.getElementById('ctl')||document.getElementById('wrap');
+    document.body.insertBefore(el, ref); }
+  el.textContent=t; _sizeBars();
 }
 function buildControls(){
   const bar=document.createElement('div'); bar.id='ctl';
