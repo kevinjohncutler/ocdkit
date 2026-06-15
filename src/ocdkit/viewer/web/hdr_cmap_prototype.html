@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<!--
+  HDR image-colormap prototype — now a thin DEMO of the shared utility:
+    /plot/web/hdr_colormap.js  → HdrColormap.HdrColormapRenderer + the lift
+    /plot/web/hdr_headroom.js  → HdrHeadroom (live display headroom)
+
+  Serve from src/ocdkit (so /plot/web/ resolves), or via scripts/hdr_harness.py
+  which also pumps the real NSScreen EDR headroom into the page.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ocdkit · HDR colormap (shared utility)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0a0a0c; color: #c8c8cc; font: 13px/1.5 -apple-system, system-ui, sans-serif; padding: 20px; }
+  h1 { font-size: 16px; font-weight: 600; color: #e8e8ec; margin: 0 0 4px; }
+  .sub { color: #8a8a90; margin: 0 0 18px; max-width: 820px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: center; margin-bottom: 18px; padding: 14px 16px; background: #141418; border: 1px solid #26262c; border-radius: 10px; }
+  .controls label { color: #9a9aa0; display: flex; align-items: center; gap: 8px; }
+  select { background: #1e1e24; color: #d8d8dc; border: 1px solid #33333a; border-radius: 6px; padding: 4px 8px; font: inherit; }
+  .switch { display: flex; align-items: center; gap: 8px; }
+  .views { display: flex; gap: 22px; flex-wrap: wrap; }
+  .view { flex: 1 1 380px; min-width: 320px; }
+  .view h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #7a7a82; margin: 0 0 8px; }
+  canvas { width: 100%; aspect-ratio: 16 / 10; display: block; border-radius: 10px; border: 1px solid #26262c; background: #000; }
+  .status { margin-top: 18px; padding: 12px 16px; background: #141418; border: 1px solid #26262c; border-radius: 10px; max-width: 820px; }
+  .status b { color: #d8d8dc; } .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; margin-left: 4px; }
+  .ok { background: #16361f; color: #6ee08a; } .no { background: #3a1f1f; color: #ff8a8a; } code { color: #9ec7ff; }
+</style>
+</head>
+<body>
+  <h1>HDR image-colormap <span style="color:#7a7a82;font-weight:400">· shared utility demo</span></h1>
+  <p class="sub">
+    A scalar field painted through <code>HdrColormap.HdrColormapRenderer</code> — the reusable WebGPU renderer.
+    Left = unlifted SDR; right = HDR-lifted, driven to the live display headroom from <code>HdrHeadroom</code>
+    (real value injected by the native bridge when run via <code>hdr_harness.py</code>; a fixed fallback in a plain browser).
+  </p>
+
+  <div class="controls">
+    <label>colormap <select id="cmap"></select></label>
+    <div class="switch"><input type="checkbox" id="hdr"><label for="hdr">HDR rendering</label></div>
+    <span id="hr" style="margin-left:auto;color:#9ec7ff;font-variant-numeric:tabular-nums">reported headroom: …</span>
+  </div>
+
+  <div class="views">
+    <div class="view"><h2>SDR baseline</h2><canvas id="cvSdr"></canvas></div>
+    <div class="view"><h2>HDR lifted</h2><canvas id="cvHdr"></canvas></div>
+  </div>
+
+  <div class="status" id="status">Initialising…</div>
+
+  <script src="/plot/web/hdr_headroom.js"></script>
+  <script src="/plot/web/hdr_colormap.js"></script>
+  <script>
+  (async function () {
+    'use strict';
+    const HC = window.HdrColormap, HdrHeadroom = window.HdrHeadroom;
+    const statusEl = document.getElementById('status');
+    if (!HC || !HdrHeadroom) {
+      statusEl.innerHTML = '<b style="color:#ff8a8a">Shared modules failed to load.</b> '
+        + 'Serve from <code>src/ocdkit</code> so <code>/plot/web/*.js</code> resolves (or use scripts/hdr_harness.py).';
+      return;
+    }
+    if (!navigator.gpu) {
+      statusEl.innerHTML = '<b style="color:#ff8a8a">WebGPU unavailable.</b> Use Safari 17+ or Chrome.';
+      return;
+    }
+
+    // ── test image: calibration ramp + Gaussian blobs (scalar field) ─────────
+    const W = 740, H = 460, field = new Float32Array(W * H);
+    const aspect = W / H;
+    const blob = (u, v, cx, cy, r, pk) => { const dx = (u - cx) * aspect, dy = (v - cy); return pk * Math.exp(-(dx * dx + dy * dy) / (r * r)); };
+    for (let y = 0; y < H; y += 1) {
+      for (let x = 0; x < W; x += 1) {
+        const u = x / (W - 1), v = 1 - y / (H - 1);
+        let val = (v < 0.15) ? Math.min(Math.max(u, 0), 1)
+          : Math.max(0.04 + 0.10 * v, blob(u, v, 0.24, 0.64, 0.105, 1.0), blob(u, v, 0.45, 0.48, 0.085, 0.85),
+                     blob(u, v, 0.65, 0.66, 0.075, 0.70), blob(u, v, 0.82, 0.44, 0.060, 0.55));
+        field[y * W + x] = Math.min(Math.max(val, 0), 1);
+      }
+    }
+
+    const hr = new HdrHeadroom();           // auto-detects + polls; renderer subscribes
+    let sdr, hdr;
+    try {
+      sdr = await HC.HdrColormapRenderer.create(document.getElementById('cvSdr'), { hdr: false });
+      hdr = await HC.HdrColormapRenderer.create(document.getElementById('cvHdr'), { hdr: true, headroom: hr, device: sdr.device });
+    } catch (e) { statusEl.innerHTML = '<b style="color:#ff8a8a">WebGPU init failed:</b> ' + e.message; return; }
+    for (const r of [sdr, hdr]) { r.setImage(field, W, H); r.setRange(0, 1); }
+
+    const cmapSel = document.getElementById('cmap');
+    Object.keys(HC.COLORMAP_STOPS).forEach((n) => { const o = document.createElement('option'); o.value = n; o.textContent = n; if (n === 'viridis') o.selected = true; cmapSel.appendChild(o); });
+    const hdrToggle = document.getElementById('hdr');
+    const displayHdr = window.matchMedia && window.matchMedia('(dynamic-range: high)').matches;
+    hdrToggle.checked = !!displayHdr;
+    const hrEl = document.getElementById('hr');
+    const badge = (ok, t) => '<span class="badge ' + (ok ? 'ok' : 'no') + '">' + t + '</span>';
+
+    function refresh() {
+      const name = cmapSel.value;
+      hrEl.textContent = hr.hasReal
+        ? 'reported headroom: ' + hr.value.toFixed(3) + '×  (' + hr.source + ')'
+        : 'reported headroom: none — no source, using ' + hr.value.toFixed(1) + '× fallback';
+      const st = HC.hdrCmapStats(name, { auto: true, peakNits: hr.value * HC.HDR_SDR_WHITE_NITS });
+      statusEl.innerHTML = [
+        '<div><b>WebGPU:</b> ' + badge(true, 'rgba16float · display-p3 · toneMapping ' + (hdrToggle.checked ? "'extended'" : "'standard'")) + '</div>',
+        '<div style="margin-top:6px"><b>HDR headroom:</b> ' +
+          (hr.hasReal ? badge(true, 'live ' + hr.value.toFixed(2) + '× · polling 0.5s') : badge(false, 'no source → ' + hr.value.toFixed(1) + '× fallback')) +
+          ' &nbsp;<span style="color:#7a7a82"><code>' + (hr.source || 'screen.colorInfo / native bridge') + '</code></span></div>',
+        '<div style="margin-top:6px"><b>Lift:</b> optimal Jz ' + st.hdrJz.toFixed(3) +
+          ' (max-chroma for ' + hr.value.toFixed(2) + '×) · chroma scale ' + st.safeScale.toFixed(2) + '×' +
+          (st.safeScale >= 1.03 ? ' ' + badge(true, 'vivid ✓') : '') + ' · peak ≈ ' + Math.round(st.peakNits) + ' nits</div>',
+        '<div style="margin-top:6px;color:#7a7a82">The renderer drives the lifted colormap peak to the live headroom (no clip), ' +
+          're-adapting as you change brightness. HDR off → the unlifted SDR colormap. Run via scripts/hdr_harness.py for the real value.</div>',
+      ].join('');
+    }
+
+    cmapSel.addEventListener('change', () => { sdr.setColormap(cmapSel.value); hdr.setColormap(cmapSel.value); refresh(); });
+    hdrToggle.addEventListener('change', () => { hdr.setHdr(hdrToggle.checked); refresh(); });
+    window.addEventListener('resize', () => { sdr.requestRedraw(); hdr.requestRedraw(); });
+    hr.onChange(refresh);                    // headroom change → renderer auto-readapts; refresh the readout
+    sdr.setColormap('viridis'); hdr.setColormap('viridis');
+    refresh();
+  })();
+  </script>
+</body>
+</html>

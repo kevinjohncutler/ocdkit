@@ -1037,6 +1037,7 @@ async function init(){ try{
 
   // FRAME first: layout + labels the moment dims are known (no GPU needed).
   info = await infoP;
+  await refreshLayoutGeom();
   layout();
   console.log('FIRSTPAINT '+Math.round(performance.now()));
 
@@ -1098,6 +1099,19 @@ async function poll(){
   render();
   if(allReady){ if(!_paintedAll){ _paintedAll=true; warmPyramid(); } draw(); } else { setTimeout(poll, 100); }
 }
+// ── Figure GEOMETRY: single source of truth = the Python compute_layout served
+// at /layout?w= (mirrors this file's layout() math, parity-tested ≤1px). Fetched
+// into _G for the current container width; layout() consumes it and falls back to
+// its inline math only when the fetch is unavailable (older server / offline), so
+// the viewer can never go blank. [the inline fallback is slated for deletion once
+// real-browser validation confirms the served geometry across notebook/proxy.]
+let _G=null;
+async function refreshLayoutGeom(){
+  try{
+    const r = await fetch(VBASE+'layout/'+SID+'?w='+Math.round(window.innerWidth)+'&label_pos='+encodeURIComponent(LPOS));
+    _G = r.ok ? await r.json() : null;
+  }catch(e){ _G=null; }
+}
 function layout(){
   // ``exc*`` layers are AUXILIARY data for the RGB cell's live composite
   // (toggleable per-excitation), NOT their own cells — skip them in layout.
@@ -1138,36 +1152,34 @@ function layout(){
   // output-box width; (3) text scales WITH the figure (wider box → bigger text)
   // instead of shrinking when the panel is added (the OLD H-fit shrank k as
   // fullH0 grew, which is why the fonts got smaller once the spectra plot landed).
-  const Wref=1000, PAD=0.05, YAXW0=50, RM0=8, XLAB_H0=46, TOPAX0=22;
-  const k=W0/Wref;
-  // y-axis strip (YAXW0) reserved on the LEFT of the GRID too, so tiles + spectra
-  // plot share the SAME x-extent (aligned); RM0 right margin matches.
-  const padL0=hasAx?YAXW0:0, padR0=hasAx?RM0:0;
-  const contentW0=Math.max(20, Wref-padL0-padR0);
-  const cw0=contentW0/(cols+(cols+1)*PAD), gap0=PAD*cw0, totH0=rows*cw0+gap0*(rows+1);
-  // grid's visual TILE SPAN (first tile top → last tile bottom): the spectra plot
-  // box is made this tall so the panel HEIGHT matches the tile-grid height.
-  const gridSpanH0=rows*cw0+Math.max(0,rows-1)*gap0;
-  // Plot spans the TILE extent exactly (first tile's left → last tile's right),
-  // i.e. contentW minus the outer gap on each side — x-axis box lines up with tiles.
-  const TA=(hasAx&&!isXY)?AX.top_axis:null;     // ported readout top-axis layout (band-grouped); xy has none
-  // Grid→panel spacing adapts to what actually sits between them. The grid block
-  // already ends with its own bottom margin (gap0 below the last tile row), so:
-  //  - top-axis labels present (spectra): the strip's measured height (incl. its
-  //    equal bottom pad) is inserted, vgap0=0 (gap0 above + TA.gap below = equal);
-  //  - xy panel (NO labels above the box): nothing extra — the panel sits exactly
-  //    gap0 below the tiles, identical to the tile-to-tile spacing;
-  //  - legacy spectra without a ported strip: the old fallback (vgap + TOPAX0).
-  const vgap0=(TA||isXY)?0:Math.max(6,PAD*cw0), plotW0=Math.max(20, contentW0-2*gap0);
-  const plotH0=hasAx?gridSpanH0:0;                  // panel height = tile-grid height
-  const TOPAX_H0=(TA&&TA.top_axis_h!=null)?TA.top_axis_h:((hasAx&&!isXY)?TOPAX0:0);
-  const fullH0=hasAx?(totH0+vgap0+TOPAX_H0+plotH0+XLAB_H0):totH0;
-  const W=W0, xoff=0;                                // fill width exactly (no centering)
-  const padL=padL0*k, cw=cw0*k, gap=gap0*k, totH=totH0*k, vgap=vgap0*k, XLAB_H=XLAB_H0*k, TOPAX_H=TOPAX_H0*k;
-  const contentLeft=xoff+padL, contentW=contentW0*k;       // grid + plot share this x-extent
-  const topAxTop=hasAx?totH+vgap:0;                 // top of the readout top-axis strip
-  const panelTop=hasAx?totH+vgap+TOPAX_H:0, plotW=hasAx?plotW0*k:0;   // plot box top
-  const plotH=hasAx?plotH0*k:0, fullH=fullH0*k;
+  const TA=(hasAx&&!isXY)?AX.top_axis:null;     // readout top-axis layout (data, not geometry)
+  // GEOMETRY — prefer the server-computed layout (_G, Python compute_layout =
+  // single source of truth); fall back to the inline width-driven math otherwise.
+  let k, cw, gap, totH, vgap=0, XLAB_H=0, TOPAX_H, contentLeft, contentW, topAxTop, panelTop, plotW, plotH, fullH;
+  let SERVERCELLS=null;
+  if(_G && _G.cols===cols && _G.rows===rows && (!!_G.has_panel)===hasAx){
+    k=_G.k; cw=_G.cw; gap=_G.gap; totH=_G.canvas_h; TOPAX_H=_G.top_ax_h;
+    contentLeft=_G.content_left; contentW=_G.content_w; topAxTop=_G.top_ax_top;
+    panelTop=_G.panel_top; plotW=_G.panel_w; plotH=_G.panel_h; fullH=_G.full_h;
+    SERVERCELLS=_G.cells;
+  } else {
+    // FALLBACK: inline reference-width math (identical to compute_layout). The
+    // figure is designed at Wref and uniformly scaled by k=W0/Wref.
+    const Wref=1000, PAD=0.05, YAXW0=50, RM0=8, XLAB_H0=46, TOPAX0=22;
+    k=W0/Wref;
+    const padL0=hasAx?YAXW0:0, padR0=hasAx?RM0:0;
+    const contentW0=Math.max(20, Wref-padL0-padR0);
+    const cw0=contentW0/(cols+(cols+1)*PAD), gap0=PAD*cw0, totH0=rows*cw0+gap0*(rows+1);
+    const gridSpanH0=rows*cw0+Math.max(0,rows-1)*gap0;
+    const vgap0=(TA||isXY)?0:Math.max(6,PAD*cw0), plotW0=Math.max(20, contentW0-2*gap0);
+    const plotH0=hasAx?gridSpanH0:0;
+    const TOPAX_H0=(TA&&TA.top_axis_h!=null)?TA.top_axis_h:((hasAx&&!isXY)?TOPAX0:0);
+    const fullH0=hasAx?(totH0+vgap0+TOPAX_H0+plotH0+XLAB_H0):totH0;
+    cw=cw0*k; gap=gap0*k; totH=totH0*k; vgap=vgap0*k; XLAB_H=XLAB_H0*k; TOPAX_H=TOPAX_H0*k;
+    contentLeft=(hasAx?YAXW0:0)*k; contentW=contentW0*k;
+    topAxTop=hasAx?totH+vgap:0; panelTop=hasAx?totH+vgap+TOPAX_H:0; plotW=hasAx?plotW0*k:0;
+    plotH=hasAx?plotH0*k:0; fullH=fullH0*k;
+  }
   const fs=px=>Math.max(7, px*k);
   // Canvas spans the FULL container width (dpr maps cleanly); the grid sits in
   // [contentLeft, contentLeft+contentW].
@@ -1189,24 +1201,32 @@ function layout(){
   // tile-box / plot-box stroke (shared so the spectra box matches the tiles).
   const bw=Math.max(1, cw*0.012);
   // cell frames + labels (grid in the same x-extent as the plot)
-  placed.forEach(p=>{
-    const x=contentLeft+gap+p.col*(cw+gap), y=gap+p.r*(cw+gap);
-    const LP=_labelPos(x,y,cw,cw,LPOS,4*k);   // unified ocdkit-style title position
-    if(p.empty){
-      // ABSENT readout: translucent frame + faded label, no tile/data (the spot
-      // is shown at reduced opacity to indicate the data is missing).
-      ovl.appendChild(_svg('rect',{x:x+bw/2,y:y+bw/2,width:Math.max(0,cw-bw),
-        height:Math.max(0,cw-bw),fill:'none',stroke:'#888','stroke-width':bw,rx:RX,opacity:0.3}));
-      _txt(LP[0], LP[1], p.empty, {fill:'#fff','font-family':'system-ui,sans-serif',
-        'font-size':fs(12),opacity:0.3,'text-anchor':LP[2],'dominant-baseline':LP[3]==='hanging'?'hanging':'auto'});
+  // Unified cell list: server geometry (_G.cells, with label positions) when
+  // present, else the inline placed→rect math. Same drawing path for both.
+  const _cells = SERVERCELLS ? SERVERCELLS.map(c=>({
+      x:c.x, y:c.y, w:c.w, h:c.h, lx:c.label_x, ly:c.label_y,
+      anchor:c.anchor, baseline:c.baseline, label:c.label, empty:c.empty }))
+    : placed.map(p=>{
+      const x=contentLeft+gap+p.col*(cw+gap), y=gap+p.r*(cw+gap);
+      const LP=_labelPos(x,y,cw,cw,LPOS,4*k);   // unified ocdkit-style title position
+      return {x, y, w:cw, h:cw, lx:LP[0], ly:LP[1], anchor:LP[2], baseline:LP[3],
+              label:p.label, empty:p.empty}; });
+  _cells.forEach(c=>{
+    const bl=c.baseline==='hanging'?'hanging':'auto';
+    if(c.empty){
+      // ABSENT readout: translucent frame + faded label, no tile/data.
+      ovl.appendChild(_svg('rect',{x:c.x+bw/2,y:c.y+bw/2,width:Math.max(0,c.w-bw),
+        height:Math.max(0,c.h-bw),fill:'none',stroke:'#888','stroke-width':bw,rx:RX,opacity:0.3}));
+      _txt(c.lx, c.ly, c.empty, {fill:'#fff','font-family':'system-ui,sans-serif',
+        'font-size':fs(12),opacity:0.3,'text-anchor':c.anchor,'dominant-baseline':bl});
       return;
     }
-    cells.push({label:p.label,x,y,w:cw,h:cw});
-    ovl.appendChild(_svg('rect',{x:x+bw/2,y:y+bw/2,width:Math.max(0,cw-bw),
-      height:Math.max(0,cw-bw),fill:'none',stroke:'#888','stroke-width':bw,rx:RX}));
-    const _lt=_txt(LP[0], LP[1], p.label, {fill:'#fff','font-family':'system-ui,sans-serif',
-      'font-size':fs(12),'text-anchor':LP[2],'dominant-baseline':LP[3]==='hanging'?'hanging':'auto'});
-    if(p.label==='Masks'){   // clickable → toggle the ncolor pixel-segmentation underlay
+    cells.push({label:c.label,x:c.x,y:c.y,w:c.w,h:c.h});
+    ovl.appendChild(_svg('rect',{x:c.x+bw/2,y:c.y+bw/2,width:Math.max(0,c.w-bw),
+      height:Math.max(0,c.h-bw),fill:'none',stroke:'#888','stroke-width':bw,rx:RX}));
+    const _lt=_txt(c.lx, c.ly, c.label, {fill:'#fff','font-family':'system-ui,sans-serif',
+      'font-size':fs(12),'text-anchor':c.anchor,'dominant-baseline':bl});
+    if(c.label==='Masks'){   // clickable → toggle the ncolor pixel-segmentation underlay
       _lt.style.cursor='pointer'; _lt.style.pointerEvents='auto';
       _lt.addEventListener('click', toggleMasksNcolor);
     }
@@ -1313,11 +1333,18 @@ function layout(){
     const lx=Math.max(fs(11)*0.6, PX - 6*k - _tickW - 4*k - fs(11)*0.5), ly=panelTop+plotH/2;
     // y-axis label doubles as the NORMALIZATION toggle: click cycles
     // self-norm → global → bit-depth (swaps the density yLines + redraws).
-    const yl=_txt(lx, ly, _normLabel(), {fill:TXT,'font-family':FSF,'font-size':fs(11),
+    const yl=_txt(lx, ly, '', {fill:TXT,'font-family':FSF,'font-size':fs(11),
       'text-anchor':'middle','class':'ynorm'});
     yl.setAttribute('transform','rotate(-90 '+lx+' '+ly+')');
     yl.style.cursor='pointer'; yl.style.userSelect='none'; yl.style.pointerEvents='auto';  // #ovl is none
-    yl.addEventListener('click', cycleNorm);
+    // Two click zones: the underlined scope chip (tspan.ynorm-scope) toggles
+    // all⇄visible; clicking anywhere else on the title cycles the mode.
+    yl.addEventListener('click', function(e){
+      const tg=e.target;
+      if(tg && tg.getAttribute && tg.getAttribute('class')==='ynorm-scope') toggleScope();
+      else cycleMode();
+    });
+    _renderNormLabel();
     // ── reference spectra (TOGGLEABLE) + readout TOP-AXIS labels/ticks ──
     // Refs start HIDDEN; each readout's top-axis label (at its reference peak x)
     // toggles it on click (pinned), and hovering a cell in the density below
@@ -1370,7 +1397,7 @@ function layout(){
   } else { _specRect=null; }
   positionExcChips();
 }
-window.addEventListener('resize',()=>{dpr=window.devicePixelRatio||1; layout(); draw();});
+window.addEventListener('resize',()=>{dpr=window.devicePixelRatio||1; refreshLayoutGeom().then(()=>{layout(); draw();});});
 
 function vpFor(){                            // shared viewport rect in FOV-norm [0,1]
   const vw=Math.min(1, view.s), vh=Math.min(1, view.s);
@@ -1577,9 +1604,11 @@ function toggleAxisScale(ax){
   applyXYScatter();
   layout();           // rebuilds the axes overlay + re-renders the panel
 }
-// Spectra y-axis normalization toggle (clicking the y-label cycles it). All 3
-// variants (self/global/bitdepth) are shipped; swapping is a yLines swap + redraw.
-let _specMode='self', _specY=null;
+// Spectra y-axis normalization: a MODE (self/global/bit-depth) × a SCOPE
+// (all/visible channels). The y-axis label is two click zones — the title cycles
+// the mode, the underlined parenthetical chip toggles the scope (only present when
+// a channel is hidden). Swapping is a yLines swap + redraw.
+let _specMode='self', _specScope='all', _specY=null;
 // HDR/SDR display toggle (the HDR action button). SDR forces tile headroom→1 and
 // swaps the density to its non-lifted LUT. Both density LUTs shipped when hdr_cmap.
 let _sdrMode=false, _specLutHdr=null, _specLutSdr=null;
@@ -1588,11 +1617,44 @@ function _b64f32(s){ const bin=atob(s); const u=new Uint8Array(bin.length);
 let _measCtx=null;   // text width measurement (for dynamic y-axis-label spacing)
 function _measW(str, px){ if(!_measCtx) _measCtx=document.createElement('canvas').getContext('2d');
   _measCtx.font=px+'px system-ui,sans-serif'; return _measCtx.measureText(str).width; }
-function _normLabel(){ return 'Intensity ('+({self:'self-norm',global:'global',bitdepth:'bit-depth'}[_specMode]||_specMode)+')'; }
-function cycleNorm(){
-  const order=['self','global','bitdepth']; _specMode=order[(order.indexOf(_specMode)+1)%order.length];
-  if(_specY && _specY[_specMode] && _specCfg){ _specCfg.yLines=_specY[_specMode]; drawSpectra(); }
-  const yl=document.querySelector('text.ynorm'); if(yl) yl.textContent=_normLabel();
+const _MODE_NAME={self:'self-norm',global:'global',bitdepth:'bit-depth'};
+// data key for (mode,scope): bit-depth has no scope; 'vis' adds the '-vis' suffix
+// (the all-channel variant is the bare mode key). _hasScope = a visible variant
+// shipped for this mode (i.e. some channel is hidden — else scope is a no-op).
+function _normKey(){ return _specMode==='bitdepth' ? 'bitdepth'
+  : _specMode+(_specScope==='vis'?'-vis':''); }
+function _hasScope(m){ return !!(_specY && _specY[m+'-vis']); }
+// Render the y-label as two click zones (one <text>, tspans): the title (cycles
+// the mode) + an optional underlined scope chip (toggles all↔visible).
+function _renderNormLabel(){
+  const yl=document.querySelector('text.ynorm'); if(!yl) return;
+  while(yl.firstChild) yl.removeChild(yl.firstChild);
+  const NS='http://www.w3.org/2000/svg';
+  const t1=document.createElementNS(NS,'tspan');
+  t1.textContent='Intensity ('+(_MODE_NAME[_specMode]||_specMode);
+  yl.appendChild(t1);
+  if(_specMode!=='bitdepth' && _hasScope(_specMode)){
+    const sc=document.createElementNS(NS,'tspan');
+    sc.setAttribute('class','ynorm-scope');       // own click zone (cursor inherits pointer)
+    sc.textContent=', '+(_specScope==='vis'?'visible':'all');
+    yl.appendChild(sc);
+  }
+  const t2=document.createElementNS(NS,'tspan'); t2.textContent=')'; yl.appendChild(t2);
+}
+function _applyNorm(){
+  const key=_normKey();
+  if(_specY && _specY[key] && _specCfg){ _specCfg.yLines=_specY[key]; drawSpectra(); }
+  _renderNormLabel();
+}
+function cycleMode(){    // title click → next mode whose data shipped
+  const order=['self','global','bitdepth'].filter(m=>_specY && _specY[m]);
+  if(!order.length) return;
+  _specMode=order[(order.indexOf(_specMode)+1+order.length)%order.length];
+  if(!_hasScope(_specMode)) _specScope='all';   // mode w/o a visible variant → all
+  _applyNorm();
+}
+function toggleScope(){  // parenthetical click → all ⇄ visible
+  if(_hasScope(_specMode)){ _specScope=(_specScope==='vis'?'all':'vis'); _applyNorm(); }
 }
 // Reference-spectra toggle state (persists across layout rebuilds). A readout's
 // dashed ref shows if pinned (its top-axis label clicked) OR temp (a cell with
@@ -1621,9 +1683,12 @@ async function loadSpectra(){
   if(!PANEL){ console.warn('SpectraGL not injected'); return; }
   try{ _specCfg=PANEL.decodeAttrs(cv); }
   catch(e){ console.warn('spectra decode:', e); return; }
-  // 3 norm variants for the y-axis-label toggle; default the live view to self-norm.
-  _specY={}; ['self','global','bitdepth'].forEach(m=>{ const s=a['data-ylines-'+m];
+  // Norm variants for the y-axis toggle: 3 modes (self/global/bit-depth) +
+  // optional visible-scope variants (self-vis/global-vis, present only when a
+  // channel is hidden). Default the live view to self-norm, all-channels.
+  _specY={}; ['self','self-vis','global','global-vis','bitdepth'].forEach(m=>{ const s=a['data-ylines-'+m];
     if(s){ try{ _specY[m]=_b64f32(s); }catch(e){} } });
+  _specScope='all';
   if(_specY['self']){ _specMode='self'; _specCfg.yLines=_specY['self']; }
   else if(a['data-norm-mode'] && _specY[a['data-norm-mode']]){ _specMode=a['data-norm-mode']; }
   // HDR density: decodeAttrs only loads the uint8 SDR LUT; for HDR swap in the
@@ -1636,7 +1701,7 @@ async function loadSpectra(){
     catch(e){ console.warn('spectra HDR lut:', e); }
   }
   _specReady=true; console.log('SPECTRA loaded ('+(a['data-num-lines']||'?')+' lines'+(_specCfg.hdr?', HDR':'')+')');
-  const yl=document.querySelector('text.ynorm'); if(yl) yl.textContent=_normLabel();
+  _renderNormLabel();
   applySpecCmap(CMAP);   // start on the currently-selected cmap (follows the picker), then draw
 }
 function drawSpectra(){

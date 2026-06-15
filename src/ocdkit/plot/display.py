@@ -25,10 +25,27 @@ _IMAGE_GRID_PASSTHROUGH = frozenset({
 
 
 def _to_css_color(c):
-    """Accept matplotlib-style RGB tuple or CSS string; return CSS string."""
-    if isinstance(c, str):
+    """Accept matplotlib-style RGB tuple OR matplotlib short/named color
+    string OR a CSS string; return a real CSS color.
+
+    Strings that are also the ``fontcolor`` sentinels (``'auto'``,
+    ``'auto-cell'``, ``'auto-letter'``, ``'light'``, ``'dark'``,
+    ``'currentColor'``) pass through untouched so ``image_grid`` can
+    resolve them in its adaptive branch. Anything else gets normalised
+    via ``matplotlib.colors.to_hex`` — that handles ``'r'`` /
+    ``'tab:blue'`` / ``'C0'`` etc. as well as raw RGB(A) sequences.
+    """
+    sentinels = {
+        'auto', 'auto-cell', 'auto-letter',
+        'light', 'dark', 'currentColor',
+    }
+    if isinstance(c, str) and c in sentinels:
         return c
-    from matplotlib.colors import to_hex
+    from matplotlib.colors import to_hex, is_color_like
+    if isinstance(c, str) and not is_color_like(c):
+        # Not a matplotlib-recognised color; assume the caller meant a
+        # CSS literal (e.g. ``'lightseagreen'``, ``'#abc'``).
+        return c
     return to_hex(c)
 
 
@@ -221,12 +238,46 @@ def _imshow_svg(imgs, *, figsize, titles, title_size, textcolor,
     # (``target_w_px = figsize × dpi``), so 100 would render a single
     # ``figsize=2`` image at only ~200 px wide.  Floor at 300 so single-
     # image imshow matches the legacy matplotlib ``dpi=300`` appearance.
-    effective_dpi = max(float(dpi), 300.0)
+    requested_dpi = float(dpi)
+    effective_dpi = max(requested_dpi, 300.0)
+
+    # ``image_grid`` computes label font size as
+    # ``fontsize_uu = fontsize * effective_dpi/72 * vb_per_css``
+    # then the browser scales viewBox→CSS by ``svg_w_css/canvas_w_vb``,
+    # so the on-screen font px works out to roughly
+    # ``fontsize * effective_dpi² * figsize / (72 * target_tile_px)`` —
+    # quadratic in dpi. Floor-bumping the render dpi from 100 to 300 to
+    # get a sharper image therefore inflates the title 9× unless we
+    # compensate. Solve for the ``image_grid`` fontsize that produces
+    # the same on-screen pixel size as the matplotlib backend would at
+    # the user's ``dpi`` on a retina display: matplotlib inline at
+    # dpi=100 actually renders the PNG at 2× device resolution on
+    # retina (~22 CSS px for ``title_size=8``), which is the size
+    # imshow callers expect by default. The ``RETINA_SCALE`` factor
+    # below makes the SVG path match that visual size; drop it to 1.0
+    # for literal-PNG-pixel matching.
+    from . import _config as _plot_config
+    target_tile_px = int(_plot_config.target_tile_px)
+    # Per-panel figsize is what determines each cell's on-screen scale;
+    # total grid width cancels out with the n_panels factor in the cell
+    # layout, so font size stays consistent across panel counts.
+    figsize_per_panel = max(float(target_w) / max(n_panels, 1), 1e-6)
+    # Match the title's CSS-pixel size to ``title_size * effective_dpi /
+    # 72`` — i.e. the title scales WITH the SVG's panel width so its
+    # apparent size relative to the image stays constant regardless of
+    # the dpi floor bump. That matches what matplotlib inline produces
+    # on macOS retina: the PNG renders at 2× device res, panel renders
+    # at the requested dpi, total ~3× larger than the literal
+    # ``title_size × dpi / 72`` calc would suggest. Solving
+    # ``fontsize_svg * effective_dpi² * figsize_per_panel /
+    # (72 * target_tile_px) == title_size * effective_dpi / 72``:
+    fontsize_scale = target_tile_px / (effective_dpi * figsize_per_panel)
+    svg_fontsize = float(title_size) * fontsize_scale
 
     ig_kwargs = dict(
         ncol=n_panels,
         figsize=target_w,
-        fontsize=float(title_size),
+        fontsize=svg_fontsize,
         fontcolor=_to_css_color(textcolor),
         dpi=effective_dpi,
         # Single-image imshow: trigger the hi-res upgrade on load
@@ -251,7 +302,10 @@ def _imshow_svg(imgs, *, figsize, titles, title_size, textcolor,
         if k in kwargs:
             ig_kwargs[k] = kwargs.pop(k)
 
-    return _CenteredSvgFigure(image_grid(items, **ig_kwargs))
+    # ``SvgFigure`` now centres itself in its host container via the
+    # shell-level wrapper in ``interactive_shell`` — no extra wrapping
+    # needed here.
+    return image_grid(items, **ig_kwargs)
 
 
 def set_outline(ax, outline_color=None, outline_width=0):
@@ -283,7 +337,12 @@ def imshow(
     titles=None,
     title_size=8,
     spacing=0.05,
-    textcolor=(0.5, 0.5, 0.5),
+    # ``'auto'`` opts into ``image_grid``'s per-cell content-adaptive
+    # title colour: each panel's title gets a near-white or near-black
+    # fill chosen from the local image luminance, so titles stay readable
+    # over arbitrary content (SDR + HDR). Pass an explicit colour
+    # (string or RGB tuple) to pin a single shade across all panels.
+    textcolor='auto',
     dpi=100,
     text_scale=1,
     outline_color=None,
@@ -341,6 +400,17 @@ def imshow(
     Imports ``IPython.display.display`` lazily so the function is usable
     outside of Jupyter (in scripts) without forcing the dependency.
     """
+    # Symmetry with ``image_grid``'s ``fontcolor`` kwarg: accept
+    # ``fontcolor=`` as an alias for ``textcolor=`` so callers reaching
+    # for either name get the same result. Reject combining the two so
+    # we never silently pick one and discard the other.
+    if 'fontcolor' in kwargs:
+        if 'textcolor' in kwargs or textcolor != 'auto':
+            raise TypeError(
+                "imshow: pass either `textcolor=` or `fontcolor=`, not both."
+            )
+        textcolor = kwargs.pop('fontcolor')
+
     # SVG fast-path — only when the caller isn't compositing into an
     # existing matplotlib axis.  ``hold=True`` historically meant "give
     # me back the Figure"; preserve that by routing to mpl.
@@ -381,6 +451,13 @@ def imshow(
         return fig
 
     from IPython.display import display
+
+    # The ``'auto'`` sentinel only means anything for the SVG backend
+    # (per-cell luminance sampling). Matplotlib has no equivalent — map
+    # to the previous neutral-gray default so the legacy backend renders
+    # cleanly.
+    if textcolor == 'auto':
+        textcolor = (0.5, 0.5, 0.5)
 
     if isinstance(imgs, list):
         if titles is None:
@@ -468,7 +545,8 @@ def imshow(
 
 
 def outline_view(img, masks, *, boundaries=None, color=(1, 0, 0),
-                 mode="inner", connectivity=2, channel_axis=-1, **kwargs):
+                 mode="inner", connectivity=2, channel_axis=-1,
+                 layered=False, **kwargs):
     """Stamp label-mask boundaries as a flat color over an image.
 
     Channel handling is automatic:
@@ -498,6 +576,16 @@ def outline_view(img, masks, *, boundaries=None, color=(1, 0, 0),
         Forwarded to :func:`find_boundaries`.
     channel_axis : int
         Channel axis for multi-channel input. Default ``-1``.
+    layered : bool
+        When ``True``, return a layered-tile dict
+        ``{'base': <image>, 'overlay': <H,W,4 uint8 RGBA>}`` instead of a
+        single flat RGB array. :func:`image_grid` / :func:`imshow` render
+        the base on its own (HDR float → Ultra-HDR JPEG, uint8 → PNG) and
+        composite the lossless RGBA overlay — just the colored boundary
+        pixels, transparent elsewhere — on top. The outlines stay
+        bit-exact and crisp regardless of the base's lossy HDR
+        compression. The base keeps the input dtype: pass a float HDR
+        ``img`` (e.g. a max projection) to get a uhdr base.
     """
     from skimage.segmentation import find_boundaries
 
@@ -518,9 +606,6 @@ def outline_view(img, masks, *, boundaries=None, color=(1, 0, 0),
             im_first = img
         rgb = colorize(im_first, **split_kwargs([colorize], kwargs, strict=False))
 
-    if rgb.dtype != np.uint8:
-        rgb = (np.clip(normalize99(rgb), 0, 1) * 255).astype(np.uint8)
-
     color_arr = np.asarray(color, dtype=np.float64)
     if color_arr.max() <= 1:
         color_arr = color_arr * 255
@@ -528,7 +613,25 @@ def outline_view(img, masks, *, boundaries=None, color=(1, 0, 0),
 
     if boundaries is None:
         boundaries = find_boundaries(masks, mode=mode, connectivity=connectivity)
+    boundaries = np.asarray(boundaries, dtype=bool)
+
+    if layered:
+        # Base keeps the input's dynamic range so image_grid can encode a
+        # float HDR projection as uhdr; uint8 stays SDR (→ PNG). Float is
+        # normalized to [0, 1] for display but NOT quantized to uint8.
+        if np.issubdtype(rgb.dtype, np.floating):
+            base = np.clip(normalize99(rgb), 0, 1).astype(np.float32)
+        else:
+            base = rgb
+        h, w = boundaries.shape
+        overlay = np.zeros((h, w, 4), dtype=np.uint8)
+        overlay[boundaries, :3] = color_arr
+        overlay[boundaries, 3] = 255
+        return {'base': base, 'overlay': overlay}
+
+    if rgb.dtype != np.uint8:
+        rgb = (np.clip(normalize99(rgb), 0, 1) * 255).astype(np.uint8)
 
     out = rgb.copy()
-    out[np.asarray(boundaries, dtype=bool)] = color_arr
+    out[boundaries] = color_arr
     return out

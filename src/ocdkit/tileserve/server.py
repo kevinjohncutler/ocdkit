@@ -106,6 +106,22 @@ class TileSource:
         level = max(0, min(int(level), len(pyr) - 1))
         return pyr[level]
 
+    def pick_level(self, label: str, target_w: int, target_h: int) -> int:
+        """Index of the COARSEST pyramid level whose dims cover
+        ``(target_w, target_h)`` — the finest level if none does.
+
+        Levels are indexed coarse(0) → fine. A headless consumer rendering to a
+        fixed-size raster should render *down* from the coarsest covering tier
+        rather than grabbing the coarse default (level 0), which would be blocky,
+        or always the finest, which wastes work."""
+        dims = self.level_dims(label)              # [[h, w], ...] coarse → fine
+        li = self.n_level(label) - 1
+        for j, (lh, lw) in enumerate(dims):
+            if lw >= target_w and lh >= target_h:
+                li = j
+                break
+        return li
+
 
 # ───────────────────────────── registry ─────────────────────────────────
 
@@ -254,6 +270,21 @@ def make_app():
         }
         out.update(src.info_extra)
         return JSONResponse(out)
+
+    @app.get("/layout/{sid}")
+    async def layout(sid: str, w: float = 1000.0, label_pos: str = "top_middle"):
+        """Width-driven figure geometry (cell rects, panel box, canvas/full
+        height) for container width ``w`` — the single source of truth shared by
+        the browser viewer and the headless compositor (see :mod:`.layout`)."""
+        src = get_source(sid)
+        if src is None:
+            return JSONResponse({"error": "unknown source"}, status_code=404)
+        from .layout import compute_layout
+        ie = getattr(src, "info_extra", {}) or {}
+        panel_axes = ie.get("panel_axes") or ie.get("spectra_axes")
+        layers = {lbl: None for lbl in src.layers()}
+        return JSONResponse(compute_layout(src.grid, layers, panel_axes, w,
+                                           label_pos=label_pos))
 
     @app.get("/tile/{sid}/{label}/{level}")
     async def tile(sid: str, label: str, level: int, fmt: str = "raw", f32: int = 0,
@@ -416,9 +447,30 @@ def ensure_server() -> str:
         if _SERVER is not None:
             return _SERVER["url"]
         import os
+        import sys
         import time
         import socket
         import uvicorn
+
+        # The server runs in a daemon THREAD of this (usually a Jupyter kernel)
+        # process, so it shares the GIL with the main thread. At the default 5 ms
+        # GIL switch interval, a main thread busy in pure-Python starves the
+        # server thread for up to a full interval per hand-off → tile-fetch TTFB
+        # balloons ~20x (~0.6→13 ms), which is what makes an in-kernel grid's
+        # low→high-res upgrade feel laggy vs a remote-routed kernel (measured
+        # ~7-14x under a GIL-busy main thread). A shorter switch
+        # interval lets the server thread interleave promptly (0.5 ms → ~1.3 ms
+        # TTFB, 14x better). It is ~free in the common case: the server thread is
+        # BLOCKED on its socket when idle, so it isn't runnable and triggers no
+        # extra hand-offs; the small cost (~6% on a pure-Python loop) applies only
+        # during a concurrent compute+request burst — exactly when prompt serving
+        # matters. Tune/disable via OCDKIT_TILESERVE_SWITCHINTERVAL (0 = leave as-is).
+        try:
+            _swi = float(os.environ.get("OCDKIT_TILESERVE_SWITCHINTERVAL", "0.0005"))
+            if _swi > 0 and sys.getswitchinterval() > _swi:
+                sys.setswitchinterval(_swi)
+        except Exception:
+            pass
 
         # Bind host: 127.0.0.1 (default, local-only) or 0.0.0.0 to also accept
         # connections from OTHER machines — needed when the notebook is opened on a

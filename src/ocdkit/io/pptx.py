@@ -274,168 +274,9 @@ def _attach_svg_to_pptx(pptx_path, slide_idx_to_svg, *, rewrite_dims=True):
 
 
 # ─────────────────────── convert-to-shapes fidelity ──────────────────────────
-# PowerPoint's "Convert to Shapes" on an embedded SVG mis-handles text + scale in
-# three ways; these three post-passes make the converted shapes match the figure
-# exactly (all verified in real PowerPoint).  Apply AFTER _attach_svg_to_pptx.
-
-# bodyPr: zero insets (no down/right shift) + center the glyphs in the converted box
-# (anchor=ctr, anchorCtr=1; PowerPoint over-sizes the box and top-left-anchors text)
-# + wrap=none + noAutofit (don't autofit-scale).  Lives in the theme objectDefaults
-# spDef/txDef, which convert-to-shapes text boxes inherit.  CT_DefaultShapeDefinition
-# REQUIRES children spPr, bodyPr, lstStyle in that order or PowerPoint flags corrupt.
-_PPTX_BODYPR = ('<a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" '
-                'anchor="ctr" anchorCtr="1"><a:noAutofit/></a:bodyPr>')
-_PPTX_SPDEF = f'<a:spDef><a:spPr/>{_PPTX_BODYPR}<a:lstStyle/></a:spDef>'
-_PPTX_TXDEF = f'<a:txDef><a:spPr/>{_PPTX_BODYPR}<a:lstStyle/></a:txDef>'
-
-_PPTX_SCALE_ATTRS = ("x", "y", "width", "height", "cx", "cy", "r", "rx", "ry",
-                     "x1", "y1", "x2", "y2", "font-size", "stroke-width")
-_PPTX_NUMRE = _re.compile(r"-?\d*\.?\d+(?:[eE][-+]?\d+)?")
-
-
-def _pptx_scale_nums(val, sc):
-    return _PPTX_NUMRE.sub(lambda m: f"{float(m.group(0))*sc:.3f}", val)
-
-
-def _pptx_scale_transform(val, sc):
-    def _rot(m):
-        p = m.group(1).replace(",", " ").split()
-        if len(p) == 3:
-            return f"rotate({p[0]} {float(p[1])*sc:.3f} {float(p[2])*sc:.3f})"
-        return m.group(0)
-    val = _re.sub(r"rotate\(([^)]*)\)", _rot, val)
-    val = _re.sub(r"translate\(([^)]*)\)",
-                  lambda m: "translate(" + _pptx_scale_nums(m.group(1), sc) + ")", val)
-    return val
-
-
-def _bake_svg_96dpi(svg_bytes):
-    """Bake a uniform scale into an SVG's geometry NUMBERS (coords, font-size,
-    stroke-width, path/points — NOT colors/opacity/base64) so 1 viewBox unit = 1/96
-    inch.  Convert-to-shapes sizes fonts from the raw font-size at viewBox@96dpi and
-    IGNORES inch width/height AND ancestor transforms, so the scale must be in the
-    numbers.  Returns ``(new_bytes, aspect)`` (aspect = viewBox w/h, bake-invariant)."""
-    from lxml import etree
-    root = etree.fromstring(svg_bytes)
-    vb = (root.get("viewBox") or "").split()
-    m = _re.match(r"([\d.]+)in", root.get("width", ""))
-    if len(vb) != 4 or not m:
-        return svg_bytes, None
-    vbw, vbh = float(vb[2]), float(vb[3])
-    if vbw <= 0 or vbh <= 0:
-        return svg_bytes, None
-    sc = float(m.group(1)) * 96.0 / vbw
-    for el in root.iter():
-        if el is root:
-            continue
-        for a, v in list(el.attrib.items()):
-            ln = etree.QName(a).localname
-            try:
-                if ln in _PPTX_SCALE_ATTRS:
-                    el.set(a, f"{float(v)*sc:.3f}")
-                elif ln in ("points", "stroke-dasharray", "d"):
-                    el.set(a, _pptx_scale_nums(v, sc))
-                elif ln == "transform":
-                    el.set(a, _pptx_scale_transform(v, sc))
-            except (TypeError, ValueError):
-                pass
-    root.set("viewBox", f"0 0 {vbw*sc:.2f} {vbh*sc:.2f}")
-    root.set("width", f"{vbw*sc/96:.4f}in")
-    root.set("height", f"{vbh*sc/96:.4f}in")
-    return etree.tostring(root), vbw / vbh
-
-
-def _lock_aspect_in_slide(slide_bytes, svg_aspect, rels_bytes):
-    """Pin each SVG figure picture's box to ITS svg's true aspect (cy = cx/aspect) so
-    PowerPoint scales it uniformly on convert (no stretch) — the SvgFigure→PNG bridge
-    distorts the box aspect ~1%.  Resolves each pic's svgBlip embed→media via the slide
-    rels so multi-figure decks each use the right aspect.  Returns new slide bytes."""
-    from lxml import etree
-    NS = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
-          "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-          "asvg": "http://schemas.microsoft.com/office/drawing/2016/SVG/main"}
-    R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
-    rid_to_media = {}
-    if rels_bytes:
-        for rel in etree.fromstring(rels_bytes):
-            rid_to_media[rel.get("Id")] = (rel.get("Target") or "").split("/")[-1]
-    root = etree.fromstring(slide_bytes)
-    n = 0
-    for pic in root.xpath(".//p:pic", namespaces=NS):
-        blip = pic.xpath(".//asvg:svgBlip", namespaces=NS)
-        if not blip:
-            continue
-        asp = svg_aspect.get(rid_to_media.get(blip[0].get(R_EMBED)))
-        if not asp:
-            continue
-        ext = pic.xpath(".//a:xfrm/a:ext", namespaces=NS)
-        off = pic.xpath(".//a:xfrm/a:off", namespaces=NS)
-        if not ext:
-            continue
-        cx, cy = int(ext[0].get("cx")), int(ext[0].get("cy"))
-        ncy = round(cx / asp)
-        if abs(ncy - cy) > 1000:
-            ext[0].set("cy", str(ncy))
-            if off:
-                off[0].set("y", str(int(off[0].get("y")) + (cy - ncy) // 2))
-            n += 1
-    if n:
-        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
-    return slide_bytes
-
-
-def _zero_insets_in_theme(theme_str):
-    """Inject zero-inset/centered spDef+txDef into a theme's objectDefaults (so convert
-    text boxes inherit no margins).  Returns the (possibly unchanged) theme string."""
-    s = theme_str
-    if "<a:spDef" in s:
-        return s
-    if "<a:objectDefaults>" in s:
-        s = s.replace("<a:objectDefaults>", "<a:objectDefaults>" + _PPTX_SPDEF, 1)
-        s = s.replace("</a:objectDefaults>", _PPTX_TXDEF + "</a:objectDefaults>", 1)
-    elif "<a:objectDefaults/>" in s:
-        s = s.replace("<a:objectDefaults/>",
-                      "<a:objectDefaults>" + _PPTX_SPDEF + _PPTX_TXDEF + "</a:objectDefaults>", 1)
-    elif "</a:themeElements>" in s:
-        s = s.replace("</a:themeElements>",
-                      "</a:themeElements><a:objectDefaults>" + _PPTX_SPDEF + _PPTX_TXDEF
-                      + "</a:objectDefaults>", 1)
-    return s
-
-
-def _apply_convert_to_shapes_fixes(pptx_path):
-    """Make PowerPoint 'Convert to Shapes' faithful — correct font size (96dpi bake),
-    no figure distortion (aspect lock), no text shift (zero insets) — in ONE read/write
-    pass (a single os.replace; repeated rewrites of the same file are flaky on network
-    volumes).  Never raises: polish must not break the export."""
-    import os
-    import zipfile
-    pptx_path = str(pptx_path)
-    try:
-        with zipfile.ZipFile(pptx_path) as z:
-            names = z.namelist()
-            data = {n: z.read(n) for n in names}
-        svg_aspect = {}                                  # media basename -> aspect
-        for n in names:
-            if n.startswith("ppt/media/image") and n.endswith(".svg"):
-                data[n], asp = _bake_svg_96dpi(data[n])
-                if asp:
-                    svg_aspect[n.split("/")[-1]] = asp
-        if svg_aspect:
-            for n in names:
-                if n.startswith("ppt/slides/slide") and n.endswith(".xml"):
-                    rels = data.get(f"ppt/slides/_rels/{n.split('/')[-1]}.rels")
-                    data[n] = _lock_aspect_in_slide(data[n], svg_aspect, rels)
-        for n in names:
-            if n.startswith("ppt/theme/theme") and n.endswith(".xml"):
-                data[n] = _zero_insets_in_theme(data[n].decode("utf-8")).encode("utf-8")
-        tmp = pptx_path + ".tmp.fixes"
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zo:
-            for n in names:
-                zo.writestr(n, data[n])
-        os.replace(tmp, pptx_path)
-    except Exception as e:  # noqa: BLE001 — never let polish break the export
-        print(f"[pptx] convert-to-shapes fixes skipped: {type(e).__name__}: {e}")
+# NOTE: the PowerPoint "Convert to Shapes" SVG fidelity fixes moved to
+# ocdkit.io.figure.apply_convert_to_shapes_fixes (next to the svgBlip
+# embedding they correct); imported at the call site below.
 
 
 def _array_to_mpl_figure(arr, render_dpi):
@@ -1227,7 +1068,8 @@ def figs_to_deck_precise_combined(
         _attach_svg_to_pptx(out_path, slide_idx_to_svg)
         # Make PowerPoint "Convert to Shapes" faithful: correct text size (96dpi
         # bake), no figure distortion (aspect lock), no text shift (zero insets).
-        _apply_convert_to_shapes_fixes(out_path)
+        from .figure import apply_convert_to_shapes_fixes
+        apply_convert_to_shapes_fixes(out_path)
         if verbose:
             print(f"  attached native SVG to {len(slide_idx_to_svg)} slide(s)")
     if verbose:

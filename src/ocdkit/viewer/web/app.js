@@ -993,6 +993,8 @@ uniform float u_maskVisible;
 uniform float u_outlinesVisible;
 uniform float u_maskStyle;
 uniform float u_imageVisible;
+uniform float u_baseAlpha;   // 1 = opaque (default); 0 = transparent base so an
+                             // external image layer (HDR overlay) shows through.
 uniform float u_flowVisible;
 uniform float u_flowOpacity;
 uniform float u_distanceVisible;
@@ -1055,6 +1057,7 @@ void main() {
     baseColor = vec4(applyImageCmap(intensity), rawColor.a);
   }
   vec3 color = baseColor.rgb;
+  float outA = u_baseAlpha;     // coverage; 1 keeps the canvas opaque (unchanged)
   if (u_maskVisible > 0.5 && u_maskOpacity > 0.0) {
     vec2 packed = texture(u_maskSampler, v_texCoord).rg;
     float low = floor(packed.r * 255.0 + 0.5);
@@ -1074,24 +1077,28 @@ void main() {
       }
       vec3 maskColor = (u_usePalette > 0.5) ? paletteColor(label) : hashColor(label);
       color = mix(color, maskColor, alpha);
+      outA = alpha + outA * (1.0 - alpha);
     }
   }
   if (u_flowVisible > 0.5) {
     vec4 overlay = texture(u_flowSampler, v_texCoord);
     float overlayAlpha = clamp(u_flowOpacity, 0.0, 1.0) * overlay.a;
     color = mix(color, overlay.rgb, overlayAlpha);
+    outA = overlayAlpha + outA * (1.0 - overlayAlpha);
   }
   if (u_distanceVisible > 0.5) {
     vec4 overlay = texture(u_distanceSampler, v_texCoord);
     float overlayAlpha = clamp(u_distanceOpacity, 0.0, 1.0) * overlay.a;
     color = mix(color, overlay.rgb, overlayAlpha);
+    outA = overlayAlpha + outA * (1.0 - overlayAlpha);
   }
   if (u_pointsVisible > 0.5) {
     vec4 overlay = texture(u_pointsSampler, v_texCoord);
     float overlayAlpha = clamp(u_pointsOpacity, 0.0, 1.0) * overlay.a;
     color = mix(color, overlay.rgb, overlayAlpha);
+    outA = overlayAlpha + outA * (1.0 - overlayAlpha);
   }
-  outColor = vec4(color, 1.0);
+  outColor = vec4(color, outA);
 }
 `;
 
@@ -1222,6 +1229,7 @@ const texCoords = new Float32Array([
     maskOpacity: gl.getUniformLocation(program, 'u_maskOpacity'),
     maskVisible: gl.getUniformLocation(program, 'u_maskVisible'),
     imageVisible: gl.getUniformLocation(program, 'u_imageVisible'),
+    baseAlpha: gl.getUniformLocation(program, 'u_baseAlpha'),
     outlinesVisible: gl.getUniformLocation(program, 'u_outlinesVisible'),
     maskStyle: gl.getUniformLocation(program, 'u_maskStyle'),
     flowSampler: gl.getUniformLocation(program, 'u_flowSampler'),
@@ -1565,9 +1573,17 @@ function drawWebglFrame() {
   pipelineGl.bindVertexArray(vao);
   const matrix = computeWebglMatrix(matrixCache, canvas.width, canvas.height);
   pipelineGl.uniformMatrix3fv(uniforms.matrix, false, matrix);
+  // HDR image layer: when active, the WebGPU overlay paints the image (same
+  // image→clip matrix) and the WebGL image is suppressed so the overlay shows
+  // through; the WebGL canvas still draws labels/masks/overlays on top.
+  const hdrActive = !!(window.OcdHdr && OcdHdr.isActive());
+  if (hdrActive) OcdHdr.draw(matrix);
   pipelineGl.uniform1f(uniforms.maskOpacity, Math.max(0, Math.min(1, maskOpacity)));
   pipelineGl.uniform1f(uniforms.maskVisible, maskVisible ? 1 : 0);
-  pipelineGl.uniform1f(uniforms.imageVisible, imageVisible ? 1 : 0);
+  pipelineGl.uniform1f(uniforms.imageVisible, (imageVisible && !hdrActive) ? 1 : 0);
+  // Transparent base when the image layer paints the image, so the overlay (and
+  // labels/masks composite correctly) show through; opaque otherwise (unchanged).
+  pipelineGl.uniform1f(uniforms.baseAlpha, hdrActive ? 0 : 1);
   pipelineGl.uniform1f(uniforms.outlinesVisible, outlinesVisible ? 1 : 0);
   const maskStyleValue = maskDisplayMode === MASK_DISPLAY_MODES.SOLID
     ? 1
@@ -7323,6 +7339,9 @@ function syncGammaControls() {
 function setGamma(gamma, { emit = true } = {}) {
   currentGamma = clampGammaValue(gamma);
   syncGammaControls();
+  // The HDR layer applies gamma in its shader (it samples the raw image), so it
+  // needs the new value too — the native SDR path bakes gamma into the texture.
+  if (window.OcdHdr && OcdHdr.setGamma) OcdHdr.setGamma(currentGamma);
   if (emit) {
     applyImageAdjustments();
   } else {
@@ -7352,6 +7371,22 @@ function getLabelShuffleKey(label) {
 }
 function getImageCmapTypeValue() {
   return ViewerColormap.getImageCmapTypeValue(imageColormap);
+}
+// HDR image layer (window.OcdHdr, hdr_image_layer.js): feed the current colormap
+// and gate activation — a real colormap on an HDR-capable display with WebGPU.
+// When active, the WebGPU overlay paints the image (lifted to the live display
+// headroom) and the WebGL image is hidden in drawWebglFrame; labels/masks keep
+// drawing on the WebGL canvas above it.
+function syncHdrImageLayer() {
+  if (!window.OcdHdr) return;
+  OcdHdr.setColormap(imageColormap);
+  // Mirror the viewer's contrast window (windowLow/High 0..255) + gamma so the
+  // colormap layer matches the native rendering.
+  OcdHdr.setRange((windowLow || 0) / 255, (windowHigh == null ? 255 : windowHigh) / 255);
+  OcdHdr.setGamma(typeof currentGamma === 'number' ? currentGamma : 1.0);
+  // Active for any real colormap on ANY display: WebGPU backend → HDR, WebGL2 → SDR.
+  const realCmap = imageColormap !== 'gray' && imageColormap !== 'gray-clip';
+  OcdHdr.setActive(OcdHdr.supported() && realCmap);
 }
 function colormapHasOffset(cmapValue) {
   return ViewerColormap.colormapHasOffset(cmapValue);
@@ -9960,6 +9995,7 @@ function initialize() {
       initializeWebglPipelineResources(img);
     }
     originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
+    if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);  // HDR image layer
     windowLow = 0;
     windowHigh = 255;
     currentGamma = DEFAULT_GAMMA;
@@ -10692,6 +10728,7 @@ function updateImageCmapPanelUI() {
       if (toggle) toggle.removeAttribute('title');
     }
   }
+  if (window.OcdHdrUI) OcdHdrUI.refresh();   // HDR-skin the preview gradient when on
 }
 
 /**
@@ -10720,6 +10757,7 @@ function initImageCmapSelect() {
     imageColormap = imageCmapSelect.value || 'gray';
     imageCmapLutDirty = true;
     updateImageCmapTexture();
+    syncHdrImageLayer();   // HDR image layer: colormap + activation gate
     updateImageCmapPanelUI();
     draw();
     scheduleStateSave();

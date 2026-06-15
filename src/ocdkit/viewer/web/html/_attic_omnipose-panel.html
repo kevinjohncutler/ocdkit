@@ -1,0 +1,130 @@
+<!--
+  ATTIC: original omnipose-specific segmentation panel.
+
+  This block was previously hard-coded into sidebar.html. It has been replaced
+  by the dynamic plugin-panel system: each plugin declares its own widgets via
+  WidgetSpec, and js/plugin-panel.js renders them at runtime.
+
+  Kept here as a reference for porting omnipose into its own ocdkit plugin
+  (defined in the omnipose repo). When you re-implement this UI as plugin
+  WidgetSpecs:
+
+    * niter slider (-1..400, step 1, default -1=auto)            -> kind="slider"
+    * mask threshold slider (-5..5, step 0.1, default -2.0)      -> kind="slider"
+    * flow threshold slider (0..5, step 0.1, default 0.0)        -> kind="slider"
+    * segmentation mode tri-state (cluster|affinity|none)        -> kind="dropdown"
+    * affinity graph toggle                                       -> kind="toggle"
+    * points overlay / displacement / flow / distance toggles    -> kind="toggle"
+
+  The host's app.js still has the WebGL renderers and overlay handlers wired to
+  the IDs below — keep those IDs on the rendered widgets so the renderers stay
+  hooked up automatically (extras emitted from the plugin's run() drive what
+  actually shows on canvas).
+
+  Element IDs the host expects (from app.js):
+    segmentationModel (select), segmentationModelFile (file input),
+    niterSlider / niterInput,
+    maskThresholdSlider / maskThresholdInput,
+    flowThresholdSlider / flowThresholdInput,
+    segModeToggle (with .kernel-option[data-seg-mode="cluster|affinity|none"]),
+    affinityGraphToggle, flowOverlayToggle, distanceOverlayToggle,
+    pointsOverlayToggle, vectorOverlayToggle, vectorOverlayRow,
+    segmentButton, clearMasksButton, segmentStatus.
+-->
+
+<div class="panel-section" id="segmentationPanel">
+  <div class="control">
+    <div class="control-heading">Segmentation Model</div>
+    <div class="dropdown" data-dropdown-id="segmentationModel" data-loop="true" data-count-label="models" data-tooltip-disabled="true">
+      <select id="segmentationModel"></select>
+    </div>
+    <input type="file" id="segmentationModelFile" accept=".pth,.pt,.onnx,.ckpt" style="display:none" />
+  </div>
+  <div class="control-heading">Parameters</div>
+  <div class="control slider-inline">
+    <span class="control-heading control-heading--lower">niter</span>
+    <div class="slider-row">
+      <div class="slider" data-slider-id="niter" data-slider-type="single">
+        <input type="range" id="niterSlider" min="-1" max="400" step="1" value="-1" />
+      </div>
+      <div class="number-field" data-number-id="niterInput">
+        <input type="text" id="niterInput" min="-1" max="400" step="1" value="auto" />
+      </div>
+    </div>
+  </div>
+  <div class="control slider-inline">
+    <span class="control-heading control-heading--lower">mask</span>
+    <div class="slider-row">
+      <div class="slider" data-slider-id="maskThreshold" data-slider-type="single">
+        <input type="range" id="maskThresholdSlider" min="-5" max="5" step="0.1" value="-2" />
+      </div>
+      <div class="number-field" data-number-id="maskThresholdInput">
+        <input type="number" id="maskThresholdInput" min="-5" max="5" step="0.1" value="-2.0" />
+      </div>
+    </div>
+  </div>
+  <div class="control slider-inline">
+    <span class="control-heading control-heading--lower">flow</span>
+    <div class="slider-row">
+      <div class="slider" data-slider-id="flowThreshold" data-slider-type="single">
+        <input type="range" id="flowThresholdSlider" min="0" max="5" step="0.1" value="0" />
+      </div>
+      <div class="number-field" data-number-id="flowThresholdInput">
+        <input type="text" id="flowThresholdInput" min="0" max="5" step="0.1" value="0.0" />
+      </div>
+    </div>
+  </div>
+  <div class="control">
+    <div class="control-heading">Segmentation Mode</div>
+    <div id="segModeToggle" class="kernel-toggle segmented-toggle seg-mode-toggle" role="group" aria-label="Segmentation mode">
+      <button type="button" class="kernel-option" data-seg-mode="cluster" aria-label="DBSCAN cluster" title="DBSCAN clustering">
+        <span class="seg-mode-icon seg-mode-icon-dbscan" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="kernel-option" data-seg-mode="affinity" aria-label="Affinity segmentation" title="Affinity segmentation">
+        <span class="seg-mode-icon seg-mode-icon-affinity" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="kernel-option" data-seg-mode="none" aria-label="Neither" title="No clustering/affinity">
+        <span class="seg-mode-icon seg-mode-icon-cc" aria-hidden="true"></span>
+      </button>
+    </div>
+  </div>
+
+  <div class="control seg-action-row">
+    <button id="segmentButton" class="accent-button">Segment</button>
+    <button id="clearMasksButton" class="accent-button" title="Clear all masks (Cmd/Ctrl+X)">Clear</button>
+  </div>
+  <div id="segmentStatus" class="status"></div>
+  <div class="control">
+  </div>
+  <div class="control-heading">Mask Reconstruction</div>
+  <div class="control toggle-group">
+    <label class="toggle">
+      <input type="checkbox" id="affinityGraphToggle" />
+      <span class="toggle-switch"></span>
+      <span class="toggle-label">Affinity Graph</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="pointsOverlayToggle" disabled />
+      <span class="toggle-switch"></span>
+      <span class="toggle-label">Final Points</span>
+    </label>
+    <label class="toggle" id="vectorOverlayRow" title="overall pixel displacement">
+      <input type="checkbox" id="vectorOverlayToggle" disabled />
+      <span class="toggle-switch"></span>
+      <span class="toggle-label">Displacement</span>
+    </label>
+  </div>
+  <div class="control-heading">Network Predictions</div>
+  <div class="control toggle-group" id="overlayControls">
+    <label class="toggle">
+      <input type="checkbox" id="flowOverlayToggle" disabled />
+      <span class="toggle-switch"></span>
+      <span class="toggle-label">Flow</span>
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="distanceOverlayToggle" disabled />
+      <span class="toggle-switch"></span>
+      <span class="toggle-label">Distance</span>
+    </label>
+  </div>
+</div>

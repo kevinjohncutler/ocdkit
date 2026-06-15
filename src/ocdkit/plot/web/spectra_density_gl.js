@@ -7,7 +7,7 @@
  * Pipeline — ALL on the GPU in a single submit (no readback, no CPU colorize,
  * no mapAsync await → paints in the same frame):
  *   1. col + row compute passes rasterize the lines into an atomic count buffer
- *      using the exact the host V11 half-open dedup + perpendicular cross-product
+ *      using the exact V11 half-open dedup + perpendicular cross-product
  *      SDF + miter clip (lines.py RASTER_TEMPLATE) — each line deposits at most
  *      once per pixel, so vertices never produce "hotspots". (no-shared-mem,
  *      one thread per (line,major); full scan — the reach test skips far segs.)
@@ -57,6 +57,12 @@
       cellIds: cv.getAttribute('data-cellids')
         ? new Int32Array(b64bytes(cv.getAttribute('data-cellids')).buffer) : null,
       cellLabels: JSON.parse(cv.getAttribute('data-celllabels') || '[]'),
+      // AA mode (default 'solid'): RGB straight from the colormap LUT by density,
+      // alpha modulated by the AA coverage (line keeps its hue, edges feather).
+      // 'alpha' = lines.py parity (opaque band, floor-coloured halo); 'crisp' =
+      // opaque, extent≥0.5 threshold (round joins, no feather).
+      aa: cv.getAttribute('data-aa') || 'solid',
+      cpuColorize: cv.getAttribute('data-cpu-colorize') === '1',   // force CPU colorize (validation/debug)
     };
   }
 
@@ -78,6 +84,7 @@ struct U_ { width:u32, height:u32, num_lines:u32, num_points:u32,
 @group(0) @binding(2) var<storage, read> ys: array<f32>;
 @group(0) @binding(3) var<storage, read_write> density: array<atomic<u32>>;
 @group(0) @binding(4) var<storage, read> seg_valid: array<u32>;
+@group(0) @binding(5) var<storage, read_write> extent: array<atomic<u32>>;
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let MAJOR = ${MAJOR_DIM};
@@ -159,6 +166,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           }
         }
       }
+      // === EXTENT (AA edge, lines.py parity): max over segments of the
+      // anti-aliased coverage clamp(hw+0.5 - dist_to_segment). atomicMax (not
+      // add) → overlaps/joints take the max, never sum, so no hotspots. ===
+      {
+        let sec_theta = seg_len / max(abs(d_major), 0.01);
+        let ext_r = i32(ceil((half_width + 0.5) * sec_theta + 0.5));
+        let t_center = clamp((major_pos - maj1) / d_major, 0.0, 1.0);
+        let minor_center = min1 + t_center * d_minor;
+        for (var dmi = -ext_r; dmi <= ext_r; dmi++) {
+          let emi = i32(minor_center) + dmi;
+          if (emi < 0 || emi >= i32(MINOR_DIM)) { continue; }
+          let eminor_f = f32(emi) + 0.5;
+          let eax = major_pos - x1; let eay = eminor_f - y1;
+          let etp = clamp((eax * dx + eay * dy) / seg_len_sq, 0.0, 1.0);
+          let eqx = eax - etp * dx; let eqy = eay - etp * dy;
+          let edsq = eqx * eqx + eqy * eqy;
+          let r_out = half_width + 0.5; let r_in = max(half_width - 0.5, 0.0);
+          if (edsq < r_out * r_out) {                    // skip outside; skip sqrt for the cov=1 interior
+            var ext_cov = 1.0;
+            if (edsq > r_in * r_in) { ext_cov = clamp(r_out - sqrt(edsq), 0.0, 1.0); }
+            let ext_int = u32(ext_cov * scale);
+            if (ext_int > 0u) { atomicMax(&extent[u32(emi) * U.width + major_idx], ext_int); }
+          }
+        }
+      }
     }
   }
 }`;
@@ -217,6 +249,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         last_den_major = i32(floor(maj2));
       } else { last_den_major = -999; }
+      // === EXTENT (AA edge, lines.py parity) — see col pass. row: minor = x ===
+      {
+        let sec_theta = seg_len / max(abs(d_major), 0.01);
+        let ext_r = i32(ceil((half_width + 0.5) * sec_theta + 0.5));
+        let t_center = clamp((major_pos - maj1) / d_major, 0.0, 1.0);
+        let minor_center = min1 + t_center * d_minor;
+        for (var dmi = -ext_r; dmi <= ext_r; dmi++) {
+          let emi = i32(minor_center) + dmi;
+          if (emi < 0 || emi >= i32(MINOR_DIM)) { continue; }
+          let eminor_f = f32(emi) + 0.5;
+          let eax = eminor_f - x1; let eay = major_pos - y1;
+          let etp = clamp((eax * dx + eay * dy) / seg_len_sq, 0.0, 1.0);
+          let eqx = eax - etp * dx; let eqy = eay - etp * dy;
+          let edsq = eqx * eqx + eqy * eqy;
+          let r_out = half_width + 0.5; let r_in = max(half_width - 0.5, 0.0);
+          if (edsq < r_out * r_out) {                    // skip outside; skip sqrt for the cov=1 interior
+            var ext_cov = 1.0;
+            if (edsq > r_in * r_in) { ext_cov = clamp(r_out - sqrt(edsq), 0.0, 1.0); }
+            let ext_int = u32(ext_cov * scale);
+            if (ext_int > 0u) { atomicMax(&extent[major_idx * U.width + u32(emi)], ext_int); }
+          }
+        }
+      }
     }
   }
 }`;
@@ -248,8 +303,14 @@ fn main() {
   var total = 0u;
   for (var c = 1u; c <= P.num_lines; c++) { total += hist[c]; }
   let denom = f32(max(total, 1u));
-  var acc = 0u; cdf[0] = 0.0;
-  for (var c = 1u; c <= P.num_lines; c++) { acc += hist[c]; cdf[c] = f32(acc) / denom; }
+  var acc = 0u; var minC = 0u;
+  for (var c = 1u; c <= P.num_lines; c++) {
+    acc += hist[c]; cdf[c] = f32(acc) / denom;
+    if (minC == 0u && hist[c] > 0u) { minC = c; }
+  }
+  // cdf[0] repurposed as the eq-hist FLOOR (cdf at the minimum nonzero count), so
+  // the colorize rescales (cdf[c]-floor)/(1-floor) → min count maps to 0 (lines.py).
+  cdf[0] = select(0.0, cdf[minC], minC > 0u);
 }`;
 
   // colormap render pass → canvas: count → cdf[count] → LUT, alpha=count>0
@@ -273,6 +334,50 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   let eq = cdf[min(c, P.num_lines)];
   let li = u32(clamp(eq, 0.0, 1.0) * 255.0);
   return vec4<f32>(lut[li].rgb, 1.0);   // premultiplied (alpha = 1 → opaque)
+}`;
+
+  // GPU colorize (compute) — the CPU colorize() ported to WGSL. Reads density +
+  // extent + cdf (+ floor at cdf[0]) + LUT, writes packed RGBA8 to out_rgba so it
+  // reads back as a 4-byte ImageData buffer (no CPU per-pixel loop). mode: 0=alpha
+  // (lines.py), 1=solid, 2=crisp.
+  var COLORIZE_WGSL = `
+struct CP_ { width:u32, height:u32, num_lines:u32, scale:u32,
+             mode:u32, core_floor:f32, edge_floor:f32, _p:u32 }
+@group(0) @binding(0) var<uniform> CP: CP_;
+@group(0) @binding(1) var<storage, read> density: array<u32>;
+@group(0) @binding(2) var<storage, read> extent: array<u32>;
+@group(0) @binding(3) var<storage, read> cdf: array<f32>;
+@group(0) @binding(4) var<storage, read> lut: array<vec4<f32>>;
+@group(0) @binding(5) var<storage, read_write> out_rgba: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= CP.width * CP.height) { return; }
+  let d = density[i] / CP.scale;
+  let e0 = f32(extent[i]) / f32(CP.scale);
+  if (e0 <= 0.0 && d == 0u) { out_rgba[i] = 0u; return; }
+  // RGB = LUT[ vOf(max(d,1)) ]: eq-hist rescaled by the floor, lifted by core_floor.
+  let cdf_floor = cdf[0];
+  let raw = cdf[min(max(d, 1u), CP.num_lines)];
+  let e = (raw - cdf_floor) / max(1.0 - cdf_floor, 0.001);
+  var v = CP.core_floor + max(0.0, e) * (1.0 - CP.core_floor);
+  v = max(v, CP.edge_floor);
+  let li = min(255u, u32(clamp(v, 0.0, 1.0) * 255.0));
+  let col = lut[li];
+  var alpha = 0.0;
+  if (CP.mode == 1u) {                         // solid: alpha = AA coverage
+    alpha = min(1.0, e0);
+  } else if (CP.mode == 2u) {                  // crisp: opaque ≥0.5, else drop
+    if (d > 0u || e0 >= 0.5) { alpha = 1.0; } else { out_rgba[i] = 0u; return; }
+  } else {                                     // alpha (lines.py): opaque core, feather halo
+    let core = (d > 0u) || (e0 >= 0.75);
+    alpha = select(min(1.0, e0), 1.0, core);
+  }
+  let r8 = u32(round(clamp(col.r, 0.0, 1.0) * 255.0));
+  let g8 = u32(round(clamp(col.g, 0.0, 1.0) * 255.0));
+  let b8 = u32(round(clamp(col.b, 0.0, 1.0) * 255.0));
+  let a8 = u32(round(clamp(alpha * col.a, 0.0, 1.0) * 255.0));
+  out_rgba[i] = r8 | (g8 << 8u) | (b8 << 16u) | (a8 << 24u);   // little-endian → R,G,B,A bytes
 }`;
 
   var _gpu = null;
@@ -315,7 +420,13 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
       dispSmp = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
     } catch (e) { console.warn('SpectraGL HDR pipeline:', e && e.message || e); }
     _gpu = { device: device, fmt: fmt, dispPipe: dispPipe, dispSmp: dispSmp,
-             colPipe: comp(rasterWGSL(true)), rowPipe: comp(rasterWGSL(false)) };
+             colPipe: comp(rasterWGSL(true)), rowPipe: comp(rasterWGSL(false)),
+             // GPU colorize path: eq-hist + LUT on the GPU → RGBA buffer (no CPU
+             // per-pixel colorize, half the readback). Compiled lazily on first use.
+             histPipe: null, cdfPipe: null, czPipe: null };
+    try {
+      _gpu.histPipe = comp(HIST_WGSL); _gpu.cdfPipe = comp(CDF_WGSL); _gpu.czPipe = comp(COLORIZE_WGSL);
+    } catch (e) { console.warn('SpectraGL GPU-colorize pipelines:', e && e.message || e); }
     return _gpu;
   }
 
@@ -358,20 +469,63 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     return { xf: xf, yf: yf, sv: sv };
   }
 
-  // CPU eq-hist CDF + LUT colorize (exact; matches numpy _eq_hist + cmap; alpha=count>0)
-  function colorize(counts, n, lut) {
+  // CPU eq-hist CDF + LUT colorize with EXTENT anti-aliasing — parity with
+  // lines.py _colorize_density_extent. Color from the density count (eq-hist);
+  // a pixel is visible iff extent>0; core = count>0 || ext>=0.75 → opaque, count
+  // color; edge → core-floor color, alpha = the extent coverage (the AA feather
+  // that makes the line full instead of skinny). ``ext`` in [0,1] (extent/scale).
+  function colorize(counts, ext, n, lut, mode) {
+    mode = mode || 'alpha';
     var maxC = 0, nz = 0, i;
     for (i = 0; i < n; i++) { var c = counts[i]; if (c > 0) { nz++; if (c > maxC) maxC = c; } }
     var out = new Uint8ClampedArray(n * 4);
-    if (nz === 0) return out;
-    var nb = (maxC | 0) + 1, hist = new Float64Array(nb);
-    for (i = 0; i < n; i++) { var ci = counts[i] | 0; if (ci > 0) hist[ci]++; }
-    var acc = 0, cdf = new Float64Array(nb);
-    for (i = 1; i < nb; i++) { acc += hist[i]; cdf[i] = acc / nz; }
+    // core floor: lowest LUT index with luminance ≥ 0.2·max (DensityLineRenderer
+    // core_floor_lightness=0.2); edge floor: index 1. Keeps low/edge pixels visible.
+    var lumMax = 1e-6, L;
+    for (i = 0; i < 256; i++) { L = 0.299 * lut[i * 4] + 0.587 * lut[i * 4 + 1] + 0.114 * lut[i * 4 + 2]; if (L > lumMax) lumMax = L; }
+    var coreFloorIdx = 0;
+    for (i = 0; i < 256; i++) { L = 0.299 * lut[i * 4] + 0.587 * lut[i * 4 + 1] + 0.114 * lut[i * 4 + 2]; if (L >= 0.2 * lumMax) { coreFloorIdx = i; break; } }
+    var coreFloor = coreFloorIdx / 255, edgeFloor = 1 / 255, nb = 0, cdf = null, cdfFloor = 0;
+    if (nz > 0) {
+      nb = (maxC | 0) + 1; var hist = new Float64Array(nb);
+      for (i = 0; i < n; i++) { var ci = counts[i] | 0; if (ci > 0) hist[ci]++; }
+      var acc = 0; cdf = new Float64Array(nb);
+      for (i = 1; i < nb; i++) { acc += hist[i]; cdf[i] = acc / nz; }
+      var minC = 1; while (minC < nb && hist[minC] === 0) minC++;     // lowest nonzero count
+      cdfFloor = (minC < nb) ? cdf[minC] : 0;                          // lines.py: min count → 0 → floor
+    }
+    // density count → colour value in [0,1]: eq-hist CDF, rescaled so the minimum
+    // count maps to 0 (so the colormap spans the actual density range, like
+    // lines.py — a single line lands on the floor, a dense crossing on the top),
+    // then lifted by core_floor so low/single density stays visible.
+    function vOf(cc) {
+      if (!cdf) return coreFloor;
+      cc = Math.min(Math.max(cc, 1), nb - 1);
+      var e = (cdf[cc] - cdfFloor) / Math.max(1 - cdfFloor, 0.001);
+      e = coreFloor + Math.max(0, e) * (1 - coreFloor);
+      return Math.max(e, edgeFloor);
+    }
     for (i = 0; i < n; i++) {
-      var d = counts[i] | 0; if (d <= 0) continue;
-      var idx = Math.min(255, Math.max(0, (cdf[d] * 255.0) | 0)) * 4, o = i * 4;
-      out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2]; out[o + 3] = 255;
+      var e0 = ext ? ext[i] : (counts[i] > 0 ? 1 : 0);
+      if (e0 <= 0) continue;
+      var d = counts[i] | 0, v, alpha;
+      // RGB always = LUT[ vOf(density) ]; modes differ only in how alpha (the AA)
+      // is applied, never in hue/intensity.
+      if (mode === 'solid') {                 // alpha = AA coverage everywhere (smoothest)
+        v = vOf(Math.max(d, 1)); alpha = Math.min(1, e0);
+      } else if (mode === 'crisp') {          // opaque, distance-thresholded (no feather)
+        if (!(d > 0 || e0 >= 0.5)) continue;
+        v = vOf(Math.max(d, 1)); alpha = 1;
+      } else {                                // 'alpha' (lines.py): opaque core, feathered outer edge
+        var core = (d > 0) || (e0 >= 0.75);
+        v = vOf(Math.max(d, 1));
+        alpha = core ? 1 : Math.min(1, e0);
+      }
+      var li = Math.min(255, Math.max(0, (v * 255) | 0)), o = i * 4, idx = li * 4;
+      // AA *multiplies* the LUT's own alpha (don't override it) — so a colormap with
+      // its own alpha ramp is respected; for opaque LUTs this == the AA alpha.
+      out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2];
+      out[o + 3] = Math.round(alpha * lut[idx + 3]);
     }
     return out;
   }
@@ -398,6 +552,7 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     function sbuf(arr) { var b = device.createBuffer({ size: Math.max(4, arr.byteLength), usage: USG }); device.queue.writeBuffer(b, 0, arr); return b; }
     var xBuf = sbuf(d.xf), yBuf = sbuf(d.yf), svBuf = sbuf(d.sv);
     var densBuf = device.createBuffer({ size: W * H * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    var extBuf = device.createBuffer({ size: W * H * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
     var uA = new ArrayBuffer(32), uV = new DataView(uA);
     uV.setUint32(0, W, true); uV.setUint32(4, H, true);
     uV.setUint32(8, cfg.numLines, true); uV.setUint32(12, cfg.numPoints, true);
@@ -418,9 +573,10 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     function bg(pipe) { return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: uBuf } }, { binding: 1, resource: { buffer: xBuf } },
       { binding: 2, resource: { buffer: yBuf } }, { binding: 3, resource: { buffer: densBuf } },
-      { binding: 4, resource: { buffer: svBuf } }] }); }
+      { binding: 4, resource: { buffer: svBuf } }, { binding: 5, resource: { buffer: extBuf } }] }); }
     var enc = device.createCommandEncoder();
     enc.clearBuffer(densBuf, 0, W * H * 4);
+    enc.clearBuffer(extBuf, 0, W * H * 4);
     var WG = 64;
     var _disp = function (major) { var nwg = Math.ceil(cfg.numLines * major / WG);
       return [WGX, Math.max(1, Math.ceil(nwg / WGX))]; };
@@ -428,15 +584,70 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     var dC = _disp(W); p.setPipeline(g.colPipe); p.setBindGroup(0, bg(g.colPipe)); p.dispatchWorkgroups(dC[0], dC[1], 1);
     var dR = _disp(H); p.setPipeline(g.rowPipe); p.setBindGroup(0, bg(g.rowPipe)); p.dispatchWorkgroups(dR[0], dR[1], 1);
     p.end();
-    var readBuf = device.createBuffer({ size: W * H * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    enc.copyBufferToBuffer(densBuf, 0, readBuf, 0, W * H * 4);
+    var NPX = W * H;
+
+    // ── GPU colorize path (default): eq-hist (hist+cdf) + LUT + AA alpha all on the
+    //    GPU → packed RGBA buffer. No CPU per-pixel colorize, and the readback is
+    //    4 bytes/px (RGBA) instead of 8 (density+extent). Falls back to CPU below. ──
+    if (g.czPipe && g.histPipe && g.cdfPipe && cfg.lut && !cfg.hdr && !cfg.cpuColorize) {
+      var nbin = cfg.numLines + 1;
+      var histBuf = device.createBuffer({ size: nbin * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      var cdfBuf = device.createBuffer({ size: nbin * 4, usage: GPUBufferUsage.STORAGE });
+      var lutF = new Float32Array(1024); for (var lf = 0; lf < 1024; lf++) lutF[lf] = cfg.lut[lf] / 255;
+      var lutBuf = device.createBuffer({ size: 4096, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(lutBuf, 0, lutF);
+      var outBuf = device.createBuffer({ size: NPX * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      var pA = new ArrayBuffer(16), pV2 = new DataView(pA);
+      pV2.setUint32(0, W, true); pV2.setUint32(4, H, true); pV2.setUint32(8, cfg.numLines, true); pV2.setUint32(12, COVERAGE_SCALE, true);
+      var pBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(pBuf, 0, new Uint8Array(pA));
+      var lumMax = 1e-6, Lk;                                  // core_floor: LUT idx with luminance ≥ 0.2·max
+      for (var k = 0; k < 256; k++) { Lk = 0.299 * cfg.lut[k * 4] + 0.587 * cfg.lut[k * 4 + 1] + 0.114 * cfg.lut[k * 4 + 2]; if (Lk > lumMax) lumMax = Lk; }
+      var cfi = 0; for (var k2 = 0; k2 < 256; k2++) { Lk = 0.299 * cfg.lut[k2 * 4] + 0.587 * cfg.lut[k2 * 4 + 1] + 0.114 * cfg.lut[k2 * 4 + 2]; if (Lk >= 0.2 * lumMax) { cfi = k2; break; } }
+      var modeI = cfg.aa === 'solid' ? 1 : (cfg.aa === 'crisp' ? 2 : 0);
+      var cA = new ArrayBuffer(32), cV = new DataView(cA);
+      cV.setUint32(0, W, true); cV.setUint32(4, H, true); cV.setUint32(8, cfg.numLines, true); cV.setUint32(12, COVERAGE_SCALE, true);
+      cV.setUint32(16, modeI, true); cV.setFloat32(20, cfi / 255, true); cV.setFloat32(24, 1 / 255, true);
+      var cBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(cBuf, 0, new Uint8Array(cA));
+      var mkbg = function (pipe, ents) { return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: ents }); };
+      enc.clearBuffer(histBuf, 0, nbin * 4);
+      var hp = enc.beginComputePass();
+      hp.setPipeline(g.histPipe); hp.setBindGroup(0, mkbg(g.histPipe, [
+        { binding: 0, resource: { buffer: pBuf } }, { binding: 1, resource: { buffer: densBuf } }, { binding: 2, resource: { buffer: histBuf } }]));
+      hp.dispatchWorkgroups(Math.ceil(NPX / 64)); hp.end();
+      var cp2 = enc.beginComputePass();
+      cp2.setPipeline(g.cdfPipe); cp2.setBindGroup(0, mkbg(g.cdfPipe, [
+        { binding: 0, resource: { buffer: pBuf } }, { binding: 1, resource: { buffer: histBuf } }, { binding: 2, resource: { buffer: cdfBuf } }]));
+      cp2.dispatchWorkgroups(1); cp2.end();
+      var zp = enc.beginComputePass();
+      zp.setPipeline(g.czPipe); zp.setBindGroup(0, mkbg(g.czPipe, [
+        { binding: 0, resource: { buffer: cBuf } }, { binding: 1, resource: { buffer: densBuf } }, { binding: 2, resource: { buffer: extBuf } },
+        { binding: 3, resource: { buffer: cdfBuf } }, { binding: 4, resource: { buffer: lutBuf } }, { binding: 5, resource: { buffer: outBuf } }]));
+      zp.dispatchWorkgroups(Math.ceil(NPX / 64)); zp.end();
+      var readRgba = device.createBuffer({ size: NPX * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      enc.copyBufferToBuffer(outBuf, 0, readRgba, 0, NPX * 4);
+      device.queue.submit([enc.finish()]);
+      await readRgba.mapAsync(GPUMapMode.READ);
+      var rgbaOut = new Uint8ClampedArray(readRgba.getMappedRange().slice(0));
+      readRgba.unmap();
+      [xBuf, yBuf, svBuf, densBuf, extBuf, uBuf, histBuf, cdfBuf, lutBuf, outBuf, pBuf, cBuf, readRgba].forEach(function (b) { b.destroy(); });
+      cv.getContext('2d').putImageData(new ImageData(rgbaOut, W, H), 0, 0);
+      cv.__sgState = { cfg: cfg, W: W, H: H };
+      return true;
+    }
+
+    // ── CPU colorize / HDR fallback: read density+extent back, colorize on CPU ──
+    var readBoth = device.createBuffer({ size: NPX * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    enc.copyBufferToBuffer(densBuf, 0, readBoth, 0, NPX * 4);
+    enc.copyBufferToBuffer(extBuf, 0, readBoth, NPX * 4, NPX * 4);
     device.queue.submit([enc.finish()]);
-    await readBuf.mapAsync(GPUMapMode.READ);
-    var raw = new Uint32Array(readBuf.getMappedRange().slice(0));
-    readBuf.unmap();
-    [xBuf, yBuf, svBuf, densBuf, uBuf, readBuf].forEach(function (b) { b.destroy(); });
-    var counts = new Float32Array(W * H);
-    for (var i = 0; i < counts.length; i++) counts[i] = raw[i] / COVERAGE_SCALE;
+    await readBoth.mapAsync(GPUMapMode.READ);
+    var both = new Uint32Array(readBoth.getMappedRange().slice(0));
+    readBoth.unmap();
+    [xBuf, yBuf, svBuf, densBuf, extBuf, uBuf, readBoth].forEach(function (b) { b.destroy(); });
+    var counts = new Float32Array(NPX), ext = new Float32Array(NPX), invS = 1 / COVERAGE_SCALE;
+    for (var i = 0; i < NPX; i++) { counts[i] = both[i] * invS; ext[i] = both[NPX + i] * invS; }
     if (cfg.hdr) {
       // HDR: float-colorize through the lifted LUT (>1) → rgba16float texture →
       // OETF on an extended display-p3 canvas (the density glows). The whole
@@ -466,7 +677,7 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
         return true;
       } catch (e) { console.warn('SpectraGL HDR render:', e && e.message || e); return false; }
     }
-    var img = new ImageData(colorize(counts, W * H, cfg.lut), W, H);
+    var img = new ImageData(colorize(counts, ext, W * H, cfg.lut, cfg.aa), W, H);
     cv.getContext('2d').putImageData(img, 0, 0);
     cv.__sgState = { cfg: cfg, W: W, H: H };
     return true;

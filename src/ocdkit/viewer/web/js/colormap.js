@@ -351,6 +351,231 @@
     return data;
   }
 
+  // ── HDR-lifted image colormap LUT ──────────────────────────────────────────
+  //
+  // Port of ocdkit.plot.hdr_cmap.make_hdr_cmap_lut: lift any image colormap into
+  // HDR Display-P3 via a single uniform JzAzBz brightness (Jz) scale plus a
+  // single gamut-capped chroma (Cz) scale — one multiplier each, no per-hue
+  // distortion, so the colormap's perceptual shape is preserved.
+  //
+  // Output is gamma-encoded EXTENDED Display-P3 (the sRGB/P3 transfer function
+  // continued past 1.0) where 1.0 == SDR reference white and values >1.0 are
+  // HDR headroom — exactly what a float16 `drawingBufferColorSpace='display-p3'`
+  // canvas expects (mirrors io/figure.py's label popup). Feed the returned
+  // Float32Array straight into an RGBA16F LUT texture (FLOAT upload, LINEAR
+  // filter). Same reference levels as the Python module, so a viewer-rendered
+  // cmap matches a baked Ultra-HDR tile.
+  const HDR_SDR_WHITE_NITS = 203.0;       // ITU-R BT.2408 reference white
+  const HDR_PEAK_NITS_DEFAULT = 1600.0;   // Apple Pro Display XDR peak
+  const HDR_JZ_DEFAULT = 0.30;            // brightest stop ~600 nits; 0.40+ "wow"
+
+  // PQ (Safdar's modified m2), JzAzBz + color matrices — verbatim from hdr_cmap.
+  const _PQ_M1 = 0.1593017578125, _PQ_M2 = 134.034375;
+  const _PQ_C1 = 0.8359375, _PQ_C2 = 18.8515625, _PQ_C3 = 18.6875;
+  const _JZ_B = 1.15, _JZ_G = 0.66, _JZ_D = -0.56, _JZ_D0 = 1.6295499532821566e-11;
+  // row-major 3x3
+  const _XYZ_TO_LMS = [0.41478972, 0.579999, 0.0146480, -0.20151000, 1.120649, 0.0531008, -0.01660080, 0.264800, 0.6684799];
+  const _LMS_TO_XYZ = [1.9242264358, -1.0047923126, 0.0376514040, 0.3503167621, 0.7264811939, -0.0653844229, -0.0909828110, -0.3127282905, 1.5227665613];
+  const _LMS_TO_IAB = [0.5, 0.5, 0.0, 3.524000, -4.066708, 0.542708, 0.199076, 1.096799, -1.295875];
+  const _IAB_TO_LMS = [1.0, 0.1386050432715393, 0.05804731615611882, 1.0, -0.13860504327153927, -0.05804731615611891, 1.0, -0.09601924202631895, -0.811891896056039];
+  const _P3_FROM_XYZ = [2.4934969119, -0.9313836179, -0.4027107845, -0.8294889696, 1.7626640603, 0.0236246858, 0.0358458302, -0.0761723893, 0.9568845240];
+  const _XYZ_FROM_SRGB = [0.4123907993, 0.3575843394, 0.1804807884, 0.2126390059, 0.7151686788, 0.0721923154, 0.0193308187, 0.1191947798, 0.9505321522];
+
+  function _mv(M, v) {  // row-major mat3 · vec3
+    return [
+      M[0] * v[0] + M[1] * v[1] + M[2] * v[2],
+      M[3] * v[0] + M[4] * v[1] + M[5] * v[2],
+      M[6] * v[0] + M[7] * v[1] + M[8] * v[2],
+    ];
+  }
+  function _pqForward(x) {
+    x = Math.max(x, 0.0);
+    const xp = Math.pow(x / 10000.0, _PQ_M1);
+    return Math.pow((_PQ_C1 + _PQ_C2 * xp) / (1.0 + _PQ_C3 * xp), _PQ_M2);
+  }
+  function _pqInverse(x) {
+    x = Math.max(x, 0.0);
+    const xp = Math.pow(x, 1.0 / _PQ_M2);
+    const num = Math.max(xp - _PQ_C1, 0.0);
+    const den = _PQ_C2 - _PQ_C3 * xp;
+    if (den <= 0.0) return 0.0;             // above the PQ peak
+    return 10000.0 * Math.pow(num / den, 1.0 / _PQ_M1);
+  }
+  function _srgbToLinear(c) {
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+  // sRGB OETF, continued past 1.0 (extended encoding for HDR headroom).
+  function _srgbEncodeExt(c) {
+    c = Math.max(c, 0.0);
+    return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1.0 / 2.4) - 0.055;
+  }
+  function _xyzToJzazbz(XYZ) {
+    const X = XYZ[0], Y = XYZ[1], Z = XYZ[2];
+    const Xp = _JZ_B * X - (_JZ_B - 1) * Z;
+    const Yp = _JZ_G * Y - (_JZ_G - 1) * X;
+    const LMSp = _mv(_XYZ_TO_LMS, [Xp, Yp, Z]).map(_pqForward);
+    const IAB = _mv(_LMS_TO_IAB, LMSp);
+    const Iz = IAB[0];
+    const Jz = (1.0 + _JZ_D) * Iz / (1.0 + _JZ_D * Iz) - _JZ_D0;
+    return [Jz, IAB[1], IAB[2]];
+  }
+  function _jzazbzToXyz(Jab) {
+    const Jz = Jab[0];
+    const Iz = (Jz + _JZ_D0) / (1.0 + _JZ_D - _JZ_D * (Jz + _JZ_D0));
+    const LMS = _mv(_IAB_TO_LMS, [Iz, Jab[1], Jab[2]]).map(_pqInverse);
+    const XYZm = _mv(_LMS_TO_XYZ, LMS);
+    const Xp = XYZm[0], Yp = XYZm[1], Z = XYZm[2];
+    const X = (Xp + (_JZ_B - 1.0) * Z) / _JZ_B;
+    const Y = (Yp + (_JZ_G - 1.0) * X) / _JZ_G;
+    return [X, Y, Z];
+  }
+  // Largest Cz keeping (Jz, hue) inside Display-P3 at peakMult x SDR white.
+  function _maxChromaP3(Jz, hzRad, peakMult) {
+    const cosH = Math.cos(hzRad), sinH = Math.sin(hzRad);
+    let lo = 0.0, hi = 0.5;
+    const eps = 1e-4, maxVal = peakMult + eps;
+    for (let k = 0; k < 24; k += 1) {
+      const mid = 0.5 * (lo + hi);
+      const rgb = _mv(_P3_FROM_XYZ, _jzazbzToXyz([Jz, mid * cosH, mid * sinH]));
+      const inGamut = (rgb[0] >= -eps * HDR_SDR_WHITE_NITS) && (rgb[0] <= maxVal * HDR_SDR_WHITE_NITS)
+        && (rgb[1] >= -eps * HDR_SDR_WHITE_NITS) && (rgb[1] <= maxVal * HDR_SDR_WHITE_NITS)
+        && (rgb[2] >= -eps * HDR_SDR_WHITE_NITS) && (rgb[2] <= maxVal * HDR_SDR_WHITE_NITS);
+      if (inGamut) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
+  // Sample `cmapName` at IMAGE_CMAP_LUT_SIZE stops → per-stop JzAzBz (brightness
+  // Jz, chroma Cz, hue hz) + the SDR brightness peak. Cached per colormap since
+  // the auto-tuning search evaluates a lift many times.
+  const _stopsCache = {};
+  function _cmapStopsJab(cmapName) {
+    if (_stopsCache[cmapName]) return _stopsCache[cmapName];
+    const N = IMAGE_CMAP_LUT_SIZE;
+    const stops = COLORMAP_STOPS[cmapName];
+    const Jz = new Float64Array(N), Cz = new Float64Array(N), hz = new Float64Array(N);
+    for (let i = 0; i < N; i += 1) {
+      const t = i / (N - 1);
+      let rgb;
+      if (stops) {
+        rgb = interpolateStops(stops, t);
+      } else {
+        const v = Math.round(t * 255);
+        rgb = [v, v, v];                     // grayscale fallback
+      }
+      const lin = [_srgbToLinear(rgb[0] / 255), _srgbToLinear(rgb[1] / 255), _srgbToLinear(rgb[2] / 255)];
+      const XYZ = _mv(_XYZ_FROM_SRGB, lin).map(function (v) { return v * HDR_SDR_WHITE_NITS; });
+      const jab = _xyzToJzazbz(XYZ);
+      Jz[i] = jab[0];
+      Cz[i] = Math.hypot(jab[1], jab[2]);
+      hz[i] = Math.atan2(jab[2], jab[1]);
+    }
+    let sdrJzMax = 0.0;
+    for (let i = 0; i < N; i += 1) if (Jz[i] > sdrJzMax) sdrJzMax = Jz[i];
+    const out = { N, Jz, Cz, hz, sdrJzMax };
+    _stopsCache[cmapName] = out;
+    return out;
+  }
+
+  // Original `_liftToHdr` (colormaps/js/ui.js) — verbatim algorithm, also the one
+  // in ocdkit.plot.hdr_cmap.make_hdr_cmap_lut: a single uniform Jz scale (brings
+  // the brightest stop to `hdrJz`) plus a single uniform chroma scale = the
+  // largest that keeps EVERY stop inside P3 at `peakMult`× SDR white (min over
+  // stops of gamut-max·0.95 / Cz). One multiplier each → no per-hue distortion,
+  // the colormap's exact shape is preserved. The wash-out was never here — it was
+  // the WebGL2 hard-clip renderer; WebGPU extended tone-mapping fixes that.
+  function _liftToHdr(s, hdrJz, peakMult) {
+    const jzScale = (s.sdrJzMax > 1e-3) ? (hdrJz / s.sdrJzMax) : 1.0;
+    let safeScale = Infinity;
+    for (let i = 0; i < s.N; i += 1) {
+      if (s.Cz[i] < 1e-3) continue;
+      const maxCz = _maxChromaP3(s.Jz[i] * jzScale, s.hz[i], peakMult);
+      const sc = (maxCz * 0.95) / s.Cz[i];
+      if (sc < safeScale) safeScale = sc;
+    }
+    if (!isFinite(safeScale) || safeScale < 0.1) safeScale = 1.0;
+    return { jzScale, safeScale };
+  }
+
+  // Optimal HDR Jz (colormaps/js/ui.js `_setOptimalHdrJz`): the lightness at which
+  // the P3-at-headroom gamut admits the MOST chroma — the max inscribed Cz (over
+  // all hues) is largest — i.e. where colours can be most saturated. This is the
+  // key to "HDR without losing saturation": don't maximise brightness, sit at the
+  // vivid sweet spot. Depends only on the headroom (colormap-independent), cached.
+  const _optimalJzCache = {};
+  function computeOptimalHdrJz(opts) {
+    opts = opts || {};
+    const peakMult = (opts.peakNits || HDR_PEAK_NITS_DEFAULT) / HDR_SDR_WHITE_NITS;
+    const key = Math.round(peakMult * 1000);
+    if (_optimalJzCache[key] != null) return _optimalJzCache[key];
+    let bestJz = 0.155, bestCz = 0.0;
+    for (let jz = 0.05; jz < 0.55; jz += 0.005) {   // 0.55 ≈ 2000 nits — let big headroom keep climbing
+      let minCz = Infinity;                          // max inscribed chroma at this Jz
+      for (let hd = 0; hd < 360; hd += 15) {
+        const cz = _maxChromaP3(jz, hd * Math.PI / 180.0, peakMult);
+        if (cz < minCz) minCz = cz;
+      }
+      if (minCz > bestCz) { bestCz = minCz; bestJz = jz; }
+    }
+    _optimalJzCache[key] = bestJz;
+    return bestJz;
+  }
+
+  // Lift diagnostics for UI readouts. { hdrJz, safeScale (gamut chroma cap),
+  // headroom, peakNits (brightest stop luminance, cd/m²) }.
+  function hdrCmapStats(cmapName, opts) {
+    opts = opts || {};
+    const s = _cmapStopsJab(cmapName);
+    const peakMult = (opts.peakNits || HDR_PEAK_NITS_DEFAULT) / HDR_SDR_WHITE_NITS;
+    const hdrJz = opts.lift === false ? null
+      : (opts.auto ? computeOptimalHdrJz(opts) : (opts.hdrJz || HDR_JZ_DEFAULT));
+    const jzScale = (hdrJz == null) ? 1.0 : ((s.sdrJzMax > 1e-3) ? hdrJz / s.sdrJzMax : 1.0);
+    const safeScale = (hdrJz == null) ? 1.0 : _liftToHdr(s, hdrJz, peakMult).safeScale;
+    let peakY = 0.0;
+    for (let i = 0; i < s.N; i += 1) {
+      const cz = s.Cz[i] * safeScale;
+      const Y = _jzazbzToXyz([s.Jz[i] * jzScale, cz * Math.cos(s.hz[i]), cz * Math.sin(s.hz[i])])[1];
+      if (Y > peakY) peakY = Y;
+    }
+    return { hdrJz: hdrJz, safeScale: safeScale, headroom: peakMult, peakNits: peakY };
+  }
+
+  // Sample colormap `cmapName` and lift to LINEAR Display-P3 (1.0 == SDR white;
+  // values >1.0 are HDR — matches colormaps/js `_jzabToP3Display`). The WebGPU
+  // strip shader gamma-encodes; an rgba16float + display-p3 + extended-tone-
+  // mapping canvas then rolls values >1 gracefully into the display headroom (no
+  // per-channel hard clip → no wash-out).
+  // opts: { lift=true, auto=true, hdrJz, peakNits=1600 }.
+  //   auto=true (default when lifting) → optimal max-chroma Jz for the headroom.
+  //   lift=false → SDR baseline (no Jz/Cz scaling, all values <=1.0).
+  // Returns Float32Array(IMAGE_CMAP_LUT_SIZE * 4) of linear-light Display-P3.
+  function generateImageCmapLutHdr(cmapName, opts) {
+    opts = opts || {};
+    const N = IMAGE_CMAP_LUT_SIZE;
+    const s = _cmapStopsJab(cmapName);
+    const peakMult = (opts.peakNits || HDR_PEAK_NITS_DEFAULT) / HDR_SDR_WHITE_NITS;
+
+    let jzScale = 1.0, safeScale = 1.0;
+    if (opts.lift !== false) {
+      const hdrJz = (opts.auto === false && opts.hdrJz != null)
+        ? opts.hdrJz : computeOptimalHdrJz(opts);
+      const L = _liftToHdr(s, hdrJz, peakMult);
+      jzScale = L.jzScale; safeScale = L.safeScale;
+    }
+
+    const out = new Float32Array(N * 4);
+    for (let i = 0; i < N; i += 1) {
+      const cz = s.Cz[i] * safeScale;
+      const p3 = _mv(_P3_FROM_XYZ, _jzazbzToXyz([s.Jz[i] * jzScale, cz * Math.cos(s.hz[i]), cz * Math.sin(s.hz[i])]));
+      const o = i * 4;
+      out[o]     = Math.max(p3[0], 0.0) / HDR_SDR_WHITE_NITS;   // LINEAR P3, >1.0 = HDR
+      out[o + 1] = Math.max(p3[1], 0.0) / HDR_SDR_WHITE_NITS;
+      out[o + 2] = Math.max(p3[2], 0.0) / HDR_SDR_WHITE_NITS;
+      out[o + 3] = 1.0;
+    }
+    return out;
+  }
+
   /**
    * Build palette texture data. Pure version — accepts state as params.
    */
@@ -451,6 +676,12 @@
     buildShufflePermutation: buildShufflePermutation,
     // LUT & texture data
     generateImageCmapLut: generateImageCmapLut,
+    generateImageCmapLutHdr: generateImageCmapLutHdr,
+    computeOptimalHdrJz: computeOptimalHdrJz,
+    hdrCmapStats: hdrCmapStats,
+    HDR_SDR_WHITE_NITS: HDR_SDR_WHITE_NITS,
+    HDR_PEAK_NITS_DEFAULT: HDR_PEAK_NITS_DEFAULT,
+    HDR_JZ_DEFAULT: HDR_JZ_DEFAULT,
     buildPaletteTextureData: buildPaletteTextureData,
     // CSS
     generateColormapGradient: generateColormapGradient,
