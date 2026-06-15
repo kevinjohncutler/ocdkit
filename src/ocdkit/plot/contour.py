@@ -745,3 +745,59 @@ __all__ = [
     "CellMesh",
     "DEFAULT_SMOOTH_SIGMA",
 ]
+
+
+# Clip a CLOSED contour to an axis-aligned rect (Liang-Barsky), returning
+# OPEN inside polylines — sits next to cells_to_polygons; used by headless
+# outline rendering where <clipPath> can't be relied on (PPTX convert drops it).
+def _clip_contour_to_rect(pts, x0, y0, x1, y1):
+    """Clip a CLOSED contour to an axis-aligned rect, returning a list of OPEN
+    polylines (the inside portions). Unlike polygon clipping, boundary-following
+    segments are omitted, so strokes don't draw a line along the clip edges. The
+    clipped geometry is emitted WITHOUT a <clipPath> — PowerPoint convert-to-shapes
+    DROPS clip-path on paths, so a clipped outline would otherwise show its full
+    extent (poke past the tile frame) after convert. Liang-Barsky per segment."""
+    def clip_seg(a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        t0, t1 = 0.0, 1.0
+        for p, q in ((-dx, a[0] - x0), (dx, x1 - a[0]), (-dy, a[1] - y0), (dy, y1 - a[1])):
+            if p == 0.0:
+                if q < 0.0:
+                    return None
+            else:
+                r = q / p
+                if p < 0.0:
+                    if r > t1:
+                        return None
+                    if r > t0:
+                        t0 = r
+                else:
+                    if r < t0:
+                        return None
+                    if r < t1:
+                        t1 = r
+        return ((a[0] + t0 * dx, a[1] + t0 * dy), (a[0] + t1 * dx, a[1] + t1 * dy), t0, t1)
+
+    lines, cur = [], []
+    n = len(pts)
+    for i in range(n):
+        res = clip_seg(pts[i], pts[(i + 1) % n])
+        if res is None:                       # segment fully outside → break the run
+            if len(cur) >= 2:
+                lines.append(cur)
+            cur = []
+            continue
+        pa, pb, t0, t1 = res
+        if cur and t0 == 0.0:                 # continues from the previous segment
+            cur.append(pb)
+        else:                                 # entered the rect → start a new polyline
+            if len(cur) >= 2:
+                lines.append(cur)
+            cur = [pa, pb]
+        if t1 < 1.0:                          # segment exits the rect → end the run
+            if len(cur) >= 2:
+                lines.append(cur)
+            cur = []
+    if len(cur) >= 2:
+        lines.append(cur)
+    return lines

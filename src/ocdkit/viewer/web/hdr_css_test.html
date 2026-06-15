@@ -1,0 +1,16 @@
+<!DOCTYPE html><html><head><meta charset=utf-8><title>SVG HDR color() test</title>
+<style>body{margin:0;background:#0a0a0c;color:#c8c8cc;font:14px system-ui;padding:20px}
+h1{font-size:16px;color:#e8e8ec} p{color:#8a8a90;max-width:920px} code{color:#9ec7ff}</style></head>
+<body><h1>Declarative HDR on SVG vectors — <code>color(rec2100-*)</code> (with SDR fallback)</h1>
+<p>Each bar: <code>style="fill:#fff; fill:color(rec2100-pq …)"</code>. If the browser supports CSS Color HDR,
+the higher bars render brighter than SDR white (203); if not, they all stay plain white. No canvas, no JS.</p>
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="580" style="background:#0a0a0c">
+<defs><linearGradient id="vir" x1=0 x2=1><stop offset="0%" style="stop-color:rgb(68,1,84);stop-color:color(rec2100-linear 0.267 0.004 0.329)"/><stop offset="25%" style="stop-color:rgb(59,82,139);stop-color:color(rec2100-linear 0.521 0.724 1.226)"/><stop offset="50%" style="stop-color:rgb(33,145,140);stop-color:color(rec2100-linear 0.453 1.990 1.922)"/><stop offset="75%" style="stop-color:rgb(94,201,98);stop-color:color(rec2100-linear 1.751 3.744 1.825)"/><stop offset="100%" style="stop-color:rgb(253,231,37);stop-color:color(rec2100-linear 5.953 5.435 0.871)"/></linearGradient></defs>
+<rect x=20 y=20 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.5807 0.5807 0.5807)"/><text x=580 y=43 fill="#888" font-size=15 font-family="system-ui">203 (SDR / HDR reference white)</text><rect x=20 y=70 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.6526 0.6526 0.6526)"/><text x=580 y=93 fill="#888" font-size=15 font-family="system-ui">400 nits</text><rect x=20 y=120 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.713 0.713 0.713)"/><text x=580 y=143 fill="#888" font-size=15 font-family="system-ui">700 nits</text><rect x=20 y=170 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.7518 0.7518 0.7518)"/><text x=580 y=193 fill="#888" font-size=15 font-family="system-ui">1000 nits</text><rect x=20 y=220 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.8274 0.8274 0.8274)"/><text x=580 y=243 fill="#888" font-size=15 font-family="system-ui">2000 nits</text><rect x=20 y=270 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 0.9026 0.9026 0.9026)"/><text x=580 y=293 fill="#888" font-size=15 font-family="system-ui">4000 nits</text><rect x=20 y=320 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-pq 1.0 1.0 1.0)"/><text x=580 y=343 fill="#888" font-size=15 font-family="system-ui">10000 nits  ·  peak PQ(1,1,1)</text>
+<rect x=20 y=370 width=540 height=38 style="fill:#ffffff;fill:color(rec2100-hlg 1 1 1)"/>
+<text x=580 y=393 fill="#888" font-size=15 font-family="system-ui">HLG 1,1,1 — relative display peak (adaptive)</text>
+<text x=20 y=452 fill="#bbb" font-size=15 font-family="system-ui">HDR-lifted viridis as a vector gradient (top ≈6× SDR white):</text>
+<rect x=20 y=464 width=900 height=44 rx=6 fill="url(#vir)"/>
+<text x=20 y=548 fill="#666" font-size=13 font-family="system-ui">Unsupported → falls back to plain white / SDR viridis. If the high-nit &amp; HLG bars look</text>
+<text x=20 y=566 fill="#666" font-size=13 font-family="system-ui">BRIGHTER than the 203 bar, declarative HDR color() works in this browser.</text>
+</svg></body></html>

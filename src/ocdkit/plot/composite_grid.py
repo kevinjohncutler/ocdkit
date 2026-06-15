@@ -32,11 +32,21 @@ HTML/JS, raw PNG) can consume the same intermediate representation:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Sequence
 
 import matplotlib.pyplot as plt
 
 from .imports import *
+
+
+@lru_cache(maxsize=64)
+def _mpl_cmap(name):
+    """Cached ``cmap.Colormap(name).to_matplotlib()`` — the conversion parses
+    256 colors one-by-one (~16 ms); caching by name keeps repeated layout calls
+    cheap. Result is read-only, so a shared instance is safe."""
+    from cmap import Colormap
+    return Colormap(name).to_matplotlib()
 
 
 # Rec.601 luminance weights (same as ocdkit.plot.label.LUMA_WEIGHTS).
@@ -185,18 +195,25 @@ def build_grid_layout(
     light_label_color=(0.8, 0.8, 0.8),
     dark_label_color=(0.2, 0.2, 0.2),
     label_lpos: str = 'top_middle',
+    geometry_only: bool = False,
 ) -> GridLayout:
-    """Build the pure data layout (no matplotlib). See :func:`composite_image_grid`."""
+    """Build the pure data layout (no matplotlib). See :func:`composite_image_grid`.
+
+    ``geometry_only=True`` returns just the tile rectangles + composite *shape*
+    (as a zero-copy ``broadcast_to`` view) and skips ALL pixel work — the vmax
+    scan, the (H×W×4) composite allocation, the per-tile resize/colormap, the
+    outline paint, and the adaptive label-color sampling. For an async caller
+    that only needs the layout geometry (it streams real tile pixels later),
+    this turns a multi-hundred-ms call into ~1ms. ``tiles`` still carry exact
+    ``x0/y0/x1/y1``; pass tiles of the right *shape* (content is ignored)."""
     from matplotlib.colors import Colormap as MplColormap
 
     if isinstance(cmap, str):
-        from cmap import Colormap
-        cmap_obj = Colormap(cmap).to_matplotlib()
+        cmap_obj = _mpl_cmap(cmap)
     elif isinstance(cmap, MplColormap) or callable(cmap):
         cmap_obj = cmap
     else:
-        from cmap import Colormap
-        cmap_obj = Colormap(cmap).to_matplotlib()
+        cmap_obj = _mpl_cmap(cmap)
 
     sub_rows, sub_labels, sub_masks = [], [], []
     for r_idx, row in enumerate(tiles):
@@ -223,14 +240,55 @@ def build_grid_layout(
         target_tile_px = int(fs_w * dpi / (ncol * (1 + pad_frac)))
     if target_tile_px is None:
         scale = 1
+        th, tw = src_h, src_w
+    elif geometry_only:
+        # LAYOUT geometry only (no pixels baked — textures stream full-res
+        # separately), so size each tile to ``target_tile_px`` with a float
+        # scale that may DOWNSCALE. This keeps the composite dimensions — and
+        # everything derived from them downstream (``spectra_w`` → ``s`` =
+        # font/stroke scale, and the spectra-panel : grid height ratio) —
+        # canonical regardless of the source tile resolution. Without this,
+        # large source tiles (e.g. a 2000px FOV) skip downscaling (the static
+        # path clamps ``scale`` to an integer ≥ 1), so the composite balloons
+        # to full tile-res and the figure's proportions diverge from the
+        # standard ~``spectra_w``-wide SVG (thin spectra, oversized text).
+        gs = target_tile_px / max(src_h, src_w)
+        th, tw = max(1, round(src_h * gs)), max(1, round(src_w * gs))
     else:
+        # Static bake: integer UPSCALE of small tiles only; never downscale,
+        # so the baked composite keeps full source resolution.
         scale = max(1, int(round(target_tile_px / max(src_h, src_w))))
-    th, tw = src_h * scale, src_w * scale
+        th, tw = src_h * scale, src_w * scale
     pad = max(1, int(pad_frac * min(th, tw)))
 
     nrows, ncols = len(sub_rows), ncol
     H = nrows * th + (nrows - 1) * pad
     W = ncols * tw + (ncols - 1) * pad
+
+    if geometry_only:
+        # Positions only — no pixel work, no big allocation. ``composite`` is a
+        # zero-copy broadcast view so ``.shape`` is correct downstream.
+        tile_infos = []
+        for r in range(nrows):
+            y0 = r * (th + pad)
+            for c in range(ncols):
+                x0 = c * (tw + pad)
+                tile = sub_rows[r][c]
+                lab = sub_labels[r][c]
+                info = TileInfo(row=r, col=c, x0=x0, y0=y0, x1=x0 + tw, y1=y0 + th,
+                                label=lab, has_content=tile is not None,
+                                label_pos=_LABEL_POSITIONS.get(label_lpos,
+                                                               _LABEL_POSITIONS['top_middle']))
+                info.label_color = tuple(fontcolor)
+                tile_infos.append(info)
+        comp_view = np.broadcast_to(np.zeros((1, 1, 4), np.float32), (H, W, 4))
+        return GridLayout(
+            composite=comp_view, width_px=W, height_px=H, dpi=dpi,
+            fontsize=fontsize, figsize_inches=(W / dpi, H / dpi),
+            facecolor=tuple(facecolor), tiles=tile_infos,
+            outline=outline, outline_color=tuple(outline_color),
+            outline_width=outline_width)
+
     composite = np.zeros((H, W, 4), dtype=np.float32)
 
     if vmax is None:

@@ -1,6 +1,6 @@
 """Source resolution for SvgFigure / image_grid raster tiles.
 
-This module turns a heterogeneous grid item (a raw ndarray, a Scene-like
+This module turns a heterogeneous grid item (a raw ndarray, an RGB-bearing
 object carrying ``_rgb_linear_p3`` / ``.rgb``, an on-disk ``rgb_path``, a
 lazy slice source, …) into encoded image bytes — via :class:`Source`
 subclasses (:class:`ArraySource`, :class:`PathSource`, …) and the
@@ -481,7 +481,7 @@ class ArraySource(Source):
 # that hosts a Source's bytes as an ocdkit.tileserve ATTACHMENT instead, so the
 # URL rides the ocdkit-tiles Jupyter proxy (remote-safe). One reused tileserve
 # source backs all registrations (attachment per token), mirroring the old
-# single-server design. Callers (the host Scene repr; back-compat) are unchanged.
+# single-server design. Downstream callers (e.g. an HTML figure repr; back-compat) are unchanged.
 _COMPAT_SID = None
 
 
@@ -497,7 +497,17 @@ def register(source: "Source") -> str:
     if _COMPAT_SID is None or get_source(_COMPAT_SID) is None:
         _COMPAT_SID = register_pending(1, 1, ['_compat'])
     name = "h_" + secrets.token_urlsafe(8)
-    attach(_COMPAT_SID, name, source.get_bytes(), media=source.content_type)
+    # Make the hosted bytes browser-cacheable (overriding /attach's ``no-store``
+    # default). The token is freshly minted per register() call and the blob
+    # never changes under it, so the URL is a stable, content-immutable key —
+    # same reasoning as the /tile route. Without this, the SvgFigure inline
+    # auto-upgrade AND the click-to-zoom popup each re-stream the SAME full-res
+    # bytes (they use separate <img> elements; ``no-store`` defeats HTTP-cache
+    # reuse). ``immutable`` lets the second load hit cache; a re-register mints a
+    # new token, so stale bytes can never win.
+    attach(_COMPAT_SID, name, source.get_bytes(),
+           headers={"Cache-Control": "private, max-age=86400, immutable"},
+           media=source.content_type)
     return f"{base}/attach/{_COMPAT_SID}/{name}"
 
 

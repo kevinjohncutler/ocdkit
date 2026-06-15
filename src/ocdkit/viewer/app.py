@@ -188,6 +188,10 @@ def create_app() -> "Any":
     # Static files with long-lived cache (assets URLs are mtime-busted).
     if WEB_DIR.exists():
         app.mount("/static", _CachedStaticFiles(WEB_DIR), name="static")
+    # Shared HDR-colormap modules (canonical in plot/web).
+    from .assets import PLOT_WEB_DIR
+    if PLOT_WEB_DIR.exists():
+        app.mount("/hdr-static", _CachedStaticFiles(PLOT_WEB_DIR), name="hdr-static")
 
     # Routers — order matters only insofar as paths must be unique.
     app.include_router(index.router)
@@ -660,6 +664,15 @@ def run_desktop(
         hidden=automation_needed,
         background_color=bg,
     )
+
+    # Feed the live macOS EDR headroom into the page (window.__edrHeadroom) so
+    # HDR image colormaps adapt to the display. No-op off macOS / on an SDR
+    # display — see ocdkit.viewer.edr_bridge.
+    try:
+        from .edr_bridge import start_edr_pump
+        start_edr_pump(window)
+    except Exception:
+        pass
 
     def _automation_worker():
         if not loaded_event.wait(timeout=max(snapshot_timeout, 10.0)):

@@ -70,13 +70,14 @@ def _pq_uint16_to_p3_linear(rgb_pq_uint16: 'np.ndarray',
     nits (default 1600 = XDR HDR peak). Values >1 are HDR headroom up
     to ``10000 / sdr_white_nits``.
 
-    ``shadow_gamma`` reverses the luminance-only perceptual pre-shaping
-    applied by :func:`_p3_linear_to_pq_uint16` (default 1.5 matches the
-    encode default).  Hue and saturation are preserved by construction
-    — the inverse gain is computed from the encoded luminance
-    ``L' = max(R',G',B')`` as ``L'^(1/gamma - 1)``. Pass
-    ``shadow_gamma=1.0`` for raw inverse PQ on files that didn't have
-    shadow compression applied.
+    ``shadow_gamma`` (default ``1.0`` = raw inverse PQ) reverses the
+    luminance-only perceptual pre-shaping that
+    :func:`_p3_linear_to_pq_uint16` optionally applied.  Hue and
+    saturation are preserved by construction — the inverse gain is
+    computed from the encoded luminance ``L' = max(R',G',B')`` as
+    ``L'^(1/gamma - 1)``.  Match the value passed to the encoder; the
+    common non-default is ``1.5`` (anchored to the SDR 8-bit noise
+    floor) on files encoded with shadow compression.
     """
     if rgb_pq_uint16.dtype != np.uint16:
         raise TypeError(
@@ -112,12 +113,14 @@ def _p3_linear_to_pq_uint16(rgb_p3_linear: 'np.ndarray',
     Pro Display XDR HDR peak). Values >1 occupy the HDR headroom up
     to ``10000 / sdr_white_nits``.
 
-    Applies ``shadow_gamma`` as a hue/saturation-preserving perceptual
-    roll-off BEFORE the PQ OETF: ``L = max(R,G,B)`` is gamma-curved,
-    RGB is scaled by ``L^(gamma-1)``. The default 1.5 is anchored to
-    the SDR 8-bit noise floor (matches SDR brightness at v=1/256).
-    The matching inverse in :func:`_pq_uint16_to_p3_linear` recovers
-    the scene-linear values. Set ``shadow_gamma=1.0`` for raw PQ.
+    Default ``shadow_gamma=1.0`` is raw PQ — no pre-shaping.  Set to
+    ``1.5`` to apply a hue/saturation-preserving perceptual roll-off
+    BEFORE the PQ OETF: ``L = max(R,G,B)`` is gamma-curved, RGB is
+    scaled by ``L^(gamma-1)``.  ``1.5`` is anchored to the SDR 8-bit
+    noise floor (matches SDR brightness at v=1/256) and gives more bits
+    to shadow detail at the cost of highlight resolution.  Pass the
+    same value to :func:`_pq_uint16_to_p3_linear` on decode to recover
+    the scene-linear values.
 
     Stays in Display P3 throughout. Pair with
     ``opencodecs.ColorSpec(primaries=11, transfer=16)`` (Display P3
@@ -127,8 +130,8 @@ def _p3_linear_to_pq_uint16(rgb_p3_linear: 'np.ndarray',
         raise TypeError(
             "_p3_linear_to_pq_uint16 expects float input "
             "(linear-light P3 RGB); got dtype "
-            f"{rgb_p3_linear.dtype}. For SDR sRGB images, use the 'jxl' "
-            "or 'jxl-p3' formats instead."
+            f"{rgb_p3_linear.dtype}. For SDR sRGB images, use the 'png' "
+            "format instead."
         )
     arr = np.asarray(rgb_p3_linear)
     has_alpha = arr.shape[-1] == 4
@@ -489,7 +492,7 @@ def jxl_data_url(rgba_arr, effort: int = 1, lossless: bool = True,
 
 
 def uhdr_data_url(hdr_lin_p3, sdr_u8=None, *, sdr_white_nits: float = 1600.0,
-                   quality: int = 95) -> str:
+                   quality: int = 95, lossless: bool = False) -> str:
     """Encode an ``(H, W, 3)`` linear-light Display-P3 float HDR buffer as
     a base64 Ultra-HDR JPEG data URL (``data:image/jpeg;base64,...``).
 
@@ -507,6 +510,15 @@ def uhdr_data_url(hdr_lin_p3, sdr_u8=None, *, sdr_white_nits: float = 1600.0,
     desaturates / hue-shifts bright stops vs the original cmap. The
     upstream :func:`_linear_p3_to_uint8_srgb_peaknorm` produces an
     appropriate base for HDR-lifted cmaps and scene images alike.
+
+    ``lossless=True`` encodes the SDR base with libjpeg-turbo's lossless
+    mode (bit-exact base, ~3-5× larger). Use when the base carries
+    content that must survive byte-exact — e.g. a segmentation outline
+    baked into the tile: the lossless base keeps the outline crisp while
+    the gain map still rides it up to HDR brightness, so the outline is
+    both pixel-perfect AND bright over an HDR background. Renders HDR in
+    Chrome/Chromium (VS Code); the lossless-mode base is ``JCS_RGB`` so
+    Safari's CGImageSource may miss the gain map (see uhdr docs).
     """
     import opencodecs.uhdr as uhdr
     hdr = np.ascontiguousarray(np.asarray(hdr_lin_p3, dtype=np.float32))
@@ -558,6 +570,7 @@ def uhdr_data_url(hdr_lin_p3, sdr_u8=None, *, sdr_white_nits: float = 1600.0,
         # over-brightens on slight-headroom displays.
         min_content_boost=1.0,
         max_content_boost=max_boost,
+        lossless=bool(lossless),
     )
     b64 = base64.b64encode(data).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
@@ -664,12 +677,16 @@ class SVG:
 
     def text(self, x, y, content, *, fill='#888', size=10,
              anchor='start', baseline='alphabetic', weight='normal',
-             family=None, transform=None, class_=None):
+             family=None, transform=None, class_=None, extra=None):
         # XML attribute values must escape "<", "&", and " (the surrounding
         # attribute quote). html.escape with quote=True handles all three.
+        # ``extra`` is a {name: value} dict of arbitrary extra attributes
+        # (e.g. data-* / style) for interactivity hooks.
         attrs = []
         if class_:
             attrs.append(f'class="{escape(class_, quote=True)}"')
+        for _k, _v in (extra or {}).items():
+            attrs.append(f'{_k}="{escape(str(_v), quote=True)}"')
         if transform:
             attrs.append(f'transform="{escape(transform, quote=True)}"')
         f = rgba_to_css(fill) if not isinstance(fill, str) else fill
@@ -698,15 +715,18 @@ class SVG:
         )
 
     def path(self, d: str, *, stroke='#000', stroke_width=1, fill='none',
-             dasharray=None, linecap='round', linejoin='round', opacity=None):
+             dasharray=None, linecap='round', linejoin='round', opacity=None,
+             extra=None):
         s = rgba_to_css(stroke) if not isinstance(stroke, str) else stroke
         f = rgba_to_css(fill) if not isinstance(fill, str) else fill
         da = f' stroke-dasharray="{dasharray}"' if dasharray else ''
         op = '' if opacity is None else f' opacity="{opacity}"'
+        ex = ''.join(f' {_k}="{escape(str(_v), quote=True)}"'
+                     for _k, _v in (extra or {}).items())
         self.parts.append(
             f'<path d="{d}" stroke="{s}" stroke-width="{stroke_width}" '
             f'fill="{f}" stroke-linecap="{linecap}" '
-            f'stroke-linejoin="{linejoin}"{da}{op}/>'
+            f'stroke-linejoin="{linejoin}"{da}{op}{ex}/>'
         )
 
     def hatch_pattern(self, pattern: str, *, stroke='white',
@@ -799,11 +819,6 @@ class SVG:
           (treated as sRGB by the browser). ~5× faster to encode and
           ~3× smaller payload than PNG; renders in Safari 16.4+ and
           Chromium with the JXL decoder re-enabled. **Not Firefox stable.**
-        * ``'jxl-p3'`` — JXL with the input converted **sRGB → Display
-          P3** (linear-light matrix) and tagged as ``display-p3``.
-          Preserves perceptual colour identity vs sRGB on sRGB-only
-          displays while expanding into P3's wider gamut on capable
-          displays (any recent Apple device). Same JXL browser caveats.
         * ``'jxl-hdr-pq'`` — for linear-light Display-P3 float input
           (e.g. the output of an upstream linear-P3 compositor).
           Uses the **absolute SDR-white reference**: linear ``1.0`` →
@@ -815,7 +830,7 @@ class SVG:
           **Display P3 + PQ** (not Rec.2020). Apple displays target P3;
           tagging Rec.2020 would claim wider gamut than either source
           or display can render. **Rejects uint8 input** — for SDR
-          content use ``'jxl'`` / ``'jxl-p3'`` instead.
+          content use ``'png'`` instead.
         * ``'uhdr'`` — Ultra-HDR JPEG (ISO 21496-1). For float linear-
           P3 input: same scene-linear absolute-SDR-reference convention
           as ``'jxl-hdr-pq'``, but encoded as a JPEG with an embedded
@@ -825,18 +840,10 @@ class SVG:
 
         Examples::
 
-            svg.image(0, 0, W, H, arr,           format='jxl-p3')     # sRGB → P3 JXL
             svg.image(0, 0, W, H, rgb_p3_linear, format='jxl-hdr-pq') # PQ-HDR JXL
             svg.image(0, 0, W, H, arr,           format='png', compress_level=1)
         """
-        if format == 'jxl-p3':
-            arr_u8 = np.asarray(rgba_arr)
-            if arr_u8.dtype != np.uint8:
-                arr_u8 = (np.clip(arr_u8, 0.0, 1.0) * 255).astype(np.uint8)
-            arr_p3 = _srgb_to_display_p3_uint8(arr_u8)
-            url = jxl_data_url(arr_p3, color='display-p3',
-                               **encoder_kwargs)
-        elif format == 'jxl-hdr-pq':
+        if format == 'jxl-hdr-pq':
             import opencodecs
             arr = np.asarray(rgba_arr)
             sdr_white_nits = float(encoder_kwargs.pop('sdr_white_nits', 1600.0))

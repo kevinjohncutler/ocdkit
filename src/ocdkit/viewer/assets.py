@@ -32,6 +32,14 @@ STATE_PERSISTENCE_JS = WEB_DIR / "js" / "state-persistence.js"
 FILE_NAVIGATION_JS = WEB_DIR / "js" / "file-navigation.js"
 PLUGIN_PANEL_JS = WEB_DIR / "js" / "plugin-panel.js"
 TOOLTIP_EDITOR_JS = WEB_DIR / "js" / "tooltip-editor.js"
+HDR_IMAGE_LAYER_JS = WEB_DIR / "js" / "hdr_image_layer.js"
+HDR_UI_JS = WEB_DIR / "js" / "hdr_ui.js"
+# Shared HDR-colormap modules — canonical in plot/web (also used by the figure
+# pipeline); served at /hdr-static (see app.py mount).
+PLOT_WEB_DIR = (VIEWER_DIR.parent / "plot" / "web").resolve()
+HDR_HEADROOM_JS = PLOT_WEB_DIR / "hdr_headroom.js"
+HDR_COLORMAP_JS = PLOT_WEB_DIR / "hdr_colormap.js"
+COLORMAP_IMAGE_JS = PLOT_WEB_DIR / "colormap_image.js"
 
 HTML_FRAGMENTS = [
     HTML_DIR / "left-panel.html",
@@ -66,6 +74,11 @@ JS_FILES = [
     BRUSH_JS,
     PAINTING_JS,
     INTERACTIONS_JS,
+    HDR_HEADROOM_JS,
+    HDR_COLORMAP_JS,
+    COLORMAP_IMAGE_JS,
+    HDR_IMAGE_LAYER_JS,
+    HDR_UI_JS,
     APP_JS,
 ]
 
@@ -82,6 +95,11 @@ JS_STATIC_PATHS = (
     "/static/js/brush.js",
     "/static/js/painting.js",
     "/static/js/interactions.js",
+    "/hdr-static/hdr_headroom.js",
+    "/hdr-static/hdr_colormap.js",
+    "/hdr-static/colormap_image.js",
+    "/static/js/hdr_image_layer.js",
+    "/static/js/hdr_ui.js",
     "/static/app.js",
 )
 

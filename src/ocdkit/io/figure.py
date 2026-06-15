@@ -1785,12 +1785,14 @@ void main() {
       // + outlines + HDR boundary AND live hover-highlight. No <image>
       // snapshot, no <foreignObject> re-raster.
       let labelCv = tile.querySelector('canvas[data-label-tile]');
-      if (!labelCv) {
+      let cmapCv = tile.querySelector('canvas[data-colormap-tile]');
+      if (!labelCv || !cmapCv) {
         // Fallback: querySelector type-selectors for HTML elements inside
         // an SVG <foreignObject> are finicky in some engines.
         const cs = tile.getElementsByTagName('canvas');
         for (let i = 0; i < cs.length; i++) {
-          if (cs[i].hasAttribute('data-label-tile')) { labelCv = cs[i]; break; }
+          if (!labelCv && cs[i].hasAttribute('data-label-tile')) labelCv = cs[i];
+          if (!cmapCv && cs[i].hasAttribute('data-colormap-tile')) cmapCv = cs[i];
         }
       }
       // Extract label (if any) for the floating title above the plot.
@@ -1812,7 +1814,8 @@ void main() {
       // Label tiles and the legacy SVG viewer are per-tile (bound to a
       // specific source) and can't be recycled — rebuild on every open.
       const needLegacyRebuild = webglViewer && webglViewer.isLegacy;
-      const needLabelRebuild = !!labelCv || (webglViewer && webglViewer.isLabel);
+      const needLabelRebuild = !!labelCv || !!cmapCv
+        || (webglViewer && (webglViewer.isLabel || webglViewer.isColormap));
       const firstBuild = (!webglViewer || needLegacyRebuild || needLabelRebuild);
       if (firstBuild) {
         if ((needLegacyRebuild || needLabelRebuild) && webglViewer) {
@@ -1828,6 +1831,13 @@ void main() {
         if (labelCv) {
           webglViewer = createLabelViewer(canvasEl, labelCv);
           if (webglViewer) webglViewer.isLabel = true;
+        }
+        // Live colormap tile (e.g. the segmentation group-fraction): render via
+        // the shared ColormapImage backend with pan/zoom — same engine as the
+        // inline tile, so the zoom re-renders crisp with no baked raster.
+        else if (cmapCv) {
+          webglViewer = createColormapViewer(canvasEl, cmapCv);
+          if (webglViewer) webglViewer.isColormap = true;
         }
         // Default viewer is the CSS-img path: plain <img> + CSS
         // matrix3d transform on its own compositor layer. Routes the
@@ -1925,8 +1935,8 @@ void main() {
           });
         }
       };
-      if (viewerAtOpen && viewerAtOpen.isLabel) {
-        // Live label viewer: nothing to fetch — its data is already in
+      if (viewerAtOpen && (viewerAtOpen.isLabel || viewerAtOpen.isColormap)) {
+        // Live label/colormap viewer: nothing to fetch — its data is already in
         // the renderer. Just show the popup and fit.
         showPopup();
         if (webglViewer === viewerAtOpen) applyTransform();
@@ -2345,6 +2355,99 @@ void main() {
       return { canvas, redraw, loadImage, isPointInImage, dispose, clearActive,
                hideHover, setSdr,
                get textureLoaded() { return true; },
+               get imgW() { return imgW; }, get imgH() { return imgH; } };
+    }
+
+    // Live colormap-tile popup viewer: renders the segmentation (or any scalar)
+    // through the SAME ColormapImage backend as the inline tile, with pan/zoom —
+    // so click-to-zoom re-renders crisp at the popup resolution (NO baked
+    // raster, no encode). The group-fraction has no per-cell id, so unlike the
+    // label viewer there's no hover-highlight (nor a base image): just the GPU
+    // colormap, panned/zoomed via setTransform.
+    function createColormapViewer(parent, srcCanvas) {
+      if (!self.ColormapImage) return null;
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText =
+        'position:absolute; inset:0; width:100%; height:100%;'
+      + ' image-rendering:pixelated; pointer-events:none;';
+      // The popup overlay lives on document.body, outside the figure's
+      // color-scheme, so opt this canvas into a themed backdrop explicitly
+      // (else ``Canvas`` resolves to white even in dark mode).
+      canvas.style.colorScheme = 'light dark';
+      canvas.style.backgroundColor = 'Canvas';
+      parent.appendChild(canvas);
+      function b64bytes(s) { const bin = atob(s), u = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+      function f16to32(u16) { const out = new Float32Array(u16.length);
+        for (let i = 0; i < u16.length; i++) { const hh = u16[i], sg = (hh & 0x8000) >> 15,
+          e = (hh & 0x7c00) >> 10, f = hh & 0x03ff; let v;
+          if (e === 0) v = (f / 1024) * 6.103515625e-05;
+          else if (e === 0x1f) v = f ? NaN : Infinity;
+          else v = (1 + f / 1024) * Math.pow(2, e - 15); out[i] = sg ? -v : v; }
+        return out; }
+      // imgW/imgH are LET: they grow to the full-res dims once the streamed
+      // hi-res scalar lands (see below), so fitMatrix + isPointInImage track it.
+      let imgW = +srcCanvas.getAttribute('data-w'), imgH = +srcCanvas.getAttribute('data-h');
+      const cmap = srcCanvas.getAttribute('data-cmap') || 'magma';
+      const lo = parseFloat(srcCanvas.getAttribute('data-lo') || '0');
+      const hi = parseFloat(srcCanvas.getAttribute('data-hi') || '1');
+      const scalar = f16to32(new Uint16Array(
+        b64bytes(srcCanvas.getAttribute('data-scalar')).buffer));
+      let lastState = { s: 1, tx: 0, ty: 0 }, renderer = null, ready = false;
+      self.ColormapImage.createColormapRenderer(canvas).then(function (r) {
+        renderer = r; r.setColormap(cmap); r.setRange(lo, hi);
+        r.setImage(scalar, imgW, imgH); ready = true; redraw(lastState);
+        // Upgrade to the FULL-RES scalar (streamed) so the zoom is crisp at
+        // native resolution rather than the small embedded thumbnail. The URL is
+        // cacheable, so it reuses any copy already fetched. Until it lands, the
+        // embedded thumb shows (instant). Mirrors the RGB thumb→hires upgrade.
+        const hsrc = srcCanvas.getAttribute('data-hires-scalar');
+        const hw = +srcCanvas.getAttribute('data-hires-w'), hh = +srcCanvas.getAttribute('data-hires-h');
+        if (hsrc && hw && hh && (hw > imgW || hh > imgH)) {
+          const url = (window.__ocdResolveTileUrl ? window.__ocdResolveTileUrl(hsrc) : hsrc);
+          fetch(url).then(function (resp) { return resp.ok ? resp.arrayBuffer() : null; })
+            .then(function (buf) {
+              if (!buf || !renderer) return;
+              renderer.setImage(f16to32(new Uint16Array(buf)), hw, hh);
+              imgW = hw; imgH = hh;        // fit + hit-test now use full-res dims
+              redraw(lastState);
+            }).catch(function (e) { console.warn('ColormapImage hi-res:', e); });
+        }
+      }).catch(function (e) { console.warn('ColormapImage popup:', e); });
+      // Column-major mat3 mapping image-px [0,w]×[0,h] → clip, fit+pan+zoom
+      // (ColormapImage's VERT multiplies u_matrix by ``c*u_imgSize`` = image px).
+      function fitMatrix(s, cssW, cssH) {
+        const sc = (s && s.s) || 1, tx = (s && s.tx) || 0, ty = (s && s.ty) || 0;
+        const fit = Math.min(cssW / imgW, cssH / imgH);
+        const ox = (cssW * 0.5 - imgW * fit * 0.5) * sc + tx;
+        const oy = (cssH * 0.5 - imgH * fit * 0.5) * sc + ty;
+        return [2 * fit * sc / cssW, 0, 0, 0, -2 * fit * sc / cssH, 0,
+                2 * ox / cssW - 1, 1 - 2 * oy / cssH, 1];
+      }
+      function redraw(s) {
+        lastState = s;
+        if (!ready || !renderer) return;
+        renderer.setTransform(fitMatrix(s, canvas.clientWidth, canvas.clientHeight));
+        renderer.requestRedraw();
+      }
+      function isPointInImage(clientX, clientY) {
+        const rc = canvas.getBoundingClientRect();
+        const sc = (lastState.s) || 1, tx = (lastState.tx) || 0, ty = (lastState.ty) || 0;
+        const fit = Math.min(rc.width / imgW, rc.height / imgH);
+        const ox = (rc.width * 0.5 - imgW * fit * 0.5) * sc + tx;
+        const oy = (rc.height * 0.5 - imgH * fit * 0.5) * sc + ty;
+        const u = ((clientX - rc.left) - ox) / (imgW * fit * sc);
+        const v = ((clientY - rc.top) - oy) / (imgH * fit * sc);
+        return u >= 0 && u <= 1 && v >= 0 && v <= 1;
+      }
+      function dispose() {
+        try { if (renderer && renderer.destroy) renderer.destroy(); } catch (_) {}
+        if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
+      }
+      return { canvas, redraw, loadImage: function (u, cb) { if (cb) cb(); },
+               isPointInImage, dispose, clearActive: function () {},
+               hideHover: function () {}, setSdr: function () {},
+               get textureLoaded() { return ready; },
                get imgW() { return imgW; }, get imgH() { return imgH; } };
     }
 
@@ -3128,8 +3231,15 @@ void main() {
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
             gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
             if (t.mode === 'intensity') {
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, t.w, t.h, 0, gl.RED,
-                            gl.FLOAT, new Float32Array(t.buf));
+              // float16 wire (default) → R16F/HALF_FLOAT; ?f32=1 → R32F/FLOAT. The
+              // colormap shader samples either as a float, so it's unchanged. R16F
+              // is also core-filterable (R32F needs OES_texture_float_linear).
+              if (t.dt === 'float16')
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, t.w, t.h, 0, gl.RED,
+                              gl.HALF_FLOAT, new Uint16Array(t.buf));
+              else
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, t.w, t.h, 0, gl.RED,
+                              gl.FLOAT, new Float32Array(t.buf));
               if (t.kind === 'readout') {
                 RGLO = Math.min(RGLO, t.lo); RGHI = Math.max(RGHI, t.hi); BITMAX = t.bitmax;
               }
@@ -3166,7 +3276,12 @@ void main() {
               const kind = r.headers.get('X-Kind') || 'reduction';
               const bitmax = parseFloat(r.headers.get('X-Bitmax') || '65535');
               const lvl = +(r.headers.get('X-Level') || String(level));
-              return r.arrayBuffer().then(buf => ({ w, h, ch, mode, lo, hi, kind, bitmax, level: lvl, buf }));
+              // Intensity tiles ride the wire as float16 by default (server halves
+              // the bytes; ``?f32=1`` opts out). Carry the dtype so _uploadTile
+              // picks R16F/HALF_FLOAT vs R32F/FLOAT — reading f16 bytes as a
+              // Float32Array is too-short and throws on texImage2D (blank tiles).
+              const dt = r.headers.get('X-Dtype') || 'float32';
+              return r.arrayBuffer().then(buf => ({ w, h, ch, mode, lo, hi, kind, bitmax, level: lvl, dt, buf }));
             }).then(t => {
               if (!t) return false;
               const _t1 = (window.performance && performance.now) ? performance.now() : 0;
@@ -3260,6 +3375,7 @@ void main() {
           // 1..N = the alts. The GPU outlines draw afterward, so they stay on
           // top of whichever is shown.
           const altTexLists = new Array(cells.length).fill(null);   // [tex,…] per cell
+          const altMeta = new Array(cells.length).fill(null);       // [{mode,lo,hi},…] per alt
           const altState = new Array(cells.length).fill(0);         // 0=main; k=alt k-1
           const altLoaders = new Array(cells.length).fill(null);    // deferred fetch fns
           for (let i = 0; i < cells.length; i++) {
@@ -3268,12 +3384,21 @@ void main() {
                            im.getAttribute('data-alt2-href')].filter(Boolean);
             if (!hrefs.length) continue;
             const texList = [];
+            const metaList = [];
             for (let h = 0; h < hrefs.length; h++) {
               const altHref = hrefs[h];
+              // ``fmt=raw`` alt = a RAW intensity tile (the ncolor group-fraction
+              // map): fetch float32 + the X-Lo/X-Hi headers and normalize +
+              // colormap it on the GPU (u_mode=0), so the segmentation fill follows
+              // the live cmap picker and carries NO PNG bake / pre-baked colours —
+              // same path as the intensity tiles. Otherwise the alt is a baked RGBA
+              // raster (offline data-URL) → uploaded as RGBA8 + passthrough (mode 1).
+              const isRaw = /[?&]fmt=raw/.test(altHref);
               // The per-cell pixel-label raster (h>=1) wants NEAREST so the cell
               // boundaries stay pixel-crisp ("exact pixel masks"); ncolor (h==0)
-              // keeps a smoothed minify so the flat fill reads cleanly.
-              const minF = (h >= 1) ? gl.NEAREST : gl.LINEAR;
+              // keeps a smoothed minify so the flat fill reads cleanly. A raw group
+              // map is always NEAREST — group ids must never blend across pixels.
+              const minF = (isRaw || h >= 1) ? gl.NEAREST : gl.LINEAR;
               const tex = gl.createTexture();
               gl.bindTexture(gl.TEXTURE_2D, tex);
               gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minF);
@@ -3283,12 +3408,40 @@ void main() {
               gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
                             new Uint8Array([0,0,0,0]));
               texList.push(tex);
+              const meta = { mode: isRaw ? 'intensity' : 'rgb', lo: 0, hi: 1 };
+              metaList.push(meta);
               const idx = i, myk = h + 1;
-              // The rasters fill on a bg thread → poll (204 = retry); blob URL is
-              // same-origin so the Image→texture upload doesn't taint.
+              // The rasters fill on a bg thread → poll (204 = retry).
               let atries = 0;
-              const loadAlt = () => fetch(altHref).then(r => {
-                if (r.status === 204) { if (atries++ < 400) setTimeout(loadAlt, 200); return null; }
+              // RAW intensity alt: float32 + X-Lo/X-Hi → R32F texture, GPU-colormapped
+              // (mode 0) in the draw loop. Route through the proxy resolver so it
+              // works from a remote (Jupyter-proxied) page like the main tiles.
+              const rawUrl = (window.__ocdResolveTileUrl ? window.__ocdResolveTileUrl(altHref) : altHref);
+              const loadRaw = () => fetch(rawUrl).then(r => {
+                if (r.status === 204) { if (atries++ < 400) setTimeout(loadRaw, 200); return null; }
+                if (!r.ok) throw new Error('alt ' + r.status);
+                const w = +r.headers.get('X-Level-Width'), hh = +r.headers.get('X-Level-Height');
+                const dt = r.headers.get('X-Dtype') || 'float32';
+                meta.lo = parseFloat(r.headers.get('X-Lo') || '0');
+                meta.hi = parseFloat(r.headers.get('X-Hi') || '1');
+                return r.arrayBuffer().then(buf => ({ w: w, h: hh, dt: dt, buf: buf }));
+              }).then(t => {
+                if (!t) return;
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+                if (t.dt === 'float16')
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, t.w, t.h, 0, gl.RED,
+                                gl.HALF_FLOAT, new Uint16Array(t.buf));
+                else
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, t.w, t.h, 0, gl.RED,
+                                gl.FLOAT, new Float32Array(t.buf));
+                if (altState[idx] === myk) redraw();
+              }).catch(() => { if (atries++ < 400) setTimeout(loadRaw, 300); });
+              // Baked RGBA alt: blob → Image → RGBA8 passthrough. Same-origin blob
+              // URL so the Image→texture upload doesn't taint.
+              const loadImg = () => fetch(altHref).then(r => {
+                if (r.status === 204) { if (atries++ < 400) setTimeout(loadImg, 200); return null; }
                 if (!r.ok) throw new Error('alt ' + r.status);
                 return r.blob();
               }).then(blob => {
@@ -3303,10 +3456,11 @@ void main() {
                   if (altState[idx] === myk) redraw();
                 };
                 img.src = url;
-              }).catch(() => { if (atries++ < 400) setTimeout(loadAlt, 300); });
-              (altLoaders[i] || (altLoaders[i] = [])).push(loadAlt);  // DEFER (no eager fetch)
+              }).catch(() => { if (atries++ < 400) setTimeout(loadImg, 300); });
+              (altLoaders[i] || (altLoaders[i] = [])).push(isRaw ? loadRaw : loadImg);  // DEFER (no eager fetch)
             }
             altTexLists[i] = texList;
+            altMeta[i] = metaList;
           }
           function cycleAlt(i) {
             if (i < 0 || i == null || !altTexLists[i]) return 0;
@@ -3576,7 +3730,15 @@ void main() {
               const _altTex = (_st > 0 && altTexLists[i]) ? altTexLists[i][_st - 1] : null;
               const useAlt = !!_altTex;
               if (useAlt) {
-                gl.uniform1i(U.mode, 1);            // mask RGBA → passthrough
+                const _am = altMeta[i] ? altMeta[i][_st - 1] : null;
+                if (_am && _am.mode === 'intensity') {
+                  // RAW ncolor alt → normalize(lo,hi) + colormap on the GPU, so the
+                  // segmentation fill follows the live cmap picker (same as the
+                  // intensity tiles). NEAREST sampling keeps group ids crisp.
+                  gl.uniform1i(U.mode, 0); gl.uniform1f(U.lo, _am.lo); gl.uniform1f(U.hi, _am.hi);
+                } else {
+                  gl.uniform1i(U.mode, 1);          // baked mask RGBA → passthrough
+                }
               } else if (m.mode === 'intensity') {
                 let lo = m.lo, hi = m.hi;
                 if (m.kind === 'readout') {
@@ -4613,6 +4775,117 @@ _LABEL_CONTROLLER_JS = r"""
 """.strip()
 
 
+def _load_colormap_image_js():
+    """Read the inline GPU colormap-renderer stack (``hdr_headroom`` +
+    ``hdr_colormap`` + ``colormap_image``). Read FRESH per render so edits take
+    effect without a kernel restart.
+
+    ``hdr_colormap`` supplies the SDR LUT (``sdrLutU8``) the WebGL2 backend needs
+    AND the WebGPU/HDR backend; ``hdr_headroom`` drives the optional HDR peak.
+    Together they back :class:`ColormapImage` — the SAME raw-scalar → normalize →
+    colormap-LUT shader the live ``/grid`` viewer renders its masks (ncolor) and
+    intensity tiles with. Used for ``<canvas data-colormap-tile>``."""
+    import os
+    here = os.path.dirname(os.path.dirname(__file__))  # ocdkit/
+    parts = []
+    for _name in ("hdr_headroom.js", "hdr_colormap.js", "colormap_image.js"):
+        try:
+            with open(os.path.join(here, "plot", "web", _name), "r", encoding="utf-8") as fh:
+                parts.append(fh.read())
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
+# Per-figure controller: finds every ``<canvas data-colormap-tile>`` in the
+# wrapper, decodes its RAW float16 scalar, and renders it via ColormapImage
+# (WebGPU-HDR when available, WebGL2-SDR otherwise) — raw scalar → normalize →
+# colormap LUT, the SAME backend as the live ``/grid`` viewer's masks/intensity
+# tiles. No image codec: a discrete-colour group map (ncolor) stays bit-crisp,
+# and the colormap is a live GPU LUT (not baked into the pixels).
+_COLORMAP_CONTROLLER_JS = r"""
+(function () {
+  if (!self.ColormapImage) return;
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  function b64bytes(s) {
+    var bin = atob(s), u = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }
+  // half-float (uint16 LE) → Float32Array. The scalar rides the wire as f16
+  // (half the bytes of f32); the GPU samples it as a float either way.
+  function f16to32(u16) {
+    var out = new Float32Array(u16.length);
+    for (var i = 0; i < u16.length; i++) {
+      var hh = u16[i], s = (hh & 0x8000) >> 15, e = (hh & 0x7c00) >> 10, f = hh & 0x03ff, v;
+      if (e === 0) v = (f / 1024) * 6.103515625e-05;        // subnormal, 2^-14
+      else if (e === 0x1f) v = f ? NaN : Infinity;
+      else v = (1 + f / 1024) * Math.pow(2, e - 15);
+      out[i] = s ? -v : v;
+    }
+    return out;
+  }
+  wrapper.querySelectorAll('canvas[data-colormap-tile]').forEach(function (cv) {
+    if (cv.__cmapWired) return;
+    cv.__cmapWired = true;
+    var w = +cv.getAttribute('data-w'), h = +cv.getAttribute('data-h');
+    var cmap = cv.getAttribute('data-cmap') || 'magma';
+    var lo = parseFloat(cv.getAttribute('data-lo') || '0');
+    var hi = parseFloat(cv.getAttribute('data-hi') || '1');
+    var scalar = f16to32(new Uint16Array(b64bytes(cv.getAttribute('data-scalar')).buffer));
+    self.ColormapImage.createColormapRenderer(cv).then(function (r) {
+      r.setColormap(cmap);
+      r.setRange(lo, hi);
+      r.setImage(scalar, w, h);   // R32F NEAREST → crisp; default fill matrix
+      cv.__cmapRenderer = r;
+    }).catch(function (e) { console.warn('ColormapImage:', e); });
+  });
+})();
+""".strip()
+
+
+def colormap_tile_canvas(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
+                         class_name="", extra_style="", title=None,
+                         hires_scalar_url=None, hires_w=None, hires_h=None):
+    """Emit a ``<canvas data-colormap-tile>`` the figure shell renders via
+    :class:`ColormapImage` (raw scalar → GPU normalize → colormap LUT; WebGPU-HDR
+    with a WebGL2-SDR fallback).
+
+    The scalar rides as RAW float16 base64 — **no image codec** (no PNG/JPEG/JXL),
+    so discrete-colour content (e.g. an ncolor group map) stays bit-crisp and the
+    colormap is a live GPU LUT rather than colours baked into the pixels. This is
+    the SAME backend the live ``/grid`` viewer uses for its masks + intensity
+    tiles, so the static figure and the live viewer share one segmentation path.
+
+    ``hires_scalar_url`` (+ ``hires_w``/``hires_h``): a URL serving the RAW float16
+    scalar at FULL resolution. The embedded ``data-scalar`` stays a small/fast
+    thumbnail; the click-to-zoom popup (``createColormapViewer``) fetches this and
+    re-uploads at full res — so the inline payload is bounded but the zoom is crisp
+    at native resolution (mirrors the RGB tile's thumb + streamed-hires pattern).
+    """
+    import base64
+    import numpy as np
+    from html import escape as _esc
+    a = np.ascontiguousarray(np.asarray(scalar, dtype=np.float32))
+    if a.ndim != 2:
+        raise ValueError(f"colormap_tile_canvas: scalar must be 2-D, got {a.shape}")
+    h, w = a.shape
+    b64 = base64.b64encode(a.astype("<f2").tobytes()).decode("ascii")
+    title_attr = f' data-title="{_esc(str(title))}"' if title else ""
+    cls = f' class="{class_name}"' if class_name else ""
+    hires_attr = ""
+    if hires_scalar_url and hires_w and hires_h:
+        hires_attr = (f' data-hires-scalar="{_esc(str(hires_scalar_url))}" '
+                      f'data-hires-w="{int(hires_w)}" data-hires-h="{int(hires_h)}"')
+    return (
+        f'<canvas{cls} data-colormap-tile="1" data-w="{w}" data-h="{h}" '
+        f'data-cmap="{cmap}" data-lo="{float(vmin):.6g}" data-hi="{float(vmax):.6g}" '
+        f'data-scalar="{b64}"{hires_attr}{title_attr} '
+        f'style="image-rendering:pixelated;{extra_style}"></canvas>'
+    )
+
+
 def _load_spectra_gl_js():
     """Read the shared WebGL2 spectra-density renderer
     (``ocdkit/plot/web/spectra_density_gl.js``). Read FRESH per render (like
@@ -5072,6 +5345,12 @@ def interactive_shell(content_html: str, *,
     if 'data-label-tile' in content_html:
         js = (_load_label_gl_js() + "\n"
               + _LABEL_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
+    # Same pattern for ``<canvas data-colormap-tile>`` — a raw scalar (e.g. an
+    # ncolor group map) GPU-colormapped via ColormapImage, the SAME backend the
+    # live ``/grid`` viewer renders masks + intensity tiles with. No image codec.
+    if 'data-colormap-tile' in content_html:
+        js = (_load_colormap_image_js() + "\n"
+              + _COLORMAP_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
     # Same pattern for live WebGL2 spectra-density canvases (the "datashaded"
     # spectra panel rendered client-side at on-screen dpi instead of a baked
     # raster). Only included when the markup actually has one.
@@ -5141,3 +5420,172 @@ _build_interactive_shell = interactive_shell
 
 
 __all__ = ["SvgFigure", "Axes", "interactive_shell"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  PowerPoint "Convert to Shapes" fidelity fixes for embedded SVG.
+#  Lives next to SvgFigure._pptx_embeddable_svg(); called by
+#  ocdkit.io.pptx.figs_to_deck after _attach_svg_to_pptx.
+# ──────────────────────────────────────────────────────────────────────
+# PowerPoint's "Convert to Shapes" on an embedded SVG mis-handles text + scale in
+# three ways; these three post-passes make the converted shapes match the figure
+# exactly (all verified in real PowerPoint).  Apply AFTER _attach_svg_to_pptx.
+
+# bodyPr: zero insets (no down/right shift) + center the glyphs in the converted box
+# (anchor=ctr, anchorCtr=1; PowerPoint over-sizes the box and top-left-anchors text)
+# + wrap=none + noAutofit (don't autofit-scale).  Lives in the theme objectDefaults
+# spDef/txDef, which convert-to-shapes text boxes inherit.  CT_DefaultShapeDefinition
+# REQUIRES children spPr, bodyPr, lstStyle in that order or PowerPoint flags corrupt.
+_PPTX_BODYPR = ('<a:bodyPr wrap="none" lIns="0" tIns="0" rIns="0" bIns="0" '
+                'anchor="ctr" anchorCtr="1"><a:noAutofit/></a:bodyPr>')
+_PPTX_SPDEF = f'<a:spDef><a:spPr/>{_PPTX_BODYPR}<a:lstStyle/></a:spDef>'
+_PPTX_TXDEF = f'<a:txDef><a:spPr/>{_PPTX_BODYPR}<a:lstStyle/></a:txDef>'
+
+_PPTX_SCALE_ATTRS = ("x", "y", "width", "height", "cx", "cy", "r", "rx", "ry",
+                     "x1", "y1", "x2", "y2", "font-size", "stroke-width")
+_PPTX_NUMRE = re.compile(r"-?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def _pptx_scale_nums(val, sc):
+    return _PPTX_NUMRE.sub(lambda m: f"{float(m.group(0))*sc:.3f}", val)
+
+
+def _pptx_scale_transform(val, sc):
+    def _rot(m):
+        p = m.group(1).replace(",", " ").split()
+        if len(p) == 3:
+            return f"rotate({p[0]} {float(p[1])*sc:.3f} {float(p[2])*sc:.3f})"
+        return m.group(0)
+    val = re.sub(r"rotate\(([^)]*)\)", _rot, val)
+    val = re.sub(r"translate\(([^)]*)\)",
+                  lambda m: "translate(" + _pptx_scale_nums(m.group(1), sc) + ")", val)
+    return val
+
+
+def _bake_svg_96dpi(svg_bytes):
+    """Bake a uniform scale into an SVG's geometry NUMBERS (coords, font-size,
+    stroke-width, path/points — NOT colors/opacity/base64) so 1 viewBox unit = 1/96
+    inch.  Convert-to-shapes sizes fonts from the raw font-size at viewBox@96dpi and
+    IGNORES inch width/height AND ancestor transforms, so the scale must be in the
+    numbers.  Returns ``(new_bytes, aspect)`` (aspect = viewBox w/h, bake-invariant)."""
+    from lxml import etree
+    root = etree.fromstring(svg_bytes)
+    vb = (root.get("viewBox") or "").split()
+    m = re.match(r"([\d.]+)in", root.get("width", ""))
+    if len(vb) != 4 or not m:
+        return svg_bytes, None
+    vbw, vbh = float(vb[2]), float(vb[3])
+    if vbw <= 0 or vbh <= 0:
+        return svg_bytes, None
+    sc = float(m.group(1)) * 96.0 / vbw
+    for el in root.iter():
+        if el is root:
+            continue
+        for a, v in list(el.attrib.items()):
+            ln = etree.QName(a).localname
+            try:
+                if ln in _PPTX_SCALE_ATTRS:
+                    el.set(a, f"{float(v)*sc:.3f}")
+                elif ln in ("points", "stroke-dasharray", "d"):
+                    el.set(a, _pptx_scale_nums(v, sc))
+                elif ln == "transform":
+                    el.set(a, _pptx_scale_transform(v, sc))
+            except (TypeError, ValueError):
+                pass
+    root.set("viewBox", f"0 0 {vbw*sc:.2f} {vbh*sc:.2f}")
+    root.set("width", f"{vbw*sc/96:.4f}in")
+    root.set("height", f"{vbh*sc/96:.4f}in")
+    return etree.tostring(root), vbw / vbh
+
+
+def _lock_aspect_in_slide(slide_bytes, svg_aspect, rels_bytes):
+    """Pin each SVG figure picture's box to ITS svg's true aspect (cy = cx/aspect) so
+    PowerPoint scales it uniformly on convert (no stretch) — the SvgFigure→PNG bridge
+    distorts the box aspect ~1%.  Resolves each pic's svgBlip embed→media via the slide
+    rels so multi-figure decks each use the right aspect.  Returns new slide bytes."""
+    from lxml import etree
+    NS = {"p": "http://schemas.openxmlformats.org/presentationml/2006/main",
+          "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+          "asvg": "http://schemas.microsoft.com/office/drawing/2016/SVG/main"}
+    R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+    rid_to_media = {}
+    if rels_bytes:
+        for rel in etree.fromstring(rels_bytes):
+            rid_to_media[rel.get("Id")] = (rel.get("Target") or "").split("/")[-1]
+    root = etree.fromstring(slide_bytes)
+    n = 0
+    for pic in root.xpath(".//p:pic", namespaces=NS):
+        blip = pic.xpath(".//asvg:svgBlip", namespaces=NS)
+        if not blip:
+            continue
+        asp = svg_aspect.get(rid_to_media.get(blip[0].get(R_EMBED)))
+        if not asp:
+            continue
+        ext = pic.xpath(".//a:xfrm/a:ext", namespaces=NS)
+        off = pic.xpath(".//a:xfrm/a:off", namespaces=NS)
+        if not ext:
+            continue
+        cx, cy = int(ext[0].get("cx")), int(ext[0].get("cy"))
+        ncy = round(cx / asp)
+        if abs(ncy - cy) > 1000:
+            ext[0].set("cy", str(ncy))
+            if off:
+                off[0].set("y", str(int(off[0].get("y")) + (cy - ncy) // 2))
+            n += 1
+    if n:
+        return etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+    return slide_bytes
+
+
+def _zero_insets_in_theme(theme_str):
+    """Inject zero-inset/centered spDef+txDef into a theme's objectDefaults (so convert
+    text boxes inherit no margins).  Returns the (possibly unchanged) theme string."""
+    s = theme_str
+    if "<a:spDef" in s:
+        return s
+    if "<a:objectDefaults>" in s:
+        s = s.replace("<a:objectDefaults>", "<a:objectDefaults>" + _PPTX_SPDEF, 1)
+        s = s.replace("</a:objectDefaults>", _PPTX_TXDEF + "</a:objectDefaults>", 1)
+    elif "<a:objectDefaults/>" in s:
+        s = s.replace("<a:objectDefaults/>",
+                      "<a:objectDefaults>" + _PPTX_SPDEF + _PPTX_TXDEF + "</a:objectDefaults>", 1)
+    elif "</a:themeElements>" in s:
+        s = s.replace("</a:themeElements>",
+                      "</a:themeElements><a:objectDefaults>" + _PPTX_SPDEF + _PPTX_TXDEF
+                      + "</a:objectDefaults>", 1)
+    return s
+
+
+def apply_convert_to_shapes_fixes(pptx_path):
+    """Make PowerPoint 'Convert to Shapes' faithful — correct font size (96dpi bake),
+    no figure distortion (aspect lock), no text shift (zero insets) — in ONE read/write
+    pass (a single os.replace; repeated rewrites of the same file are flaky on network
+    volumes).  Never raises: polish must not break the export."""
+    import os
+    import zipfile
+    pptx_path = str(pptx_path)
+    try:
+        with zipfile.ZipFile(pptx_path) as z:
+            names = z.namelist()
+            data = {n: z.read(n) for n in names}
+        svg_aspect = {}                                  # media basename -> aspect
+        for n in names:
+            if n.startswith("ppt/media/image") and n.endswith(".svg"):
+                data[n], asp = _bake_svg_96dpi(data[n])
+                if asp:
+                    svg_aspect[n.split("/")[-1]] = asp
+        if svg_aspect:
+            for n in names:
+                if n.startswith("ppt/slides/slide") and n.endswith(".xml"):
+                    rels = data.get(f"ppt/slides/_rels/{n.split('/')[-1]}.rels")
+                    data[n] = _lock_aspect_in_slide(data[n], svg_aspect, rels)
+        for n in names:
+            if n.startswith("ppt/theme/theme") and n.endswith(".xml"):
+                data[n] = _zero_insets_in_theme(data[n].decode("utf-8")).encode("utf-8")
+        tmp = pptx_path + ".tmp.fixes"
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zo:
+            for n in names:
+                zo.writestr(n, data[n])
+        os.replace(tmp, pptx_path)
+    except Exception as e:  # noqa: BLE001 — never let polish break the export
+        print(f"[pptx] convert-to-shapes fixes skipped: {type(e).__name__}: {e}")
