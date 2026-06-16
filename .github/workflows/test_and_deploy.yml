@@ -81,7 +81,7 @@ jobs:
         run: python -m twine upload dist/*
 
   badges:
-    name: Build and commit badges
+    name: Build and publish badges
     runs-on: ubuntu-latest
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
@@ -89,8 +89,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Download test artifacts
         uses: actions/download-artifact@v4
@@ -108,8 +106,22 @@ jobs:
           genbadge coverage -i coverage.xml -o badges/coverage.svg
           genbadge tests -i junit.xml -o badges/tests.svg
 
-      - name: Commit badges
-        uses: EndBug/add-and-commit@v9
-        with:
-          add: 'badges/*.svg'
-          message: 'CI: update coverage and test badges'
+      - name: Publish badges to the orphan 'badges' branch
+        # Badges live on a dedicated 'badges' branch, NEVER on main. Committing
+        # them to main advanced origin/main on every release and rejected the
+        # next developer push ("Updates were rejected ... fetch first"). The
+        # branch is rebuilt from scratch and force-pushed each release, holding
+        # only the SVGs; reference them via the raw badges-branch URL, e.g.
+        # https://raw.githubusercontent.com/${{ github.repository }}/badges/badges/coverage.svg
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          svgs="$(mktemp -d)"
+          cp badges/*.svg "$svgs/"
+          git checkout --orphan badges
+          git rm -rf . >/dev/null 2>&1 || true
+          mkdir -p badges
+          cp "$svgs"/*.svg badges/
+          git add badges/coverage.svg badges/tests.svg
+          git commit -m "CI: update coverage and test badges [skip ci]"
+          git push -f origin badges
