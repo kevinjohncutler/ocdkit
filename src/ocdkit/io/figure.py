@@ -615,8 +615,9 @@ _SHELL_CSS = """
   .ocd-zoom-overlay[data-uid="__UID__"].ocd-sdr-mode text.ocd-adaptive-text > tspan {
     fill: var(--ocd-tt-sdr, currentColor);
   }
+  /* HDR on = opaque badge; HDR off (.ocd-hdr-off, SDR mode) = translucent. */
   .ocd-svgfig[data-uid="__UID__"] .ocd-hdrbtn.ocd-hdr-off {
-    color: #c97a3a;  /* warm tint = SDR mode active */
+    opacity: 0.4;
   }
   .ocd-zoom-overlay[data-uid="__UID__"] {
     position: fixed;
@@ -741,14 +742,25 @@ _SHELL_COPY_ICON = (
     '01.25.25v9.5a.25.25 0 01-.25.25h-9.5a.25.25 0 01-.25-.25v-9.5z"/></svg>'
 )
 
-# Stylised "HDR" badge: text-as-vector so it scales cleanly and follows
-# currentColor. Toggle button shows this icon; clicking flips
-# the wrapper's CSS class so embedded gain-map JPEGs render at SDR.
+# Stylised "HDR" badge: a filled, WIDE squircle (rectangular so the "HDR" text
+# can be large/legible; height trimmed) with the text KNOCKED OUT via a mask so
+# the background shows through the letters. The button pins the SVG to 20px wide
+# with uniform scaling, so the 26x15 viewBox renders ~20x11.5 — footprint in line
+# with the save/copy glyphs (which carry built-in padding). Follows currentColor;
+# clicking flips the wrapper's CSS class (embedded gain-map JPEGs render at SDR)
+# and toggles .ocd-hdr-off, dimming the badge to translucent (HDR on = opaque).
+# The mask id carries __UID__ (replaced at insertion) so multiple figures on one
+# page don't share a mask.
 _SHELL_HDR_ICON = (
     '<svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" '
-    'viewBox="0 0 28 16">'
-    '<text x="14" y="13" text-anchor="middle" font-family="Helvetica, Arial, '
-    'sans-serif" font-weight="700" font-size="12" fill="currentColor">HDR</text>'
+    'viewBox="0 0 26 15">'
+    '<mask id="ocd-hdr-cut-__UID__">'
+    '<rect x="1" y="1" width="24" height="13" rx="4.5" ry="4.5" fill="white"/>'
+    '<text x="13" y="11" text-anchor="middle" font-family="Helvetica, Arial, '
+    'sans-serif" font-weight="700" font-size="11" fill="black">HDR</text>'
+    '</mask>'
+    '<rect x="1" y="1" width="24" height="13" rx="4.5" ry="4.5" '
+    'fill="currentColor" mask="url(#ocd-hdr-cut-__UID__)"/>'
     '</svg>'
 )
 
@@ -5386,7 +5398,7 @@ def interactive_shell(content_html: str, *,
             # rendering via .ocd-sdr-mode class + dynamic-range-limit CSS.
             buttons.append(
                 f'<button class="ocd-hdrbtn" title="HDR: on">'
-                f'{_SHELL_HDR_ICON}</button>')
+                f'{_SHELL_HDR_ICON.replace("__UID__", uid)}</button>')
         if save_button:
             buttons.append(
                 f'<button class="ocd-savebtn" title="Save as PNG">'
