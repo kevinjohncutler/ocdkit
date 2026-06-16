@@ -2,8 +2,12 @@ name: CI/CD
 
 on:
   push:
+    branches:
+      - '**'        # run tests on every branch push ...
+      - '!badges'   # ... except the CI-managed badges branch ([skip ci] also guards it)
     tags:
-      - "v*"  # e.g. v1.0, v2.0
+      - "v*"        # tags still gate deploy + badge publishing (see job `if:`s)
+  pull_request:
 
 jobs:
   test:
