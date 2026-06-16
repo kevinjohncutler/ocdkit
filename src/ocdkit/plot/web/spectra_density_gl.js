@@ -53,12 +53,38 @@
     if (!m) return [1, 0.25, 0.25, 0.95];
     return [+m[1] / 255, +m[2] / 255, +m[3] / 255, m[4] != null ? +m[4] : 1];
   }
-  // CSS rgba() string -> [r,g,b,a] linear Display-P3, lifted by `boost` (1 = SDR).
-  function _colorToP3(str, boost) {
-    var c = _parseRGBA(str), r = _srgbToLin(c[0]), g = _srgbToLin(c[1]), b = _srgbToLin(c[2]), M = _M_SRGB_P3;
+  // [r,g,b(,a)] in 0..1 sRGB -> [r,g,b,a] linear Display-P3, lifted by `boost`.
+  function _rgb01ToP3(c, boost) {
+    var r = _srgbToLin(c[0]), g = _srgbToLin(c[1]), b = _srgbToLin(c[2]), M = _M_SRGB_P3;
     return [(M[0] * r + M[1] * g + M[2] * b) * boost,
             (M[3] * r + M[4] * g + M[5] * b) * boost,
-            (M[6] * r + M[7] * g + M[8] * b) * boost, c[3]];
+            (M[6] * r + M[7] * g + M[8] * b) * boost, c.length > 3 ? c[3] : 1];
+  }
+  // CSS rgba() string -> [r,g,b,a] linear Display-P3, lifted by `boost` (1 = SDR).
+  function _colorToP3(str, boost) { return _rgb01ToP3(_parseRGBA(str), boost); }
+
+  // Split a device-px polyline into "on" sub-polylines per dash = [onPx, offPx]
+  // (walking by arc length). null/0 → the polyline unchanged. Lets the GPU refs
+  // reproduce the SVG refs' dashed stroke.
+  function _dashPolyline(pl, dash) {
+    if (!dash || !(dash[0] > 0)) return [pl];
+    var on = dash[0], off = (dash[1] != null ? dash[1] : dash[0]);
+    var out = [], cur = null, mode = true, rem = on;
+    function add(x, y) { if (mode) { if (!cur) cur = [[x, y]]; else cur.push([x, y]); } }
+    function close() { if (cur && cur.length >= 2) out.push(cur); cur = null; }
+    add(pl[0][0], pl[0][1]);
+    for (var i = 0; i + 1 < pl.length; i++) {
+      var x0 = pl[i][0], y0 = pl[i][1], dx = pl[i + 1][0] - x0, dy = pl[i + 1][1] - y0;
+      var len = Math.sqrt(dx * dx + dy * dy); if (len < 1e-6) continue;
+      var ux = dx / len, uy = dy / len, t = 0;
+      while (len - t > 1e-9) {
+        var step = Math.min(rem, len - t); t += step; rem -= step;
+        var cx = x0 + ux * t, cy = y0 + uy * t; add(cx, cy);
+        if (rem <= 1e-9) { if (mode) close(); mode = !mode; rem = mode ? on : off; if (mode) cur = [[cx, cy]]; }
+      }
+    }
+    close();
+    return out;
   }
   // Expand polylines (device px) into clip-space triangle-list verts
   // (x, y, vp, ta, L) for the capsule-SDF shader: vp = signed perpendicular
@@ -92,6 +118,21 @@
   }
 
   function decodeAttrs(cv) {
+    // HDR (data-hdr="1"): the LUTs are linear-P3 FLOAT32 — lutSdr (≤1) and lutHdr
+    // (lifted, >1) — NOT uint8. Decode them as float and set hdr so render() takes
+    // the rgba16float/extended-canvas path. MUST mirror figure.py fetchSpectraCfg;
+    // reading the float bytes as a uint8 LUT (the old code) renders garbage colours.
+    var hdr = cv.getAttribute('data-hdr') === '1', lut, lutSdr, lutHdr = null;
+    if (hdr) {
+      lutSdr = new Float32Array(b64bytes(cv.getAttribute('data-lut-sdr') || cv.getAttribute('data-lut')).buffer);
+      var _lh = cv.getAttribute('data-lut-hdr');
+      lutHdr = _lh ? new Float32Array(b64bytes(_lh).buffer) : null;
+      // HDR on by default; the figure HDR toggle persists its choice as data-sdr
+      // (a class/in-memory swap wouldn't survive this re-decode on the next draw).
+      lut = (cv.getAttribute('data-sdr') === '1' || !lutHdr) ? lutSdr : lutHdr;
+    } else {
+      lut = lutSdr = b64bytes(cv.getAttribute('data-lut'));   // uint8 sRGB LUT (SDR path)
+    }
     return {
       numLines: parseInt(cv.getAttribute('data-num-lines'), 10),
       numPoints: parseInt(cv.getAttribute('data-num-points'), 10),
@@ -102,7 +143,7 @@
       lineWidth: parseFloat(cv.getAttribute('data-line-width')) || 1.0,
       yLo: parseFloat(cv.getAttribute('data-ylo')),
       yHi: parseFloat(cv.getAttribute('data-yhi')),
-      lut: b64bytes(cv.getAttribute('data-lut')),
+      lut: lut, lutSdr: lutSdr, lutHdr: lutHdr, hdr: hdr,
       cellIds: cv.getAttribute('data-cellids')
         ? new Int32Array(b64bytes(cv.getAttribute('data-cellids')).buffer) : null,
       cellLabels: JSON.parse(cv.getAttribute('data-celllabels') || '[]'),
@@ -850,47 +891,86 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
     return segs;
   }
 
-  // Draw overlay polylines on the WebGPU rgba16float/display-p3 extended overlay
-  // canvas (HDR mode), colour lifted into the headroom so the line glows like the
-  // data instead of reading as a dark streak. Configures the canvas as WebGPU on
-  // first use; once GPU, the canvas stays GPU (its context type is fixed).
-  function _drawHLGpu(overlayCv, segs, W, H, colorP3, halfW) {
-    var g = _gpu; if (!g || !g.hlPipe) return false;
-    var dev = g.device;
+  // The overlay canvas (2D in SDR, WebGPU-extended in HDR) holds two kinds of
+  // lifted lines, composited in ONE GPU pass each frame: persistent reference
+  // spectra (overlayCv.__refBatches, set via setRefs) and the transient hover
+  // line (overlayCv.__hoverBatch). A "batch" = { verts (capsule triangles),
+  // color (linear-P3), halfW }. Boost is applied only when HDR is actively on
+  // (cfg.lut === cfg.lutHdr); toggled to SDR → boost 1 → matches the SDR data.
+
+  // Configure (once) the overlay as a WebGPU extended canvas; returns ctx | null.
+  function _overlayCtx(overlayCv, W, H) {
+    var g = _gpu; if (!g || !g.hlPipe) return null;
     if (overlayCv.width !== W) overlayCv.width = W;
     if (overlayCv.height !== H) overlayCv.height = H;
     var ctx = overlayCv.__hlGpuCtx;
     if (!ctx) {
-      ctx = overlayCv.getContext('webgpu'); if (!ctx) return false;
-      try { ctx.configure({ device: dev, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied', toneMapping: { mode: 'extended' } }); }
-      catch (e) { try { ctx.configure({ device: dev, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied' }); } catch (e2) { return false; } }
+      ctx = overlayCv.getContext('webgpu'); if (!ctx) return null;
+      try { ctx.configure({ device: g.device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied', toneMapping: { mode: 'extended' } }); }
+      catch (e) { try { ctx.configure({ device: g.device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied' }); } catch (e2) { return null; } }
       overlayCv.__hlGpuCtx = ctx; overlayCv.__hlMode = 'gpu';
     }
-    var verts = _segsToQuads(segs, W, H, halfW);
+    return ctx;
+  }
+
+  // Composite all overlay batches (refs first, hover on top) into the canvas.
+  function _renderOverlayGpu(overlayCv, W, H) {
+    var ctx = _overlayCtx(overlayCv, W, H); if (!ctx) return false;
+    var dev = _gpu.device, batches = (overlayCv.__refBatches || []).slice();
+    if (overlayCv.__hoverBatch) batches.push(overlayCv.__hoverBatch);
     var enc = dev.createCommandEncoder();
     var rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
-    if (verts.length) {
-      var vbuf = dev.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-      dev.queue.writeBuffer(vbuf, 0, verts);
+    var junk = [];
+    for (var b = 0; b < batches.length; b++) {
+      var ba = batches[b]; if (!ba.verts.length) continue;
+      var vbuf = dev.createBuffer({ size: ba.verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      dev.queue.writeBuffer(vbuf, 0, ba.verts);
       var ubuf = dev.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      dev.queue.writeBuffer(ubuf, 0, new Float32Array([colorP3[0], colorP3[1], colorP3[2], colorP3[3], halfW, 0, 0, 0]));
-      var bg = dev.createBindGroup({ layout: g.hlPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
-      rp.setPipeline(g.hlPipe); rp.setBindGroup(0, bg); rp.setVertexBuffer(0, vbuf); rp.draw(verts.length / 5);
-      rp.end(); dev.queue.submit([enc.finish()]); vbuf.destroy(); ubuf.destroy();
-    } else { rp.end(); dev.queue.submit([enc.finish()]); }
+      dev.queue.writeBuffer(ubuf, 0, new Float32Array([ba.color[0], ba.color[1], ba.color[2], ba.color[3], ba.halfW, 0, 0, 0]));
+      var bg = dev.createBindGroup({ layout: _gpu.hlPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
+      rp.setPipeline(_gpu.hlPipe); rp.setBindGroup(0, bg); rp.setVertexBuffer(0, vbuf); rp.draw(ba.verts.length / 5);
+      junk.push(vbuf, ubuf);
+    }
+    rp.end(); dev.queue.submit([enc.finish()]);
+    for (var k = 0; k < junk.length; k++) junk[k].destroy();
     return true;
   }
 
-  // Stroke `line` onto the overlay. HDR figure (cfg.hdr) → WebGPU extended canvas
-  // with the colour lifted (skipped when the HDR toggle is OFF, i.e. the SDR LUT
-  // is active, so it matches the non-lifted data). Non-HDR → plain 2D stroke.
+  // Set (or clear, with refs=[]) the lifted reference-spectra lines on the HDR
+  // overlay. refs = [{ segs:[[xNorm,yVal],...][], color:[r,g,b] 0..1, dash:[onPx,offPx] }].
+  // No-op in SDR (cfg.hdr false) — there the SVG refs are shown instead. Coords
+  // map exactly like the density lines: x = xNorm*W, y = (yHi-yVal)/ySpan*H.
+  function setRefs(densityCv, overlayCv, refs) {
+    var st = densityCv && densityCv.__sgState; if (!st) return;
+    var cfg = st.cfg, W = st.W, H = st.H;
+    if (!cfg.hdr || !_gpu || !_gpu.hlPipe) { overlayCv.__refBatches = []; return; }
+    var boost = (cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0;
+    var ySpan = (cfg.yHi - cfg.yLo) || 1, hw = Math.max(2, (self.devicePixelRatio || 1) * 1.6) / 2, batches = [];
+    for (var i = 0; i < (refs || []).length; i++) {
+      var rf = refs[i]; if (!rf || !rf.segs) continue;
+      var allsegs = [];
+      for (var s = 0; s < rf.segs.length; s++) {
+        var seg = rf.segs[s]; if (!seg || seg.length < 2) continue;
+        var pl = []; for (var j = 0; j < seg.length; j++) pl.push([seg[j][0] * W, (cfg.yHi - seg[j][1]) / ySpan * H]);
+        var dl = _dashPolyline(pl, rf.dash || null);
+        for (var d = 0; d < dl.length; d++) allsegs.push(dl[d]);
+      }
+      batches.push({ verts: _segsToQuads(allsegs, W, H, hw), color: _rgb01ToP3(rf.color || [0.7, 0.7, 0.7], boost), halfW: hw });
+    }
+    overlayCv.__refBatches = batches;
+    _renderOverlayGpu(overlayCv, W, H);
+  }
+
+  // Stroke the hover `line` onto the overlay. HDR → set __hoverBatch + composite
+  // (keeps refs); SDR → plain 2D stroke.
   function _strokeOverlay(overlayCv, cfg, line, W, H, color) {
     var lw = Math.max(3, (self.devicePixelRatio || 1) * 2.5), segs = _lineSegs(cfg, line, W, H);
     if (cfg.hdr) {
       if (!_gpu || !_gpu.hlPipe) return;   // GPU not ready: skip (don't taint the canvas with a 2D context)
       var boost = (cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0;   // no lift when toggled to SDR
-      _drawHLGpu(overlayCv, segs, W, H, _colorToP3(color || 'rgba(255,64,64,0.95)', boost), lw / 2);
+      overlayCv.__hoverBatch = { verts: _segsToQuads(segs, W, H, lw / 2), color: _colorToP3(color || 'rgba(255,64,64,0.95)', boost), halfW: lw / 2 };
+      _renderOverlayGpu(overlayCv, W, H);
       return;
     }
     if (overlayCv.width !== W) overlayCv.width = W;
@@ -916,11 +996,10 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
 
   function clearHighlight(overlayCv) {
     if (!overlayCv) return;
-    if (overlayCv.__hlMode === 'gpu' && overlayCv.__hlGpuCtx && _gpu) {   // clear the WebGPU overlay via an empty render pass
-      var dev = _gpu.device, enc = dev.createCommandEncoder();
-      enc.beginRenderPass({ colorAttachments: [{ view: overlayCv.__hlGpuCtx.getCurrentTexture().createView(),
-        loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] }).end();
-      dev.queue.submit([enc.finish()]); return;
+    if (overlayCv.__hlMode === 'gpu' && overlayCv.__hlGpuCtx && _gpu) {   // drop the hover, keep refs, recomposite
+      overlayCv.__hoverBatch = null;
+      _renderOverlayGpu(overlayCv, overlayCv.width, overlayCv.height);
+      return;
     }
     // Only touch a 2D context if the overlay is ALREADY in 2D mode — calling
     // getContext('2d') on a fresh (or HDR/WebGPU) overlay would permanently lock
@@ -942,6 +1021,6 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
   }
 
   return { decodeAttrs: decodeAttrs, render: render, highlight: highlight,
-           highlightById: highlightById, clearHighlight: clearHighlight,
+           highlightById: highlightById, clearHighlight: clearHighlight, setRefs: setRefs,
            nearestLine: nearestLine, COVERAGE_SCALE: COVERAGE_SCALE };
 }));

@@ -1767,6 +1767,140 @@ void main() {
       };
       return viewer;
     }
+
+    // ─── WebGPU HDR popup viewer ───────────────────────────────────────
+    // For ``data-hdr`` tiles (image_grid hdr_nearest): the inline tile glows via
+    // a host WebGPU canvas, but the zoom popup's CSS-img / WebGL viewers only
+    // ever show the plain sRGB PNG (SDR). This viewer renders that PNG through
+    // the SAME eotf→×headroom→oetf shader on an rgba16float/display-p3/extended
+    // canvas (NEAREST mag), so the enlarged view glows too. Same redraw(state)/
+    // loadImage contract + same fit/pan/zoom vertex math as createPopupWebglViewer.
+    function createPopupWebgpuHdrViewer(parent) {
+      if (!navigator.gpu) return null;
+      const canvas = document.createElement('canvas');
+      canvas.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
+      parent.appendChild(canvas);
+      const ctx = canvas.getContext('webgpu');
+      if (!ctx) { parent.removeChild(canvas); return null; }
+      function detectHeadroom() {
+        try { var sc = window.screen || {};
+          var ks = ['highDynamicRangeHeadroom','dynamicRangeHeadroom','hdrHeadroom','currentEDRHeadroom'];
+          for (var i = 0; i < ks.length; i++) { var v = sc[ks[i]]; if (typeof v === 'number' && v > 0) return Math.max(1, v); }
+        } catch (e) {}
+        return null;
+      }
+      let N = 4.0; { const d = detectHeadroom(); if (d) N = d; }
+      const code = `
+struct U { canvasPx: vec2f, imagePx: vec2f, translatePx: vec2f, dpr: f32, zoom: f32, headroom: f32, _p: f32 };
+@group(0) @binding(0) var t: texture_2d<f32>;
+@group(0) @binding(1) var sm: sampler;
+@group(0) @binding(2) var<uniform> u: U;
+struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  var corners = array<vec2f,4>(vec2f(0,0), vec2f(1,0), vec2f(0,1), vec2f(1,1));
+  let a = corners[vi];
+  let canvasCSS = u.canvasPx / u.dpr;
+  let fitScale = min(canvasCSS.x / u.imagePx.x, canvasCSS.y / u.imagePx.y);
+  let imageFitHalf = u.imagePx * (fitScale * 0.5);
+  let center = canvasCSS * 0.5;
+  let originCSS = (center - imageFitHalf) * u.zoom + u.translatePx;
+  let sizeCSS = u.imagePx * (fitScale * u.zoom);
+  let quadCSS = originCSS + a * sizeCSS;
+  var clip = (quadCSS / canvasCSS) * 2.0 - 1.0;
+  clip.y = -clip.y;
+  var o: VO; o.pos = vec4f(clip, 0.0, 1.0); o.uv = a; return o;
+}
+fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }
+fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }
+@fragment fn fs(in: VO) -> @location(0) vec4f {
+  let s = textureSample(t, sm, in.uv).rgb;
+  let lin = vec3f(eotf(s.r), eotf(s.g), eotf(s.b)) * u.headroom;
+  return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0);
+}`;
+      let device = null, pipe = null, sampler = null, ubuf = null, tex = null, bg = null;
+      let imgW = 1, imgH = 1, textureLoaded = false, ready = false;
+      let _pendingDraw = null, _pendingTex = null;
+      (async function () {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) return;
+        device = await adapter.requestDevice();
+        try { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3', alphaMode:'premultiplied', toneMapping:{ mode:'extended' } }); }
+        catch (e) { try { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3', alphaMode:'premultiplied' }); } catch (e2) { return; } }
+        const mod = device.createShaderModule({ code });
+        sampler = device.createSampler({ magFilter:'nearest', minFilter:'linear' });
+        pipe = device.createRenderPipeline({ layout:'auto',
+          vertex:{ module: mod, entryPoint:'vs' },
+          fragment:{ module: mod, entryPoint:'fs', targets:[{ format:'rgba16float' }] },
+          primitive:{ topology:'triangle-strip' } });
+        ubuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        ready = true;
+        if (_pendingTex) { const p = _pendingTex; _pendingTex = null; _upload(p.bmp, p.onLoaded); }
+        if (_pendingDraw) { const s = _pendingDraw; _pendingDraw = null; redraw(s); }
+      })();
+
+      let _cssW = 0, _cssH = 0, _dpr = 1, _sizeDirty = true;
+      function invalidateSize() { _sizeDirty = true; }
+      canvas.__invalidateSize = invalidateSize;
+      function syncSize() {
+        if (!_sizeDirty) return;
+        _cssW = canvas.clientWidth; _cssH = canvas.clientHeight; _dpr = window.devicePixelRatio || 1;
+        const w = Math.max(1, Math.round(_cssW * _dpr)), h = Math.max(1, Math.round(_cssH * _dpr));
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        _sizeDirty = false;
+      }
+      function _upload(bmp, onLoaded) {
+        imgW = bmp.width; imgH = bmp.height;
+        if (tex) { try { tex.destroy(); } catch (e) {} }
+        tex = device.createTexture({ size:[imgW, imgH], format:'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [imgW, imgH]);
+        if (bmp.close) bmp.close();
+        bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries:[
+          { binding:0, resource: tex.createView() }, { binding:1, resource: sampler },
+          { binding:2, resource:{ buffer: ubuf } }] });
+        textureLoaded = true;
+        if (onLoaded) onLoaded();
+      }
+      function loadImage(url, onLoaded) {
+        let u = url;
+        try { if (window.__ocdResolveTileUrl) u = window.__ocdResolveTileUrl(url); } catch (e) {}
+        fetch(u).then(r => r.blob())
+          .then(b => createImageBitmap(b, { colorSpaceConversion:'none', premultiplyAlpha:'none' }))
+          .then(bmp => { if (viewer.disposed) return; if (ready) _upload(bmp, onLoaded); else _pendingTex = { bmp, onLoaded }; })
+          .catch(e => console.warn('SvgFigure WebGPU-HDR: image load failed:', url, e));
+      }
+      function redraw(s) {
+        if (!ready || !textureLoaded) { _pendingDraw = s; return; }
+        syncSize();
+        device.queue.writeBuffer(ubuf, 0, new Float32Array([
+          canvas.width, canvas.height, imgW, imgH, s.tx, s.ty, _dpr, s.s, N, 0, 0, 0 ]));
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginRenderPass({ colorAttachments:[{
+          view: ctx.getCurrentTexture().createView(), loadOp:'clear', clearValue:{ r:0,g:0,b:0,a:0 }, storeOp:'store' }] });
+        pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.draw(4); pass.end();
+        device.queue.submit([enc.finish()]);
+      }
+      function isPointInImage(clientX, clientY) {
+        const r = canvas.getBoundingClientRect();
+        const lx = clientX - r.left, ly = clientY - r.top;
+        if (lx < 0 || ly < 0 || lx > r.width || ly > r.height) return false;
+        const fitScale = Math.min(r.width / imgW, r.height / imgH);
+        const hw = imgW * fitScale * 0.5, hh = imgH * fitScale * 0.5;
+        const il = (r.width*0.5 - hw) * state.s + state.tx, it = (r.height*0.5 - hh) * state.s + state.ty;
+        const dw = imgW * fitScale * state.s, dh = imgH * fitScale * state.s;
+        return lx >= il && lx <= il + dw && ly >= it && ly <= it + dh;
+      }
+      function clearActive() { imgW = 1; imgH = 1; textureLoaded = false; }
+      function dispose() {
+        viewer.disposed = true;
+        try { if (tex) tex.destroy(); if (ubuf) ubuf.destroy(); } catch (e) {}
+        if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
+      }
+      const viewer = { canvas, redraw, loadImage, isPointInImage, dispose, clearActive,
+        get textureLoaded() { return textureLoaded; }, disposed: false, isHdr: true };
+      return viewer;
+    }
     // Zoom by `ratio` about the canvas-local point (px, py). Clamps to
     // [MIN_S, MAX_S]; rebases translation so the image point under the
     // cursor stays under the cursor across the scale change.
@@ -1831,14 +1965,25 @@ void main() {
       const figRoot = tile.closest('svg');
       const viewerHint = (figRoot && figRoot.dataset
                             && figRoot.dataset.popupViewer) || 'auto';
+      // HDR tile (image_grid hdr_nearest): a hidden/opacity:0 <image data-hdr>
+      // carries the sRGB-OETF PNG. Render the zoom through the WebGPU HDR viewer
+      // so the enlarged view glows too (the CSS-img / WebGL viewers only show SDR).
+      let isHdrTile = !!tile.querySelector('image[data-hdr="1"]');
+      if (!isHdrTile) {
+        const ims = tile.getElementsByTagName('image');
+        for (let i = 0; i < ims.length; i++) { if (ims[i].getAttribute('data-hdr') === '1') { isHdrTile = true; break; } }
+      }
       // Label tiles and the legacy SVG viewer are per-tile (bound to a
       // specific source) and can't be recycled — rebuild on every open.
       const needLegacyRebuild = webglViewer && webglViewer.isLegacy;
       const needLabelRebuild = !!labelCv || !!cmapCv
         || (webglViewer && (webglViewer.isLabel || webglViewer.isColormap));
-      const firstBuild = (!webglViewer || needLegacyRebuild || needLabelRebuild);
+      // Switching between an HDR tile and a non-HDR tile (or vice-versa) needs a
+      // viewer-type swap.
+      const needHdrRebuild = !!webglViewer && (isHdrTile !== !!webglViewer.isHdr);
+      const firstBuild = (!webglViewer || needLegacyRebuild || needLabelRebuild || needHdrRebuild);
       if (firstBuild) {
-        if ((needLegacyRebuild || needLabelRebuild) && webglViewer) {
+        if ((needLegacyRebuild || needLabelRebuild || needHdrRebuild) && webglViewer) {
           try { webglViewer.dispose(); } catch (_) {}
           webglViewer = null;
         }
@@ -1873,6 +2018,11 @@ void main() {
         // decode / upload) but breaks HDR. Used for benchmarking or
         // SDR-only workloads where pan/zoom smoothness matters more
         // than correctness on HDR content.
+        // HDR tile → WebGPU HDR viewer (glow in the zoom). Falls through to the
+        // CSS-img / WebGL paths if WebGPU is unavailable (SDR, but not dark).
+        if (!webglViewer && isHdrTile) {
+          webglViewer = createPopupWebgpuHdrViewer(canvasEl);
+        }
         if (!webglViewer && (viewerHint === 'webgl' || viewerHint === 'worker')) {
           webglViewer = createPopupWorkerViewer(canvasEl)
                      || createPopupWebglViewer(canvasEl);
@@ -4652,6 +4802,10 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       wrapper.querySelectorAll('canvas[data-spectra-density]').forEach((cv) => {
         const c = cv.__sgCfg;
         if (c && c.hdr && (c.lutHdr || c.lutSdr)) {
+          // Persist the mode on the canvas: the inline path re-decodes __sgCfg on
+          // every __spectraDraw, so an in-memory c.lut swap alone is overwritten.
+          // decodeAttrs reads data-sdr to pick lutSdr vs lutHdr.
+          if (sdr) cv.setAttribute('data-sdr', '1'); else cv.removeAttribute('data-sdr');
           c.lut = (!sdr && c.lutHdr) ? c.lutHdr : c.lutSdr;
           if (cv.__spectraDraw) cv.__spectraDraw();
         }
@@ -5268,6 +5422,198 @@ _REF_TOGGLE_JS = r"""
 """.strip()
 
 
+# Standalone HDR controller for NON-linked image grids. The linked controller's
+# createLinkedHDRLayer only runs when data-link-axes="1"; a plain image_grid
+# (e.g. barcode swatches) never gets it, so its HDR tiles fall back to a native
+# uhdr <image> whose gain map the browser bilinearly INTERPOLATES (a soft cross
+# on small/flat tiles; image-rendering:pixelated can't reach the gain-map
+# upsample). This controller overlays each ``<image data-hdr="1">`` with a WebGPU
+# rgba16float canvas that samples the decoded texture at NEAREST and applies
+# EOTF→×headroom→OETF — true nearest HDR, no gain map, no interpolation. No
+# WebGPU → the original <image> stays (native uhdr fallback).
+_STATIC_HDR_CONTROLLER_JS = r"""
+(function () {
+  if (!navigator.gpu) return;
+  var wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  if (!wrapper) return;
+  // ``<image data-hdr="1">`` tiles, NOT in a linked cell (createLinkedHDRLayer
+  // owns those) and not in a link_axes figure. We overlay a HOST WebGPU canvas
+  // (the proven extended-range path — a <foreignObject> canvas gets SDR-clamped
+  // by the SVG compositor) positioned over each tile, and set the image to
+  // ``opacity:0`` (invisible but STILL HIT-TESTABLE so click-to-zoom keeps
+  // working). The canvas sits BELOW the <svg> in the host (so labels/SVG paint
+  // on top) and the opacity:0 image lets the canvas show through.
+  var imgs = Array.prototype.slice.call(
+    wrapper.querySelectorAll('image[data-hdr="1"]')).filter(function (im) {
+      if (im.closest && im.closest('svg.ocd-linked-cell')) return false;
+      var s = im.closest('svg'); return !(s && s.dataset && s.dataset.linkAxes === '1');
+    });
+  if (!imgs.length) return;
+  var svgEl = wrapper.querySelector('svg');
+  var host = wrapper;
+  if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+  // Keep the <svg> (labels, opacity:0 images) ABOVE the host canvas: a
+  // position:absolute canvas otherwise paints over a non-positioned <svg>,
+  // hiding the SVG labels. z-index:1 on the (positioned) svg + z-index:0 on the
+  // canvas stacks svg on top; the opacity:0 image lets the canvas show through.
+  if (svgEl) {
+    if (getComputedStyle(svgEl).position === 'static') svgEl.style.position = 'relative';
+    svgEl.style.zIndex = '1';
+  }
+
+  var code = "struct U { p: vec4f };\n"
+    + "@group(0) @binding(0) var t: texture_2d<f32>;\n"
+    + "@group(0) @binding(1) var sm: sampler;\n"
+    + "@group(0) @binding(2) var<uniform> u: U;\n"
+    + "struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };\n"
+    + "@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {\n"
+    + "  var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));\n"
+    + "  var uv = array<vec2f,3>(vec2f(0,0), vec2f(2,0), vec2f(0,2));\n"
+    + "  var o: VO; o.pos = vec4f(p[i],0,1); o.uv = uv[i]; return o; }\n"
+    + "fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }\n"
+    + "fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }\n"
+    + "@fragment fn fs(in: VO) -> @location(0) vec4f {\n"
+    + "  let s = textureSample(t, sm, in.uv).rgb;\n"
+    + "  let lin = vec3f(eotf(s.r), eotf(s.g), eotf(s.b)) * u.p.x;\n"
+    + "  return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0); }\n";
+
+  function detectHeadroom() {
+    try {
+      var sc = window.screen || {};
+      var keys = ['highDynamicRangeHeadroom','dynamicRangeHeadroom','hdrHeadroom','currentEDRHeadroom'];
+      for (var k = 0; k < keys.length; k++) {
+        var v = sc[keys[k]];
+        if (typeof v === 'number' && v > 0) return Math.max(1, v);
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  (async function () {
+    var adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return;
+    var device = await adapter.requestDevice();
+    var module = device.createShaderModule({ code: code });
+    var sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    var pipe = device.createRenderPipeline({ layout: 'auto',
+      vertex: { module: module, entryPoint: 'vs' },
+      fragment: { module: module, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list' } });
+    // Default headroom 4.0 (match createLinkedHDRLayer) so tiles glow even when
+    // the display headroom API is unavailable (Chrome usually doesn't expose
+    // screen.highDynamicRangeHeadroom). The interval below adopts the live value
+    // when it IS exposed (Safari / future Chrome).
+    var N = 4.0; var _d0 = detectHeadroom(); if (_d0) N = _d0;
+    var _hdrN = N, _sdr = false;
+    var cells = [];
+
+    function place() {
+      var hostR = host.getBoundingClientRect();
+      var dpr = window.devicePixelRatio || 1;
+      cells.forEach(function (c) {
+        var r = c.im.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) { c.ok = false; return; }
+        c.canvas.style.left = (r.left - hostR.left) + 'px';
+        c.canvas.style.top  = (r.top  - hostR.top)  + 'px';
+        c.canvas.style.width  = r.width + 'px';
+        c.canvas.style.height = r.height + 'px';
+        var bw = Math.max(1, Math.round(r.width * dpr)), bh = Math.max(1, Math.round(r.height * dpr));
+        if (c.canvas.width !== bw) c.canvas.width = bw;
+        if (c.canvas.height !== bh) c.canvas.height = bh;
+        c.ok = true;
+      });
+    }
+    function draw() {
+      place();
+      cells.forEach(function (c) {
+        if (!c.ready || !c.ok) return;
+        device.queue.writeBuffer(c.ubuf, 0, new Float32Array([N, 0, 0, 0]));
+        var enc = device.createCommandEncoder();
+        var pass = enc.beginRenderPass({ colorAttachments: [{
+          view: c.ctx.getCurrentTexture().createView(),
+          loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:1 }, storeOp: 'store' }] });
+        pass.setPipeline(pipe); pass.setBindGroup(0, c.bg); pass.draw(3); pass.end();
+        device.queue.submit([enc.finish()]);
+        c.canvas.style.visibility = 'visible';
+      });
+    }
+
+    function loadTex(c, tries) {
+      var href = c.im.getAttribute('href')
+        || c.im.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+      if (!href) {
+        if ((tries || 0) < 600) return void setTimeout(function () { loadTex(c, (tries||0)+1); }, 250);
+        return;
+      }
+      var url = href;
+      try { if (window.__ocdResolveTileUrl) url = window.__ocdResolveTileUrl(href); } catch (e) {}
+      fetch(url).then(function (r) { return r.blob(); })
+        .then(function (blob) { return createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }); })
+        .then(function (bmp) {
+          var w = bmp.width, h = bmp.height;
+          var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+          device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
+          if (bmp.close) bmp.close();
+          c.bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
+            { binding: 0, resource: tex.createView() },
+            { binding: 1, resource: sampler },
+            { binding: 2, resource: { buffer: c.ubuf } }] });
+          c.ready = true;
+          // opacity:0 (NOT visibility:hidden) → invisible but still hit-testable,
+          // so the canvas shows through while click-to-zoom keeps working.
+          c.im.style.opacity = '0';
+          draw();
+        }).catch(function (e) { console.warn('static HDR tile:', e); });
+    }
+
+    imgs.forEach(function (im) {
+      var canvas = document.createElement('canvas');
+      canvas.style.cssText = 'position:absolute;pointer-events:none;z-index:0;visibility:hidden;image-rendering:pixelated';
+      host.insertBefore(canvas, svgEl || host.firstChild);   // below the <svg>
+      var ctx = canvas.getContext('webgpu');
+      if (!ctx) return;
+      try { ctx.configure({ device: device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'opaque', toneMapping: { mode: 'extended' } }); }
+      catch (e) { try { ctx.configure({ device: device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'opaque' }); } catch (e2) { return; } }
+      var ubuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      var c = { im: im, canvas: canvas, ctx: ctx, ubuf: ubuf, bg: null, ready: false, ok: false };
+      cells.push(c);
+      loadTex(c, 0);
+    });
+
+    try { new ResizeObserver(function () { draw(); }).observe(wrapper); } catch (e) {}
+    window.addEventListener('scroll', function () { place(); }, { passive: true });
+    // Hover-scale sync: the .fig-tile:hover CSS transform scales the (opacity:0)
+    // image, so its getBoundingClientRect grows — re-place + redraw the overlay
+    // canvas for ~400ms (the transition window) so the glow jiggles WITH the
+    // tile instead of staying put.
+    var _hoverRaf = 0;
+    function hoverSync() {
+      if (_hoverRaf) return;
+      var t0 = (window.performance && performance.now) ? performance.now() : 0;
+      (function loop() {
+        draw();
+        var now = (window.performance && performance.now) ? performance.now() : t0 + 999;
+        _hoverRaf = (now - t0 < 420) ? requestAnimationFrame(loop) : 0;
+      })();
+    }
+    cells.forEach(function (c) {
+      var g = c.im.closest && c.im.closest('g.fig-tile');
+      if (!g) return;
+      g.addEventListener('mouseenter', hoverSync);
+      g.addEventListener('mouseleave', hoverSync);
+    });
+    var mo = new MutationObserver(function () {
+      var sdr = wrapper.classList.contains('ocd-sdr-mode');
+      if (sdr !== _sdr) { _sdr = sdr; N = _sdr ? 1.0 : _hdrN; draw(); }
+    });
+    mo.observe(wrapper, { attributes: true, attributeFilter: ['class'] });
+    setInterval(function () { var d = detectHeadroom(); if (d && !_sdr && Math.abs(d - N) > 1e-3) { _hdrN = d; N = d; draw(); } }, 500);
+  })();
+})();
+""".strip()
+
+
 _LUTS_JSON_CACHE = None
 
 
@@ -5377,6 +5723,11 @@ def interactive_shell(content_html: str, *,
     if 'data-spectra-density' in content_html:
         js = (_load_spectra_gl_js() + "\n"
               + _SPECTRA_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
+    # Non-linked HDR image tiles → host WebGPU rgba16float canvas w/ NEAREST
+    # sampler (true nearest HDR; avoids the native-uhdr gain-map interpolation
+    # cross). The linked controller already handles data-hdr inside linked cells.
+    if 'data-hdr="1"' in content_html and 'data-link-axes="1"' not in content_html:
+        js = _STATIC_HDR_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js
     # Async streamed linked-grid tiles: poll + swap each ``data-tile-async``
     # image once its background projection lands on the tile server.
     if 'data-tile-async' in content_html:

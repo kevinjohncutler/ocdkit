@@ -1361,13 +1361,13 @@ function layout(){
     // temporarily shows that cell's classification readouts (temp). A ref shows
     // if pinned||temp; its label colors when on, grays when off. The pinned/temp
     // STATE persists across layout rebuilds (declared at module scope).
-    _refPaths={}; _refLabels={}; _refColors={};
+    _refPaths={}; _refLabels={}; _refColors={}; _refSegs={}; _refRGB={};
     // dashed reference path(s) per readout — hidden by default, tagged + grouped.
     if(AX.refs && AX.refs.length){
       AX.refs.forEach(rf=>{
         const ro=rf.readout; const c=rf.color||[0.7,0.7,0.7];
         const col='rgb('+Math.round(c[0]*255)+','+Math.round(c[1]*255)+','+Math.round(c[2]*255)+')';
-        _refColors[ro]=col;
+        _refColors[ro]=col; _refSegs[ro]=rf.segs||[]; _refRGB[ro]=c;   // segs (plot-norm) + rgb for the GPU overlay (HDR)
         const paths=[];
         (rf.segs||[]).forEach(seg=>{
           if(!seg||seg.length<2) return;
@@ -1393,7 +1393,7 @@ function layout(){
           'font-size':(TA.font_px*k).toFixed(2),'text-anchor':'middle','dominant-baseline':'central',
           'font-weight':'bold','class':'rlabel','data-ro':L.ro});
         lab.style.cursor='pointer'; lab.style.userSelect='none'; lab.style.pointerEvents='auto';  // #ovl is none
-        lab.addEventListener('click', ()=>{ _refPinned[L.ro]=!_refPinned[L.ro]; _refApply(L.ro); });
+        lab.addEventListener('click', ()=>{ _refPinned[L.ro]=!_refPinned[L.ro]; _refApply(L.ro); _refSyncGpu(); });
         (_refLabels[L.ro]||(_refLabels[L.ro]=[])).push(lab);
       });
     }
@@ -1683,19 +1683,33 @@ function toggleScope(){  // parenthetical click → all ⇄ visible
 // dashed ref shows if pinned (its top-axis label clicked) OR temp (a cell with
 // that readout is hovered in the density). ``_refPaths``/``_refLabels``/
 // ``_refColors`` are rebuilt by layout(); the pinned/temp sets survive.
-let _refPinned={}, _refTemp={}, _refPaths={}, _refLabels={}, _refColors={};
+let _refPinned={}, _refTemp={}, _refPaths={}, _refLabels={}, _refColors={}, _refSegs={}, _refRGB={};
+// In HDR the active refs are drawn LIFTED on the WebGPU overlay (so they glow
+// with the data) and the SVG dashed paths are hidden; in SDR (or HDR toggled
+// off) the SVG paths show and the GPU overlay refs are cleared. SVG stays the
+// source of truth for PPTX/PNG export, which never uses the GPU overlay.
+function _refHdrOn(){ return !!(_specCfg && _specCfg.hdr && !_sdrMode); }
 function _refApply(ro){
-  const on=!!(_refPinned[ro]||_refTemp[ro]);
-  (_refPaths[ro]||[]).forEach(p=>{ p.style.display=on?'':'none'; });
+  const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refHdrOn();
+  (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });
   (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; });
+}
+function _refSyncGpu(){   // push the active refs to the GPU overlay (HDR) or clear it (SDR)
+  const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
+  if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
+  if(!_refHdrOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} return; }
+  const dpr=self.devicePixelRatio||1, refs=[];
+  Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
+    refs.push({segs:_refSegs[ro], color:_refRGB[ro]||[0.7,0.7,0.7], dash:[6*dpr,4*dpr]}); });
+  try{ PANEL.setRefs(cv, ov, refs); }catch(_){}
 }
 function _refApplyAll(){ const seen={};
   Object.keys(_refPaths).forEach(r=>seen[r]=1); Object.keys(_refLabels).forEach(r=>seen[r]=1);
-  Object.keys(seen).forEach(_refApply); }
+  Object.keys(seen).forEach(_refApply); _refSyncGpu(); }
 function refSetTemp(roList){ const next={}; (roList||[]).forEach(r=>{ next[r]=true; });
   const ch={}; Object.keys(_refTemp).forEach(r=>ch[r]=1); Object.keys(next).forEach(r=>ch[r]=1);
-  _refTemp=next; Object.keys(ch).forEach(_refApply); }
-function refClearTemp(){ const old=_refTemp; _refTemp={}; Object.keys(old).forEach(_refApply); }
+  _refTemp=next; Object.keys(ch).forEach(_refApply); _refSyncGpu(); }
+function refClearTemp(){ const old=_refTemp; _refTemp={}; Object.keys(old).forEach(_refApply); _refSyncGpu(); }
 async function loadSpectra(){
   const cv=document.getElementById('speccv'); if(!cv) return;
   const r=await fetch(VBASE+'attach/'+SID+'/'+PANEL_KIND);
@@ -1957,6 +1971,7 @@ async function compositeFigure(){
     }
     if(typeof window.__poll==='function') window.__poll();   // HEADROOM (renders if changed)
     setCmap(CMAP);                                            // LUT variant swap + render()
+    _refApplyAll();   // HDR↔SDR flips refs between the GPU overlay (lifted) and the SVG paths
   });
   const sb=document.getElementById('savebtn'), cb=document.getElementById('copybtn');
   if(sb) sb.addEventListener('click', async e=>{ const b=e.currentTarget; b.disabled=true;
