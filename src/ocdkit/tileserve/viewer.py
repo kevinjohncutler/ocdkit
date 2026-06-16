@@ -1980,7 +1980,6 @@ async function compositeFigure(){
   if(cb) cb.addEventListener('click', async e=>{ const b=e.currentTarget; b.disabled=true;
     try{ const out=await compositeFigure(); const png=await new Promise(r=>out.toBlob(r,'image/png'));
       await navigator.clipboard.write([new ClipboardItem({[png.type]:png})]);
-      const t=b.textContent; b.textContent='Copied'; setTimeout(()=>{b.textContent=t;},1200);
     }catch(err){ console.error('copy failed:',err); alert('Copy failed: '+(err&&err.message||err)); }
     finally{ b.disabled=false; } });
 })();
