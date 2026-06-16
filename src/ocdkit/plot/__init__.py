@@ -53,3 +53,12 @@ def setup(*, registry=None, target_tile_px=None):
             DeprecationWarning, stacklevel=2)
     if target_tile_px is not None:
         _config.target_tile_px = int(target_tile_px)
+
+    # Configure the matplotlib theme + (inside a kernel) the Jupyter inline
+    # environment. This used to be a separate ``ocdkit.plot.defaults.setup()``
+    # that the name ``setup`` here shadowed, so notebooks calling
+    # ``ocdkit.plot.setup()`` silently got NO dark-mode rcParams (white
+    # figure/axes backgrounds). Fold it in so the single public entry point
+    # applies the theme.
+    from . import defaults
+    defaults.setup()

@@ -9,6 +9,58 @@ def apply_mpl_defaults():
     mpl.rcParams['text.usetex'] = False
 
 
+def apply_rcparams():
+    """Apply the ocdkit matplotlib theme: transparent (dark-mode-friendly)
+    figure/axes backgrounds, grey text/ticks/spines, retina dpi, and a
+    frameless left-anchored legend default.
+
+    Safe to call outside a notebook (pure ``mpl.rcParams`` mutation) — this
+    is what gives script-rendered figures the same dark theme as inline
+    notebook plots.
+    """
+    import matplotlib as mpl
+
+    apply_mpl_defaults()
+
+    rc_params = {
+        'figure.dpi': 300,
+        'figure.figsize': (2, 2),
+        'image.cmap': 'gray',
+        'image.interpolation': 'nearest',
+        'figure.frameon': False,
+        'axes.grid': False,
+        'axes.facecolor': 'none',
+        'figure.facecolor': 'none',
+        'savefig.facecolor': 'none',
+        'text.color': 'gray',
+        'axes.labelcolor': 'gray',
+        'xtick.color': 'gray',
+        'ytick.color': 'gray',
+        'axes.edgecolor': 'gray',
+        'legend.loc': 'center left',
+        'legend.frameon': False,
+        'legend.framealpha': 0,
+        'legend.borderaxespad': 0.0,
+        'lines.scale_dashes': False,
+    }
+    mpl.rcParams.update(rc_params)
+
+    from matplotlib.axes import Axes as _Axes
+    if not getattr(_Axes.legend, '_ocdkit_patched', False):
+        _orig_legend = _Axes.legend
+
+        def _legend(self, *args, **kwargs):
+            kwargs.setdefault('loc', 'center left')
+            kwargs.setdefault('bbox_to_anchor', (1.02, 0.5))
+            kwargs.setdefault('frameon', False)
+            kwargs.setdefault('framealpha', 0)
+            kwargs.setdefault('borderaxespad', 0.0)
+            return _orig_legend(self, *args, **kwargs)
+
+        _legend._ocdkit_patched = True
+        _Axes.legend = _legend
+
+
 def setup():
     """Configure a Jupyter notebook for inline plots with transparent backgrounds.
 
@@ -17,12 +69,14 @@ def setup():
     and VS Code), patches ``tqdm.notebook`` progress bars to a neutral grey,
     and exposes ``mpl``, ``plt``, ``widgets``, ``display``, ``tqdm`` in the
     notebook's global namespace.
+
+    The matplotlib theme (:func:`apply_rcparams`) is applied unconditionally;
+    the notebook-environment bits (CSS injection, global-namespace exposure,
+    ``%matplotlib inline``, tqdm styling) only run inside a live IPython
+    kernel, so this is safe to call from a plain script too.
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
-    import ipywidgets as widgets
-    from IPython.display import display, HTML
-    from tqdm.notebook import tqdm as notebook_tqdm
 
     # Front-load matplotlib submodules that are otherwise imported lazily on
     # first plot. Profiling showed ~1 s of one-time import + font-cache work
@@ -41,7 +95,25 @@ def setup():
     from matplotlib import font_manager
     font_manager.findfont("DejaVu Sans")
 
-    apply_mpl_defaults()
+    # The dark-mode/transparent theme — always applied, so script-rendered
+    # figures match inline notebook plots.
+    apply_rcparams()
+
+    # ── notebook-only environment config ────────────────────────────────
+    # CSS injection, global-namespace exposure, ``%matplotlib inline`` and
+    # tqdm styling only make sense inside a live IPython kernel. Bail out
+    # cleanly when called from a plain script (the theme above still applies).
+    try:
+        from IPython import get_ipython
+        ipython = get_ipython()
+    except Exception:
+        ipython = None
+    if ipython is None:
+        return
+
+    import ipywidgets as widgets
+    from IPython.display import display, HTML
+    from tqdm.notebook import tqdm as notebook_tqdm
 
     display(HTML("""
     <style>
@@ -117,7 +189,6 @@ def setup():
 
     _patch_tqdm_progress()
 
-    ipython = get_ipython()  # noqa: F821 — provided by IPython runtime
     ipython.user_global_ns['mpl'] = mpl
     ipython.user_global_ns['plt'] = plt
     ipython.user_global_ns['widgets'] = widgets
@@ -125,40 +196,3 @@ def setup():
     ipython.user_global_ns['tqdm'] = notebook_tqdm
 
     ipython.run_line_magic('matplotlib', 'inline')
-
-    rc_params = {
-        'figure.dpi': 300,
-        'figure.figsize': (2, 2),
-        'image.cmap': 'gray',
-        'image.interpolation': 'nearest',
-        'figure.frameon': False,
-        'axes.grid': False,
-        'axes.facecolor': 'none',
-        'figure.facecolor': 'none',
-        'savefig.facecolor': 'none',
-        'text.color': 'gray',
-        'axes.labelcolor': 'gray',
-        'xtick.color': 'gray',
-        'ytick.color': 'gray',
-        'axes.edgecolor': 'gray',
-        'legend.loc': 'center left',
-        'legend.frameon': False,
-        'legend.framealpha': 0,
-        'legend.borderaxespad': 0.0,
-        'lines.scale_dashes': False,
-    }
-
-    mpl.rcParams.update(rc_params)
-
-    from matplotlib.axes import Axes as _Axes
-    _orig_legend = _Axes.legend
-
-    def _legend(self, *args, **kwargs):
-        kwargs.setdefault('loc', 'center left')
-        kwargs.setdefault('bbox_to_anchor', (1.02, 0.5))
-        kwargs.setdefault('frameon', False)
-        kwargs.setdefault('framealpha', 0)
-        kwargs.setdefault('borderaxespad', 0.0)
-        return _orig_legend(self, *args, **kwargs)
-
-    _Axes.legend = _legend
