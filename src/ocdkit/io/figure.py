@@ -863,6 +863,10 @@ _SHELL_JS = r"""
     const state = { s: 1, tx: 0, ty: 0, r: 0 };
     let canvasEl = null;       // <div class="ocd-zoom-canvas"> wrapper
     let webglViewer = null;    // see createPopupWebglViewer
+    // Declared at this (IIFE) scope, NOT where they're built below, so
+    // compositeFigure() — which lives out here — can read them for the
+    // save/copy capture. Assigned (no `let`) in the nested render setup.
+    let glLayer = null, hdrLayer = null;
     // s=1 is "image fits canvas"; s<1 zooms out beyond fit (image
     // smaller than the canvas, useful for getting full context on a
     // huge image), s>1 zooms in past 1:1.
@@ -3819,7 +3823,7 @@ void main() {
           try { console.log('[ocd-timing]', m, (performance.now() - window.__ocdT0).toFixed(0) + 'ms'); }
           catch (e) {}
         };
-        let glLayer = null;
+        glLayer = null;        // hoisted to the IIFE scope (compositeFigure reads it)
         try { glLayer = createLinkedGLLayer(); }
         catch (e) { console.warn('linkedGL init failed:', e); glLayer = null; }
 
@@ -3896,7 +3900,7 @@ void main() {
         // the live display EDR headroom (screen API, polled), so highlights
         // map to the available range, never clip, and follow brightness
         // changes. No WebGPU / no adapter → the WebGL SDR render shows.
-        let hdrLayer = null;
+        hdrLayer = null;       // hoisted to the IIFE scope (compositeFigure reads it)
         async function createLinkedHDRLayer() {
           if (!navigator.gpu) return null;
           const hdrCells = [];
