@@ -52,6 +52,11 @@ viewer = [
     "imageio",
     "python-multipart",  # required for /api/upload_image (browser-side image picker)
 ]
+# GPU plotting primitives (ocdkit.wgpu) + the wgpu-native headless tile
+# renderer (ocdkit.tileserve.headless). Imported lazily, so it's an extra.
+gpu = [
+    "wgpu",
+]
 desktop = [
     "pywebview",
     "pywin32; sys_platform == 'win32'",

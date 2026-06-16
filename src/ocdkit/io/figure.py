@@ -564,6 +564,11 @@ _SHELL_CSS = """
     width: 20px; height: 20px;
     fill: currentColor;
   }
+  /* HDR badge is a wide pill, not square: pin by height so the text keeps its
+     padding and aspect (renders ~25x16) instead of being squashed to 20x20. */
+  .ocd-svgfig[data-uid="__UID__"] .ocd-svgfig-actions .ocd-hdrbtn svg {
+    width: auto; height: 16px;
+  }
   /* HDR toggle: when .ocd-sdr-mode is set on the wrapper (or on
      the overlay for popup zoom), clamp every <image>/<img>'s rendering
      to SDR via the CSS Color Module Level 4 dynamic-range-limit
@@ -743,23 +748,22 @@ _SHELL_COPY_ICON = (
 )
 
 # Stylised "HDR" badge: a filled, WIDE squircle (rectangular so the "HDR" text
-# can be large/legible; height trimmed) with the text KNOCKED OUT via a mask so
-# the background shows through the letters. The button pins the SVG to 20px wide
-# with uniform scaling, so the 26x15 viewBox renders ~20x11.5 — footprint in line
-# with the save/copy glyphs (which carry built-in padding). Follows currentColor;
-# clicking flips the wrapper's CSS class (embedded gain-map JPEGs render at SDR)
-# and toggles .ocd-hdr-off, dimming the badge to translucent (HDR on = opaque).
-# The mask id carries __UID__ (replaced at insertion) so multiple figures on one
-# page don't share a mask.
+# is large/legible with even padding inside) and the text KNOCKED OUT via a mask
+# so the background shows through the letters. Unlike the square save/copy glyphs
+# this badge is pinned by HEIGHT (.ocd-hdrbtn svg rule below → height:16px,
+# width:auto) so it stays ~25x16 — same height as the others' content, just
+# wider. Follows currentColor; clicking flips the wrapper's CSS class (embedded
+# gain-map JPEGs render at SDR) and toggles .ocd-hdr-off, dimming the badge to
+# translucent (HDR on = opaque). The mask id carries __UID__ (replaced at
+# insertion) so multiple figures on one page don't share a mask.
 _SHELL_HDR_ICON = (
-    '<svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" '
-    'viewBox="0 0 26 15">'
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18">'
     '<mask id="ocd-hdr-cut-__UID__">'
-    '<rect x="1" y="1" width="24" height="13" rx="4.5" ry="4.5" fill="white"/>'
-    '<text x="13" y="11" text-anchor="middle" font-family="Helvetica, Arial, '
-    'sans-serif" font-weight="700" font-size="11" fill="black">HDR</text>'
+    '<rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="white"/>'
+    '<text x="14" y="12.3" text-anchor="middle" font-family="Helvetica, Arial, '
+    'sans-serif" font-weight="700" font-size="9.5" fill="black">HDR</text>'
     '</mask>'
-    '<rect x="1" y="1" width="24" height="13" rx="4.5" ry="4.5" '
+    '<rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" '
     'fill="currentColor" mask="url(#ocd-hdr-cut-__UID__)"/>'
     '</svg>'
 )
