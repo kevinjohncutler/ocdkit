@@ -1434,6 +1434,7 @@ function applySpecCmap(name){
   if(_specCfg.hdr){
     if(LUTS[name]) _specLutHdr=Float32Array.from(LUTS[name]);
     if(LUTS_SDR[name]) _specLutSdr=Float32Array.from(LUTS_SDR[name]);
+    _specCfg.lutHdr=_specLutHdr; _specCfg.lutSdr=_specLutSdr;   // expose to SpectraGL (HDR overlay-line lift detection)
     if(_specLutHdr) _specCfg.lut=(_sdrMode && _specLutSdr)?_specLutSdr:_specLutHdr;
   } else if(LUTS[name]){
     _specCfg.lut=Uint8Array.from(LUTS[name]);
@@ -1719,6 +1720,7 @@ async function loadSpectra(){
   if(a['data-hdr']==='1' && a['data-lut-hdr']){
     try{ _specLutHdr=_b64f32(a['data-lut-hdr']);
          _specLutSdr=a['data-lut-sdr']?_b64f32(a['data-lut-sdr']):null;
+         _specCfg.lutHdr=_specLutHdr; _specCfg.lutSdr=_specLutSdr;   // expose to SpectraGL (HDR overlay-line lift)
          _specCfg.lut=(_sdrMode&&_specLutSdr)?_specLutSdr:_specLutHdr; _specCfg.hdr=true; }
     catch(e){ console.warn('spectra HDR lut:', e); }
   }
@@ -1867,30 +1869,16 @@ function _drawCellHighlight(){
 // Reverse link: stroke a KNOWN cell's spectrum on the 2D overlay (mirrors
 // SpectraGL.highlight's stroke, but by line index instead of nearest-to-cursor).
 function strokeSpectrumById(id){
+  // delegate to SpectraGL so the overlay uses its single render path (2D in SDR,
+  // WebGPU-extended in HDR — a local getContext('2d') here would lock the canvas
+  // to 2D and break the HDR glow).
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
-  if(!cv || !ov || !_specReady || !_specCfg) return -1;
-  const st=cv.__sgState; if(!st) return -1;
-  if(!_id2line){ _id2line=new Map(); const ci=_specCfg.cellIds||[];
-    for(let i=0;i<ci.length;i++) _id2line.set(ci[i],i); }
-  const line=_id2line.get(id);
-  const W=st.W, H=st.H;
-  if(ov.width!==W) ov.width=W; if(ov.height!==H) ov.height=H;
-  const ctx=ov.getContext('2d'); ctx.clearRect(0,0,W,H);
-  if(line==null) return -1;
-  const cfg=st.cfg, P=cfg.numPoints, sx=W/cfg.plotW, ySpan=(cfg.yHi-cfg.yLo)||1;
-  ctx.strokeStyle='rgba(255,80,80,0.95)';
-  ctx.lineWidth=Math.max(3,(self.devicePixelRatio||1)*2.5);
-  ctx.lineJoin='round'; ctx.lineCap='round';
-  for(const iv of cfg.intervals){ const s0=iv[0]|0, s1=iv[1]|0; if(s1-s0<2) continue;
-    ctx.beginPath();
-    ctx.moveTo(cfg.xPix[s0]*sx,(cfg.yHi-cfg.yLines[line*P+s0])/ySpan*H);
-    for(let j=s0+1;j<s1;j++) ctx.lineTo(cfg.xPix[j]*sx,(cfg.yHi-cfg.yLines[line*P+j])/ySpan*H);
-    ctx.stroke(); }
-  return line;
+  if(!cv || !ov || !_specReady || !PANEL) return -1;
+  try{ return PANEL.highlightById(cv, ov, id, 'rgba(255,80,80,0.95)'); }catch(_){ return -1; }
 }
 function clearCellSpectrum(){
   const ov=document.getElementById('specovl');
-  if(ov && ov.width){ try{ ov.getContext('2d').clearRect(0,0,ov.width,ov.height); }catch(e){} }
+  if(ov && PANEL){ try{ PANEL.clearHighlight(ov); }catch(e){} }
   const tip=document.getElementById('sgtip'); if(tip) tip.style.display='none';
   refClearTemp(); clearCellHighlight();
 }

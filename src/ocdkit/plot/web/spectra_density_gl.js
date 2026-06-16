@@ -36,6 +36,55 @@
 
   var COVERAGE_SCALE = 256.0;
 
+  // ── HDR overlay-line lift ────────────────────────────────────────────────
+  // When HDR is on, overlay lines (hover highlight; reference spectra next)
+  // drawn on a plain sRGB canvas read as DARK streaks against the glow, which
+  // blooms past SDR white. We instead draw them on a WebGPU rgba16float/
+  // display-p3 extended canvas with the colour lifted into the headroom by this
+  // boost (≈ the lifted-LUT glow peak of ~2.3) so they glow like the data.
+  var HL_HDR_BOOST = 2.5;
+  // linear sRGB -> linear Display-P3 (P3_FROM_XYZ @ XYZ_FROM_SRGB)
+  var _M_SRGB_P3 = [0.822462, 0.177538, 0.0,
+                    0.033194, 0.966806, 0.0,
+                    0.017083, 0.072397, 0.910520];
+  function _srgbToLin(c) { return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  function _parseRGBA(s) {
+    var m = /rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+))?\s*\)/.exec(s || '');
+    if (!m) return [1, 0.25, 0.25, 0.95];
+    return [+m[1] / 255, +m[2] / 255, +m[3] / 255, m[4] != null ? +m[4] : 1];
+  }
+  // CSS rgba() string -> [r,g,b,a] linear Display-P3, lifted by `boost` (1 = SDR).
+  function _colorToP3(str, boost) {
+    var c = _parseRGBA(str), r = _srgbToLin(c[0]), g = _srgbToLin(c[1]), b = _srgbToLin(c[2]), M = _M_SRGB_P3;
+    return [(M[0] * r + M[1] * g + M[2] * b) * boost,
+            (M[3] * r + M[4] * g + M[5] * b) * boost,
+            (M[6] * r + M[7] * g + M[8] * b) * boost, c[3]];
+  }
+  // Expand polylines (device px) into clip-space triangle-list verts
+  // (x, y, vp, ta, L) for the capsule-SDF shader: vp = signed perpendicular
+  // distance, ta = along-axis distance from the segment start, L = segment length.
+  // Each segment's quad is grown by hw (= half-width + AA feather) in BOTH the
+  // normal and axis directions so the round cap/feather is fully contained.
+  function _segsToQuads(segs, W, H, halfW) {
+    var AA = 1.0, hw = halfW + AA, v = [];
+    function p(x, y, vp, ta, L) { v.push(x / W * 2 - 1, 1 - y / H * 2, vp, ta, L); }
+    for (var s = 0; s < segs.length; s++) {
+      var pl = segs[s];
+      for (var i = 0; i + 1 < pl.length; i++) {
+        var x0 = pl[i][0], y0 = pl[i][1], x1 = pl[i + 1][0], y1 = pl[i + 1][1];
+        var dx = x1 - x0, dy = y1 - y0, len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 1e-3) continue;
+        var ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+        var sx0 = x0 - ux * hw, sy0 = y0 - uy * hw, sx1 = x1 + ux * hw, sy1 = y1 + uy * hw;
+        var ax = sx0 + nx * hw, ay = sy0 + ny * hw, bx = sx0 - nx * hw, by = sy0 - ny * hw;
+        var cx = sx1 + nx * hw, cy = sy1 + ny * hw, dx2 = sx1 - nx * hw, dy2 = sy1 - ny * hw;
+        p(ax, ay, hw, -hw, len); p(bx, by, -hw, -hw, len); p(cx, cy, hw, len + hw, len);
+        p(bx, by, -hw, -hw, len); p(dx2, dy2, -hw, len + hw, len); p(cx, cy, hw, len + hw, len);
+      }
+    }
+    return new Float32Array(v);
+  }
+
   function b64bytes(s) {
     var bin = atob(s), u = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
@@ -169,6 +218,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       // === EXTENT (AA edge, lines.py parity): max over segments of the
       // anti-aliased coverage clamp(hw+0.5 - dist_to_segment). atomicMax (not
       // add) → overlaps/joints take the max, never sum, so no hotspots. ===
+      // NOTE: the overlay hover line (HLINE / _segsToQuads, search "capsule SDF")
+      // computes the SAME clamp(hw+0.5 - dist_to_segment) coverage independently,
+      // in a plain stroke pipeline. Two parallel impls — keep them in sync.
       {
         let sec_theta = seg_len / max(abs(d_major), 0.01);
         let ext_r = i32(ceil((half_width + 0.5) * sec_theta + 0.5));
@@ -419,7 +471,46 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
         primitive: { topology: 'triangle-list' } });
       dispSmp = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
     } catch (e) { console.warn('SpectraGL HDR pipeline:', e && e.message || e); }
-    _gpu = { device: device, fmt: fmt, dispPipe: dispPipe, dispSmp: dispSmp,
+    // HDR overlay-line pipeline: solid triangle-list quads, colour from a uniform
+    // (lifted linear-P3), premultiplied src-over so overlapping joints don't
+    // double-darken. Drives the hover highlight (and reference lines) on the
+    // extended display-p3 overlay canvas so they glow with the data.
+    // Analytic coverage AA via a capsule SDF — round caps + round joins, matching
+    // the original 2D stroke's lineCap/lineJoin='round'. Each vertex carries
+    // d = (vp, ta, L): vp = signed perpendicular distance from the centreline, ta
+    // = distance along the segment axis from its start, L = segment length. `dt`
+    // = how far past either end the fragment is, so `dist` is the true distance to
+    // the segment (a capsule of radius = half-width), feathered over the outer
+    // ~1px. u.p.x = half-width (px).
+    //   This is the SAME analytic-coverage AA idea the density renderer uses (its
+    // `extent` buffer from RASTER_TEMPLATE, feathered in colorize/colorizeF) — a
+    // deliberately separate, parallel implementation: the density AA is a byproduct
+    // of a compute rasterizer feeding eq-hist, this is a plain stroke pipeline, so
+    // they don't share code. Keep the two feather rules conceptually in sync.
+    var HLINE = `
+struct U{ col:vec4f, p:vec4f };
+@group(0)@binding(0) var<uniform> u:U;
+struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
+@vertex fn vs(@location(0) xy:vec2f, @location(1) d:vec3f)->VO{ var o:VO; o.pos=vec4f(xy,0.,1.); o.d=d; return o; }
+@fragment fn fs(in:VO)->@location(0) vec4f{
+  let dt=max(max(-in.d.y, in.d.y - in.d.z), 0.0);      // past-the-end distance along the axis
+  let dist=sqrt(dt*dt + in.d.x*in.d.x);                // distance to the segment (capsule)
+  let cov=clamp(u.p.x + 0.5 - dist, 0.0, 1.0);
+  let a=u.col.a*cov; return vec4f(u.col.rgb*a, a); }`;   // premultiplied
+    var hlPipe = null;
+    try {
+      hlPipe = device.createRenderPipeline({ layout: 'auto',
+        vertex: { module: device.createShaderModule({ code: HLINE }), entryPoint: 'vs',
+          buffers: [{ arrayStride: 20, attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x2' },
+            { shaderLocation: 1, offset: 8, format: 'float32x3' }] }] },
+        fragment: { module: device.createShaderModule({ code: HLINE }), entryPoint: 'fs',
+          targets: [{ format: 'rgba16float', blend: {
+            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } } }] },
+        primitive: { topology: 'triangle-list' } });
+    } catch (e) { console.warn('SpectraGL HL pipeline:', e && e.message || e); }
+    _gpu = { device: device, fmt: fmt, dispPipe: dispPipe, dispSmp: dispSmp, hlPipe: hlPipe,
              colPipe: comp(rasterWGSL(true)), rowPipe: comp(rasterWGSL(false)),
              // GPU colorize path: eq-hist + LUT on the GPU → RGBA buffer (no CPU
              // per-pixel colorize, half the readback). Compiled lazily on first use.
@@ -746,34 +837,95 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     return bestD <= thr ? best : -1;
   }
 
-  // overlayCv: the 2D overlay canvas; densityCv carries __sgState.
-  function highlight(densityCv, overlayCv, mx, my, color) {
-    var st = densityCv.__sgState; if (!st) return -1;
-    var W = st.W, H = st.H;
-    if (overlayCv.width !== W) overlayCv.width = W;
-    if (overlayCv.height !== H) overlayCv.height = H;
-    var ctx = overlayCv.getContext('2d');
-    ctx.clearRect(0, 0, W, H);
-    var line = nearestLine(st, mx, my);
-    if (line < 0) return -1;
-    var cfg = st.cfg, P = cfg.numPoints, sx = W / cfg.plotW, ySpan = (cfg.yHi - cfg.yLo) || 1;
-    ctx.strokeStyle = color || 'rgba(255,64,64,0.95)';
-    ctx.lineWidth = Math.max(3, (self.devicePixelRatio || 1) * 2.5);
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  // build the polyline(s) for `line` in device px (one per interval).
+  function _lineSegs(cfg, line, W, H) {
+    var P = cfg.numPoints, sx = W / cfg.plotW, ySpan = (cfg.yHi - cfg.yLo) || 1, segs = [];
     for (var iv = 0; iv < cfg.intervals.length; iv++) {
       var s0 = cfg.intervals[iv][0] | 0, s1 = cfg.intervals[iv][1] | 0;
       if (s1 - s0 < 2) continue;
-      ctx.beginPath();
-      ctx.moveTo(cfg.xPix[s0] * sx, (cfg.yHi - cfg.yLines[line * P + s0]) / ySpan * H);
-      for (var j = s0 + 1; j < s1; j++)
-        ctx.lineTo(cfg.xPix[j] * sx, (cfg.yHi - cfg.yLines[line * P + j]) / ySpan * H);
+      var pl = [];
+      for (var j = s0; j < s1; j++) pl.push([cfg.xPix[j] * sx, (cfg.yHi - cfg.yLines[line * P + j]) / ySpan * H]);
+      segs.push(pl);
+    }
+    return segs;
+  }
+
+  // Draw overlay polylines on the WebGPU rgba16float/display-p3 extended overlay
+  // canvas (HDR mode), colour lifted into the headroom so the line glows like the
+  // data instead of reading as a dark streak. Configures the canvas as WebGPU on
+  // first use; once GPU, the canvas stays GPU (its context type is fixed).
+  function _drawHLGpu(overlayCv, segs, W, H, colorP3, halfW) {
+    var g = _gpu; if (!g || !g.hlPipe) return false;
+    var dev = g.device;
+    if (overlayCv.width !== W) overlayCv.width = W;
+    if (overlayCv.height !== H) overlayCv.height = H;
+    var ctx = overlayCv.__hlGpuCtx;
+    if (!ctx) {
+      ctx = overlayCv.getContext('webgpu'); if (!ctx) return false;
+      try { ctx.configure({ device: dev, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied', toneMapping: { mode: 'extended' } }); }
+      catch (e) { try { ctx.configure({ device: dev, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied' }); } catch (e2) { return false; } }
+      overlayCv.__hlGpuCtx = ctx; overlayCv.__hlMode = 'gpu';
+    }
+    var verts = _segsToQuads(segs, W, H, halfW);
+    var enc = dev.createCommandEncoder();
+    var rp = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(),
+      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+    if (verts.length) {
+      var vbuf = dev.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      dev.queue.writeBuffer(vbuf, 0, verts);
+      var ubuf = dev.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      dev.queue.writeBuffer(ubuf, 0, new Float32Array([colorP3[0], colorP3[1], colorP3[2], colorP3[3], halfW, 0, 0, 0]));
+      var bg = dev.createBindGroup({ layout: g.hlPipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: ubuf } }] });
+      rp.setPipeline(g.hlPipe); rp.setBindGroup(0, bg); rp.setVertexBuffer(0, vbuf); rp.draw(verts.length / 5);
+      rp.end(); dev.queue.submit([enc.finish()]); vbuf.destroy(); ubuf.destroy();
+    } else { rp.end(); dev.queue.submit([enc.finish()]); }
+    return true;
+  }
+
+  // Stroke `line` onto the overlay. HDR figure (cfg.hdr) → WebGPU extended canvas
+  // with the colour lifted (skipped when the HDR toggle is OFF, i.e. the SDR LUT
+  // is active, so it matches the non-lifted data). Non-HDR → plain 2D stroke.
+  function _strokeOverlay(overlayCv, cfg, line, W, H, color) {
+    var lw = Math.max(3, (self.devicePixelRatio || 1) * 2.5), segs = _lineSegs(cfg, line, W, H);
+    if (cfg.hdr) {
+      if (!_gpu || !_gpu.hlPipe) return;   // GPU not ready: skip (don't taint the canvas with a 2D context)
+      var boost = (cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0;   // no lift when toggled to SDR
+      _drawHLGpu(overlayCv, segs, W, H, _colorToP3(color || 'rgba(255,64,64,0.95)', boost), lw / 2);
+      return;
+    }
+    if (overlayCv.width !== W) overlayCv.width = W;
+    if (overlayCv.height !== H) overlayCv.height = H;
+    var ctx = overlayCv.getContext('2d'); overlayCv.__hlMode = '2d'; ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = color || 'rgba(255,64,64,0.95)';
+    ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (var s = 0; s < segs.length; s++) {
+      var pl = segs[s]; ctx.beginPath(); ctx.moveTo(pl[0][0], pl[0][1]);
+      for (var k = 1; k < pl.length; k++) ctx.lineTo(pl[k][0], pl[k][1]);
       ctx.stroke();
     }
+  }
+
+  // overlayCv: the overlay canvas (2D in SDR, WebGPU-extended in HDR); densityCv carries __sgState.
+  function highlight(densityCv, overlayCv, mx, my, color) {
+    var st = densityCv.__sgState; if (!st) return -1;
+    var line = nearestLine(st, mx, my);
+    if (line < 0) { clearHighlight(overlayCv); return -1; }
+    _strokeOverlay(overlayCv, st.cfg, line, st.W, st.H, color);
     return line;
   }
 
   function clearHighlight(overlayCv) {
-    if (overlayCv && overlayCv.width) overlayCv.getContext('2d').clearRect(0, 0, overlayCv.width, overlayCv.height);
+    if (!overlayCv) return;
+    if (overlayCv.__hlMode === 'gpu' && overlayCv.__hlGpuCtx && _gpu) {   // clear the WebGPU overlay via an empty render pass
+      var dev = _gpu.device, enc = dev.createCommandEncoder();
+      enc.beginRenderPass({ colorAttachments: [{ view: overlayCv.__hlGpuCtx.getCurrentTexture().createView(),
+        loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] }).end();
+      dev.queue.submit([enc.finish()]); return;
+    }
+    // Only touch a 2D context if the overlay is ALREADY in 2D mode — calling
+    // getContext('2d') on a fresh (or HDR/WebGPU) overlay would permanently lock
+    // it to 2D and break the GPU highlight. Unset mode = nothing drawn = no-op.
+    if (overlayCv.__hlMode === '2d' && overlayCv.width) overlayCv.getContext('2d').clearRect(0, 0, overlayCv.width, overlayCv.height);
   }
 
   // reverse link: stroke the line belonging to a known id (hover-a-cell -> light
@@ -784,24 +936,8 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     var cfg = st.cfg; if (!cfg.cellIds) return -1;
     if (!st._id2line) { st._id2line = {}; for (var i = 0; i < cfg.cellIds.length; i++) st._id2line[cfg.cellIds[i]] = i; }
     var line = st._id2line[id]; if (line == null) line = -1;
-    var W = st.W, H = st.H;
-    if (overlayCv.width !== W) overlayCv.width = W;
-    if (overlayCv.height !== H) overlayCv.height = H;
-    var ctx = overlayCv.getContext('2d'); ctx.clearRect(0, 0, W, H);
-    if (line < 0) return -1;
-    var P = cfg.numPoints, sx = W / cfg.plotW, ySpan = (cfg.yHi - cfg.yLo) || 1;
-    ctx.strokeStyle = color || 'rgba(255,64,64,0.95)';
-    ctx.lineWidth = Math.max(3, (self.devicePixelRatio || 1) * 2.5);
-    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    for (var iv = 0; iv < cfg.intervals.length; iv++) {
-      var s0 = cfg.intervals[iv][0] | 0, s1 = cfg.intervals[iv][1] | 0;
-      if (s1 - s0 < 2) continue;
-      ctx.beginPath();
-      ctx.moveTo(cfg.xPix[s0] * sx, (cfg.yHi - cfg.yLines[line * P + s0]) / ySpan * H);
-      for (var j = s0 + 1; j < s1; j++)
-        ctx.lineTo(cfg.xPix[j] * sx, (cfg.yHi - cfg.yLines[line * P + j]) / ySpan * H);
-      ctx.stroke();
-    }
+    if (line < 0) { clearHighlight(overlayCv); return -1; }
+    _strokeOverlay(overlayCv, cfg, line, st.W, st.H, color);
     return line;
   }
 
