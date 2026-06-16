@@ -41,6 +41,8 @@ dependencies = [
     "python-pptx",
     # freetype-py: glyph metrics for ocdkit.plot.text_metrics (measure_text etc.)
     "freetype-py",
+    # rich: used by ocdkit.logging.handler (lazy import) for the rich logging handler
+    "rich",
 ]
 
 [project.optional-dependencies]
