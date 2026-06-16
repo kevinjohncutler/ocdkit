@@ -430,25 +430,37 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
     return _gpu;
   }
 
-  // Float colorize — the SAME raw eq-hist CDF mapping as the original (no
-  // core-floor lift: the lifted HDR LUT already provides the glow/visibility, so
-  // adding a core-floor here double-lifts and reads as log/washed). The ONLY
-  // change vs the original is the AA: instead of a hardcoded alpha=1, carry the
-  // ext-based coverage alpha (per mode) so HDR trace edges feather exactly like
-  // the SDR 2D path. Emits straight-alpha Float32 RGBA from a (possibly lifted,
-  // >1) linear-P3 LUT; the display pass premultiplies for the premultiplied-
-  // alpha canvas. The same path renders SDR-on-the-HDR-surface (a non-lifted
-  // LUT) when the HDR toggle is off, so it then matches the plain SDR colormap.
+  // Float colorize — the EXACT same density→colour mapping as colorize() (eq-hist
+  // floor rescale + core_floor visibility lift + edge_floor), only emitting float
+  // linear-P3 instead of uint8 sRGB. Keeping the two in lockstep is what makes the
+  // figure's HDR toggle reversible: rendered through the *non-lifted* spec_lut it
+  // reproduces the plain SDR colormap (same black point, luma ≈ colorize); through
+  // the *lifted* spec_lut_hdr the identical index mapping simply glows into the
+  // headroom. Dropping the eq-hist floor (raw cdf[cc]) lands the lowest density
+  // high in the LUT = "lifted/washed"; dropping core_floor crushes the lowest
+  // density to LUT[0] = "too dark" — both break parity with SDR.
+  //   core_floor is computed on the OETF-ENCODED (displayed) LUT luminance so it
+  // lands at the same fractional index as colorize()'s uint8-sRGB basis (the LUT
+  // here is linear-P3; the display pass applies the sRGB OETF). AA: carry the
+  // ext-based coverage alpha (per mode) so HDR edges feather like the SDR path.
   function colorizeF(counts, ext, n, lut, mode) {
     mode = mode || 'alpha';
     var maxC = 0, nz = 0, i;
     for (i = 0; i < n; i++) { var c = counts[i]; if (c > 0) { nz++; if (c > maxC) maxC = c; } }
     var out = new Float32Array(n * 4);
     if (nz === 0) return out;
+    function oetf1(a) { a = Math.max(0, a); return a <= 0.0031308 ? 12.92 * a : 1.055 * Math.pow(a, 1 / 2.4) - 0.055; }
+    var lumMax = 1e-6, L;          // core_floor on DISPLAYED luminance → parity with colorize()'s uint8 basis
+    for (i = 0; i < 256; i++) { L = 0.299 * oetf1(lut[i * 4]) + 0.587 * oetf1(lut[i * 4 + 1]) + 0.114 * oetf1(lut[i * 4 + 2]); if (L > lumMax) lumMax = L; }
+    var coreFloorIdx = 0;
+    for (i = 0; i < 256; i++) { L = 0.299 * oetf1(lut[i * 4]) + 0.587 * oetf1(lut[i * 4 + 1]) + 0.114 * oetf1(lut[i * 4 + 2]); if (L >= 0.2 * lumMax) { coreFloorIdx = i; break; } }
+    var coreFloor = coreFloorIdx / 255, edgeFloor = 1 / 255;
     var nb = (maxC | 0) + 1, hist = new Float64Array(nb);
     for (i = 0; i < n; i++) { var ci = counts[i] | 0; if (ci > 0) hist[ci]++; }
     var acc = 0, cdf = new Float64Array(nb);
     for (i = 1; i < nb; i++) { acc += hist[i]; cdf[i] = acc / nz; }
+    var minC = 1; while (minC < nb && hist[minC] === 0) minC++;   // lowest nonzero count
+    var cdfFloor = (minC < nb) ? cdf[minC] : 0;                    // min density → 0 (lines.py eq-hist floor)
     for (i = 0; i < n; i++) {
       var e0 = ext ? ext[i] : (counts[i] > 0 ? 1 : 0);
       if (e0 <= 0) continue;
@@ -461,10 +473,13 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
       } else {                                // 'alpha': opaque core, feathered outer edge
         alpha = ((d > 0) || (e0 >= 0.75)) ? 1 : Math.min(1, e0);
       }
-      // colour = raw eq-hist CDF (UNCHANGED); d=0 edge pixels take the lowest
-      // colour (cdf[1]) so they feather instead of being dropped.
+      // colour value in [0,1] = eq-hist CDF rescaled by the floor, lifted by
+      // core_floor, clamped to edge_floor — IDENTICAL to colorize().vOf().
       var cc = Math.min(Math.max(d, 1), nb - 1);
-      var idx = Math.min(255, Math.max(0, (cdf[cc] * 255.0) | 0)) * 4, o = i * 4;
+      var ev = (cdf[cc] - cdfFloor) / Math.max(1 - cdfFloor, 0.001);
+      ev = coreFloor + Math.max(0, ev) * (1 - coreFloor);
+      ev = Math.max(ev, edgeFloor);
+      var idx = Math.min(255, Math.max(0, (ev * 255.0) | 0)) * 4, o = i * 4;
       out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2];
       out[o + 3] = alpha * lut[idx + 3];      // straight coverage alpha (× LUT's own alpha)
     }
