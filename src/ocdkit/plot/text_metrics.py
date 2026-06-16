@@ -33,6 +33,8 @@ _FONT_CANDIDATES_REGULAR = [
     "/System/Library/Fonts/Supplemental/Arial.ttf",
     "/Library/Fonts/Arial.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+    r"C:\Windows\Fonts\segoeui.ttf",
 ]
 _FONT_CANDIDATES_BOLD = [
     # Helvetica.ttc face 1 = Bold; freetype defaults to face 0 (Regular).
@@ -40,11 +42,15 @@ _FONT_CANDIDATES_BOLD = [
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
     "/Library/Fonts/Arial Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    r"C:\Windows\Fonts\arialbd.ttf",
+    r"C:\Windows\Fonts\seguisb.ttf",
 ]
 _FONT_CANDIDATES_MONO = [
     "/System/Library/Fonts/Menlo.ttc",
     "/System/Library/Fonts/SFNSMono.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    r"C:\Windows\Fonts\consola.ttf",
+    r"C:\Windows\Fonts\cour.ttf",
 ]
 
 
@@ -69,7 +75,16 @@ def load_face(weight: str = 'regular') -> freetype.Face:
     for p in paths:
         if os.path.exists(p):
             return freetype.Face(p)
-    raise SystemExit("no usable system font found for freetype")
+    # Last resort: matplotlib always bundles DejaVu Sans, so findfont never
+    # fails — guarantees a usable face on any platform whose system-font paths
+    # aren't in the list above (e.g. headless Linux, or a Windows CI runner).
+    try:
+        import matplotlib.font_manager as _fm
+        family = 'monospace' if weight == 'mono' else 'sans-serif'
+        mpl_weight = 'bold' if weight == 'bold' else 'normal'
+        return freetype.Face(_fm.findfont(_fm.FontProperties(family=family, weight=mpl_weight)))
+    except Exception as e:
+        raise SystemExit(f"no usable system font found for freetype: {e}")
 
 
 def measure_text(text: str, size_px: float,
