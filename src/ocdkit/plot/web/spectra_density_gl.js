@@ -532,12 +532,18 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) uv:vec2f };
 struct U{ col:vec4f, p:vec4f };
 @group(0)@binding(0) var<uniform> u:U;
 struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
+// sRGB OETF — IDENTICAL to the DISP (density) shader. u.col.rgb is LINEAR-P3
+// (from _rgb01ToP3); the display-p3/extended canvas expects gamma-ENCODED values,
+// so we MUST encode here exactly as the density does. Without it the line writes
+// raw linear → renders ~0.4× as bright + hue-shifted (per-channel nonlinearity)
+// vs the SDR label. (verified: outputs/repro/spectra_line_oetf/harness.js)
+fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(a,vec3f(1.0/2.4))-0.055,a>vec3f(0.0031308));}
 @vertex fn vs(@location(0) xy:vec2f, @location(1) d:vec3f)->VO{ var o:VO; o.pos=vec4f(xy,0.,1.); o.d=d; return o; }
 @fragment fn fs(in:VO)->@location(0) vec4f{
   let dt=max(max(-in.d.y, in.d.y - in.d.z), 0.0);      // past-the-end distance along the axis
   let dist=sqrt(dt*dt + in.d.x*in.d.x);                // distance to the segment (capsule)
   let cov=clamp(u.p.x + 0.5 - dist, 0.0, 1.0);
-  let a=u.col.a*cov; return vec4f(u.col.rgb*a, a); }`;   // premultiplied
+  let a=u.col.a*cov; return vec4f(oetf(u.col.rgb)*a, a); }`;   // premultiplied, OETF-encoded (matches density)
     var hlPipe = null;
     try {
       hlPipe = device.createRenderPipeline({ layout: 'auto',
@@ -945,7 +951,10 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
     var st = densityCv && densityCv.__sgState; if (!st) return;
     var cfg = st.cfg, W = st.W, H = st.H;
     if (!cfg.hdr || !_gpu || !_gpu.hlPipe) { overlayCv.__refBatches = []; return; }
-    var boost = (cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0;
+    // Line gain: cfg.lineBoost (set live by the viewer's HDR-gain slider, 1=SDR)
+    // when provided, else the fixed default while the HDR LUT is active.
+    var boost = (cfg.lineBoost != null) ? cfg.lineBoost
+              : ((cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0);
     var ySpan = (cfg.yHi - cfg.yLo) || 1, hw = Math.max(2, (self.devicePixelRatio || 1) * 1.6) / 2, batches = [];
     for (var i = 0; i < (refs || []).length; i++) {
       var rf = refs[i]; if (!rf || !rf.segs) continue;
@@ -968,7 +977,8 @@ struct VO{ @builtin(position) pos:vec4f, @location(0) d:vec3f };
     var lw = Math.max(3, (self.devicePixelRatio || 1) * 2.5), segs = _lineSegs(cfg, line, W, H);
     if (cfg.hdr) {
       if (!_gpu || !_gpu.hlPipe) return;   // GPU not ready: skip (don't taint the canvas with a 2D context)
-      var boost = (cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0;   // no lift when toggled to SDR
+      var boost = (cfg.lineBoost != null) ? cfg.lineBoost
+                : ((cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0);   // no lift when toggled to SDR
       overlayCv.__hoverBatch = { verts: _segsToQuads(segs, W, H, lw / 2), color: _colorToP3(color || 'rgba(255,64,64,0.95)', boost), halfW: lw / 2 };
       _renderOverlayGpu(overlayCv, W, H);
       return;
