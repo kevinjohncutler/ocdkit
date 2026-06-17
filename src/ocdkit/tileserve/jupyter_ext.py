@@ -93,10 +93,23 @@ class TileProxyHandler(JupyterHandler):
         client = tornado.httpclient.AsyncHTTPClient()
         try:
             await client.fetch(req, raise_error=False)
-        except Exception as e:                          # engine not running
+        except Exception:                               # engine not running / unreachable
             if state["started"]:
                 return                                   # mid-stream — just stop
-            raise tornado.web.HTTPError(502, f"tileserve unreachable: {e}")
+            # The upstream tileserve is gone — typically a SAVED notebook output
+            # reopened after its kernel (and tile server) restarted: its stale
+            # tiles poll this proxy. A 502 here makes jupyter_server log a WARNING +
+            # ERROR PER request → a terminal flood. ``ensure_server`` blocks until
+            # the server accepts before any figure renders, so a refused tile fetch
+            # always means GONE (never a startup blip) — so reply 204 (quiet: an
+            # info-level access line, suppressed at the usual WARNING log level; no
+            # exception warning) + a marker header. The figure tile controller sees
+            # X-Tileserve-Gone and stops polling + shows a re-run notice; older
+            # saved controllers treat 204 as "not ready", poll quietly, self-limit.
+            self.set_status(204)
+            self.set_header("X-Tileserve-Gone", "1")
+            await self.finish()
+            return
         if not state["started"]:
             _apply_headers()                             # empty body (204 / errors)
         await self.finish()

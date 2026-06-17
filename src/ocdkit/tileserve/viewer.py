@@ -294,9 +294,10 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
  #speccv{position:absolute;left:0;top:0;pointer-events:none;display:block}
  /* 2D hover-highlight overlay over the density (pointer-events ON to pick lines) */
  #specovl{position:absolute;left:0;top:0;display:block}
- #sgtip{position:fixed;pointer-events:none;background:rgba(0,0,0,0.8);color:#fff;
-   font:11px system-ui,sans-serif;padding:3px 6px;border-radius:4px;display:none;
-   z-index:20;white-space:nowrap;line-height:1.3}
+ #sgtip{position:fixed;pointer-events:none;background:rgba(20,20,22,0.4);
+   backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:#fff;
+   font:11px system-ui,sans-serif;padding:4px 8px;border-radius:6px;display:none;
+   z-index:20;white-space:nowrap;line-height:1.3;box-shadow:0 2px 8px rgba(0,0,0,0.3)}
  .lab{position:absolute;color:#fff;font:12px/1 system-ui,sans-serif;
    text-shadow:0 0 3px #000,0 0 3px #000;pointer-events:none}
  /* ctl (cmap picker etc.) is a STRIP ABOVE the figure and hud (debug info) a
@@ -377,6 +378,12 @@ let HEADROOM=1;
 // via the "HDR gain" slider. Auto is unusable on Chrome builds with no numeric
 // headroom API (most), so the explicit gain is the practical HDR control.
 let HRMANUAL=__HRGAIN__;
+// Raw "HDR gain" slider value (>=1) — drives the spectra reference/hover LINE
+// boost via _lineBoost() (1 = SDR, hue-exact). Defaults to a visible glow so the
+// HDR figure looks the same at rest; the slider dials it down to 1 (SDR) or up.
+// (HRMANUAL stays the RGB-tile control; this is the line's continuous gain.)
+const _LINE_BOOST_DEFAULT=2.5;
+let _HDRGAIN=(HRMANUAL>1?HRMANUAL:_LINE_BOOST_DEFAULT);
 let AUTOHR=1, HRSRC='?';   // last auto headroom reading + which signal gave it
 const texCache=new Map(); const _filled=new Set();
 // Masks-tile ncolor toggle: click the "Masks" label to swap the underlying tile
@@ -413,11 +420,12 @@ let view={cx:0.5, cy:0.5, s:1.0};          // shared: centre (FOV-norm) + scale 
 // full stroke width in source/image px; a small device-px floor keeps it from
 // vanishing when zoomed all the way out (the whole FOV downsampled to one cell).
 const OUTLINE_IMG_PX=0.75, OUTLINE_MIN_DPX=0.25;
-// ctl/hud strip heights in Wref units (scaled by k; the Python embed aspect
-// reserves CTL_H0+HUD_H0 too, so flow-stacking ctl+figure+hud fits exactly).
-const CTL_H0=30, HUD_H0=22, TITLE_H0=26;
+// ctl/hud/title strip heights come from the server layout (_G.ctl_h/hud_h/
+// title_h = compute_layout, single source of truth; the Python embed aspect
+// reserves the same values). Scaled by k so flow-stacking ctl+figure+hud fits.
 let _kNow=1;
 function _sizeBars(){
+  const CTL_H0=(_G&&_G.ctl_h)||30, HUD_H0=(_G&&_G.hud_h)||22, TITLE_H0=(_G&&_G.title_h)||26;
   const c=document.getElementById('ctl');
   if(c){ c.style.height=(CTL_H0*_kNow)+'px'; c.style.fontSize=Math.max(9,12*_kNow)+'px'; }
   hud.style.height=(HUD_H0*_kNow)+'px'; hud.style.fontSize=Math.max(8,11*_kNow)+'px';
@@ -920,6 +928,17 @@ fn oetf(v:vec3f)->vec3f{ let a=max(v,vec3f(0.0));
     // headroom. On an SDR display (headroom 1) the output matches the 8-bit
     // sRGB path. Only float RGB on the HDR canvas takes this route; uint8 RGBA
     // (already sRGB-encoded) stays on the byte path below.
+    // float16 RGBA wire (server ?rgbf16=1): the bytes are ALREADY rgba16float —
+    // upload them raw (the GPU reads them as half). NO per-pixel CPU conversion,
+    // so a new RGB pyramid level uploads without the ~30ms float->half loop hitch.
+    if(dt==='float16' && ch===4 && this.HDR && hdrPipe){
+      const tex=device.createTexture({size:[w,h],format:'rgba16float',
+        usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
+      padUpload(tex,w,h,new Uint8Array(buf),8);          // raw f16 bytes, no loop
+      const bg=device.createBindGroup({layout:hdrPipe.getBindGroupLayout(0),
+        entries:[{binding:0,resource:tex.createView()},{binding:1,resource:NEAR?this._nearSmp:smp}]});
+      return {mode:'rgb',w,h,bg,hdr:true};
+    }
     if(dt==='float32' && this.HDR && hdrPipe && typeof Float16Array!=='undefined'){
       const f=new Float32Array(buf); const half=new Float16Array(w*h*4);
       for(let i=0;i<w*h;i++){ for(let k=0;k<3;k++){ half[i*4+k]=f[i*ch+k]; } half[i*4+3]=1; }
@@ -1047,6 +1066,11 @@ async function init(){ try{
 
   // FRAME first: layout + labels the moment dims are known (no GPU needed).
   info = await infoP;
+  // PANEL-ONLY: a figure with NO image tile layers (e.g. scope.plot_spectra's
+  // barcode panel) — render ONLY the spectra panel, skipping ALL tile/layer
+  // machinery (layer select, level pick, tile fetch/poll, pyramid warm, refine,
+  // detail crop, exc compose), which all assume >=1 layer and would crash on {}.
+  window.PANEL_ONLY = !Object.keys(info.layers||{}).length;
   await refreshLayoutGeom();
   layout();
   console.log('FIRSTPAINT '+Math.round(performance.now()));
@@ -1101,6 +1125,7 @@ async function init(){ try{
 }
 let _paintedAll=false;
 async function poll(){
+  if(window.PANEL_ONLY){ try{render();}catch(e){} return; }
   // exc* are fetched as a texture array by loadExc(), not as individual cell
   // tiles — skip them here so poll doesn't build textures the grid never paints.
   const order=Object.keys(info.layers).filter(l=>!/^exc\d+$/.test(l)); let allReady=true;
@@ -1140,7 +1165,7 @@ function layout(){
       else if(lbl && lbl.empty) placed.push({empty:lbl.empty,r,col}); }));   // absent readout
   } else {
     const order=Object.keys(info.layers).filter(l=>!/^exc\d+$/.test(l));
-    cols=order.length<=6?order.length:7; rows=Math.ceil(order.length/cols);
+    cols=order.length<=6?order.length:7; rows=cols?Math.ceil(order.length/cols):0;   // cols=0 (panel-only) → rows=0, not NaN
     placed=order.map((lbl,i)=>({label:lbl,r:Math.floor(i/cols),col:i%cols}));
   }
   // ── SCALE-TO-FIT (matches the SVG figure, which scales the whole grid+spectra
@@ -1167,29 +1192,16 @@ function layout(){
   // single source of truth); fall back to the inline width-driven math otherwise.
   let k, cw, gap, totH, vgap=0, XLAB_H=0, TOPAX_H, contentLeft, contentW, topAxTop, panelTop, plotW, plotH, fullH;
   let SERVERCELLS=null;
-  if(_G && _G.cols===cols && _G.rows===rows && (!!_G.has_panel)===hasAx){
-    k=_G.k; cw=_G.cw; gap=_G.gap; totH=_G.canvas_h; TOPAX_H=_G.top_ax_h;
-    contentLeft=_G.content_left; contentW=_G.content_w; topAxTop=_G.top_ax_top;
-    panelTop=_G.panel_top; plotW=_G.panel_w; plotH=_G.panel_h; fullH=_G.full_h;
-    SERVERCELLS=_G.cells;
-  } else {
-    // FALLBACK: inline reference-width math (identical to compute_layout). The
-    // figure is designed at Wref and uniformly scaled by k=W0/Wref.
-    const Wref=1000, PAD=0.05, YAXW0=50, RM0=8, XLAB_H0=46, TOPAX0=22;
-    k=W0/Wref;
-    const padL0=hasAx?YAXW0:0, padR0=hasAx?RM0:0;
-    const contentW0=Math.max(20, Wref-padL0-padR0);
-    const cw0=contentW0/(cols+(cols+1)*PAD), gap0=PAD*cw0, totH0=rows*cw0+gap0*(rows+1);
-    const gridSpanH0=rows*cw0+Math.max(0,rows-1)*gap0;
-    const vgap0=(TA||isXY)?0:Math.max(6,PAD*cw0), plotW0=Math.max(20, contentW0-2*gap0);
-    const plotH0=hasAx?gridSpanH0:0;
-    const TOPAX_H0=(TA&&TA.top_axis_h!=null)?TA.top_axis_h:((hasAx&&!isXY)?TOPAX0:0);
-    const fullH0=hasAx?(totH0+vgap0+TOPAX_H0+plotH0+XLAB_H0):totH0;
-    cw=cw0*k; gap=gap0*k; totH=totH0*k; vgap=vgap0*k; XLAB_H=XLAB_H0*k; TOPAX_H=TOPAX_H0*k;
-    contentLeft=(hasAx?YAXW0:0)*k; contentW=contentW0*k;
-    topAxTop=hasAx?totH+vgap:0; panelTop=hasAx?totH+vgap+TOPAX_H:0; plotW=hasAx?plotW0*k:0;
-    plotH=hasAx?plotH0*k:0; fullH=fullH0*k;
-  }
+  // GEOMETRY — the server-computed layout (_G = Python compute_layout, served at
+  // /layout) is the SINGLE source of truth. It is fetched in refreshLayoutGeom()
+  // before every layout() (init + resize), so it's always present here; there is
+  // no inline duplicate of the layout math. (cols/rows/hasAx above are derived
+  // from the same info compute_layout used, so _G always agrees.)
+  if(!_G){ console.warn('layout(): /layout geometry (_G) unavailable — skipping draw'); return; }
+  k=_G.k; cw=_G.cw; gap=_G.gap; totH=_G.canvas_h; TOPAX_H=_G.top_ax_h;
+  contentLeft=_G.content_left; contentW=_G.content_w; topAxTop=_G.top_ax_top;
+  panelTop=_G.panel_top; plotW=_G.panel_w; plotH=_G.panel_h; fullH=_G.full_h;
+  SERVERCELLS=_G.cells;
   const fs=px=>Math.max(7, px*k);
   // Canvas spans the FULL container width (dpr maps cleanly); the grid sits in
   // [contentLeft, contentLeft+contentW].
@@ -1414,6 +1426,7 @@ function vpFor(){                            // shared viewport rect in FOV-norm
   return {x:view.cx-vw/2, y:view.cy-vh/2, w:vw, h:vh};
 }
 function pickLevel(label, cellWpx){
+  if(window.PANEL_ONLY||!info.layers||!info.layers[label]) return 0;
   const dims=info.layers[label]; const need=cellWpx/Math.max(view.s,1e-6);
   for(let i=0;i<dims.length;i++){ if(dims[i][1]>=need) return i; } return dims.length-1;
 }
@@ -1478,11 +1491,13 @@ function buildControls(){
     const gl=document.createElement('span'); gl.textContent=' HDR gain ';
     const sld=document.createElement('input'); sld.type='range';
     sld.min='1'; sld.max='12'; sld.step='0.1'; sld.style.width='90px';
-    sld.value=String(HRMANUAL>0?HRMANUAL:1);
-    const gv=document.createElement('span'); gv.textContent=HRMANUAL>0?HRMANUAL.toFixed(1)+'×':'auto';
-    sld.oninput=()=>{ HRMANUAL=(+sld.value<=1.0001)?0:+sld.value;
-      gv.textContent=HRMANUAL?(+sld.value).toFixed(1)+'×':'auto';
+    sld.value=String(_HDRGAIN);                 // knob = the spectra LINE gain
+    const gv=document.createElement('span'); gv.textContent=(+sld.value).toFixed(1)+'×';
+    sld.oninput=()=>{ _HDRGAIN=+sld.value;                 // continuous LINE gain (1 = SDR)
+      HRMANUAL=(+sld.value<=1.0001)?0:+sld.value;          // RGB-tile gain (1 → auto)
+      gv.textContent=(+sld.value).toFixed(1)+'×';
       HEADROOM=-1; /* force pollHeadroom to re-apply */
+      if(typeof _refSyncGpu==='function') _refSyncGpu();    // re-push refs at the new boost
       if(typeof window.__poll==='function') window.__poll(); render(); };
     bar.appendChild(gl); bar.appendChild(sld); bar.appendChild(gv);
   }
@@ -1496,9 +1511,13 @@ function buildControls(){
 // a zoom threshold at the same view.s) can fetch in PARALLEL but UPLOAD
 // one-per-frame — N synchronous texture uploads in one frame is the zoom
 // "hiccup" at the level switch.
+// Request float RGB tiles as raw float16 RGBA ONLY on the WebGPU/HDR backend —
+// it uploads them straight to rgba16float (no per-pixel float->half CPU loop, the
+// ~30ms zoom-level hitch). WebGL2/SDR omit it → float32 wire (unchanged path).
+function _rgbf16Q(){ return (backend && backend.HDR) ? '&rgbf16=1' : ''; }
 async function fetchTile(label, level){
   const key=label+'/'+level; if(texCache.has(key)) return null;
-  const r=await fetch(VBASE+'tile/'+SID+'/'+label+'/'+level+'?fmt=raw');
+  const r=await fetch(VBASE+'tile/'+SID+'/'+label+'/'+level+'?fmt=raw'+_rgbf16Q());
   if(r.status===204 || !r.ok) return null;     // not projected yet — retry later
   const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
   const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype');
@@ -1552,6 +1571,7 @@ function _detailKeyFor(){
   return {x0,y0,x1,y1};
 }
 function requestDetail(){
+  if(window.PANEL_ONLY) return;
   if(!backend||!info) return;
   const kk=_detailKeyFor();
   for(const cell of cells){
@@ -1566,7 +1586,7 @@ function requestDetail(){
     _detailReq.add(reqKey);
     (async()=>{
       try{
-        const r=await fetch(VBASE+'tile/'+SID+'/'+L+'/'+target+'?fmt=raw&crop='+kk.x0+','+kk.y0+','+kk.x1+','+kk.y1);
+        const r=await fetch(VBASE+'tile/'+SID+'/'+L+'/'+target+'?fmt=raw&crop='+kk.x0+','+kk.y0+','+kk.x1+','+kk.y1+_rgbf16Q());
         if(r.status===204 || !r.ok) return;
         const w=+r.headers.get('X-Level-Width'), h=+r.headers.get('X-Level-Height');
         const ch=+r.headers.get('X-Channels'), dt=r.headers.get('X-Dtype');
@@ -1689,15 +1709,26 @@ let _refPinned={}, _refTemp={}, _refPaths={}, _refLabels={}, _refColors={}, _ref
 // off) the SVG paths show and the GPU overlay refs are cleared. SVG stays the
 // source of truth for PPTX/PNG export, which never uses the GPU overlay.
 function _refHdrOn(){ return !!(_specCfg && _specCfg.hdr && !_sdrMode); }
+// HDR-CAPABLE figures (spectra with an HDR LUT) ALWAYS draw the reference line on
+// the WebGPU overlay — in BOTH the HDR and SDR-toggle states — so the line never
+// jumps renderers (SVG↔GPU) or dash positions when you toggle HDR or drag the
+// gain slider; the SDR look is just boost=1 on the same GPU line. The SVG dashed
+// path is used only for figures with NO HDR LUT (no WebGPU overlay).
+function _refGpuOn(){ return !!(_specCfg && _specCfg.hdr && PANEL && PANEL.setRefs); }
+// Reference/hover LINE gain = the "HDR gain" slider value (_HDRGAIN, 1 = SDR, up
+// = glow), forced to 1 when the HDR toggle is off so SDR is a true scalar-1
+// (hue-exact: equal multiply on all channels preserves chromaticity).
+function _lineBoost(){ return _sdrMode ? 1.0 : Math.max(1, _HDRGAIN); }
 function _refApply(ro){
-  const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refHdrOn();
-  (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });
+  const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refGpuOn();
+  (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
   (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; });
 }
-function _refSyncGpu(){   // push the active refs to the GPU overlay (HDR) or clear it (SDR)
+function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
-  if(!_refHdrOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} return; }
+  if(_specCfg) _specCfg.lineBoost=_lineBoost();   // gain follows the slider / SDR toggle
+  if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} return; }
   const dpr=self.devicePixelRatio||1, refs=[];
   Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
     refs.push({segs:_refSegs[ro], color:_refRGB[ro]||[0.7,0.7,0.7], dash:[6*dpr,4*dpr]}); });
@@ -1944,6 +1975,7 @@ async function compositeFigure(){
   }
   drawCv(document.getElementById('c'));               // tile grid (z0)
   drawCv(document.getElementById('speccv'));          // spectra density
+  drawCv(document.getElementById('specovl'));         // GPU overlay lines (refs/hover) — matches the on-screen line
   const clone=document.getElementById('ovl').cloneNode(true);   // SVG annotation layer ON TOP
   clone.setAttribute('width',W); clone.setAttribute('height',H);
   const xml=new XMLSerializer().serializeToString(clone);
@@ -1992,6 +2024,7 @@ async function compositeFigure(){
 // RGB cell composites + toggles them on the GPU. WebGL2 backend has no compose
 // (no setExcArray) → silently falls back to the baked RGB tile.
 async function loadExc(){
+  if(window.PANEL_ONLY) return;
   if(!backend || !backend.setExcArray) return;
   const labels=Object.keys(info.layers).filter(l=>/^exc\d+$/.test(l))
     .sort((a,b)=>(+a.slice(3))-(+b.slice(3)));
@@ -2124,6 +2157,12 @@ function _hlColorFor(label,id){
 }
 function render(){
   if(!backend) return;
+  // PANEL-ONLY: no tiles — skip the GPU tile frame entirely (the main canvas is
+  // 0-height, so a render pass would error). The spectra panel is the SVG
+  // overlay (built in layout()) + the SpectraGL density canvas (drawSpectra).
+  if(window.PANEL_ONLY){ try{ drawSpectra(); }catch(e){}
+    try{ hud.textContent='spectra panel  ·  '+(backend?backend.name:'')+((backend&&backend.HDR)?' HDR':''); }catch(e){}
+    return; }
   backend.frameBegin();
   const vp=vpFor();
   for(const cell of cells){
@@ -2209,6 +2248,7 @@ function draw(){
   _refineT=setTimeout(()=>{ _refineLast=(self.performance&&performance.now)?performance.now():Date.now(); refine(); requestDetail(); }, 60);
 }
 async function refine(){
+  if(window.PANEL_ONLY) return;
   if(_refining) return; _refining=true;
   try{
     // one progressive step toward each cell's target (so it sharpens, not pops)
@@ -2245,6 +2285,7 @@ async function refine(){
 // first zoom is as smooth as a warm second one. Retries layers that aren't
 // projected yet (NAS load), bails on interaction (re-kicked after via pauseWarm).
 async function warmPyramid(){
+  if(window.PANEL_ONLY) return;
   if(_warmRunning || _warmDone || !backend) return; _warmRunning=true;
   try{
     // BUDGET for background full-res prefetch. Prefetching every layer's whole-FOV

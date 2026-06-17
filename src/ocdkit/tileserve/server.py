@@ -183,6 +183,38 @@ def register_lazy(sid: str, label: str, producer):
     _LAZY[(sid, label)] = producer
 
 
+# Content-addressed registration: identical array bytes map to ONE source, so
+# callers never need their own per-object cache and can't serve a stale tile
+# (different content → different hash → different sid).
+_CONTENT_SIDS: dict[str, str] = {}
+
+
+def register_array(arr: np.ndarray, *, meta: dict | None = None,
+                   label: str = "scalar", single_level: bool = True,
+                   n_levels: int = 1) -> tuple[str, str]:
+    """Register a single ready array as a tile source, deduplicated by content.
+
+    Returns ``(sid, label)``. Build the raw-tile URL as
+    ``f"{ensure_server()}/tile/{sid}/{label}/99?fmt=raw"``. Repeated calls with
+    identical ``arr`` reuse the same source (no re-fill, stable URL = browser-cache
+    friendly); changed content registers a fresh source automatically.
+    """
+    import hashlib
+    a = np.ascontiguousarray(arr)
+    key = hashlib.blake2b(a.tobytes(), digest_size=16).hexdigest()
+    with _LOCK:
+        sid = _CONTENT_SIDS.get(key)
+        if sid is not None and sid in _SOURCES:
+            return sid, label
+    h, w = a.shape[:2]
+    sid = register_pending(w, h, [label], n_levels=n_levels,
+                           single_level=[label] if single_level else None)
+    fill(sid, label, a, meta)
+    with _LOCK:
+        _CONTENT_SIDS[key] = sid
+    return sid, label
+
+
 def attach(sid: str, name: str, blob: bytes, headers: dict | None = None,
            media: str = "application/octet-stream"):
     """Attach an opaque named blob to a source, served by ``/attach/{sid}/{name}``."""
@@ -288,7 +320,7 @@ def make_app():
 
     @app.get("/tile/{sid}/{label}/{level}")
     async def tile(sid: str, label: str, level: int, fmt: str = "raw", f32: int = 0,
-                   crop: str = ""):
+                   crop: str = "", rgbf16: int = 0):
         src = get_source(sid)
         if src is None:
             return JSONResponse({"error": "unknown source"}, status_code=404)
@@ -342,6 +374,18 @@ def make_app():
             # clip to the float16 range first — raw 16-bit intensity reaches 65535
             # but float16 maxes at 65504, so the top ~31 codes would overflow to
             # inf. Clamping costs ≤0.05% only at the absolute peak (lo/hi exact).
+            arr = np.clip(arr, -65504.0, 65504.0).astype("<f2")
+        # float16 RGBA wire for FLOAT RGB tiles (opt-in via ?rgbf16=1 — sent by the
+        # WebGPU/HDR client). Packs 3->4 (opaque alpha) and casts to <f2 so the
+        # client uploads the raw bytes straight to an rgba16float texture (the GPU
+        # reads them as half). This removes the client-side per-pixel float->half
+        # conversion loop, which was a ~30ms frame hitch each time a zoom crossed
+        # an RGB pyramid level. Other clients omit the flag → float32 (unchanged).
+        elif (fmt == "raw" and rgbf16 and arr.ndim == 3
+                and arr.dtype == np.float32):
+            if arr.shape[2] == 3:
+                arr = np.concatenate(
+                    [arr, np.ones((arr.shape[0], arr.shape[1], 1), arr.dtype)], axis=2)
             arr = np.clip(arr, -65504.0, 65504.0).astype("<f2")
         sh, sw = arr.shape[0], arr.shape[1]          # SERVED dims (cropped if cropping)
         body, media = _encode_level(sh, sw, arr, fmt)

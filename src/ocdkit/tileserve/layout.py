@@ -17,13 +17,21 @@ from __future__ import annotations
 
 import re
 
-# Reference-width design constants — MUST match viewer.py layout().
+# Reference-width design constants. This is the SINGLE source of truth for the
+# figure geometry — the viewer (viewer.py layout()) consumes compute_layout's
+# output as `_G` and no longer re-derives any of these.
 WREF = 1000.0
 PAD = 0.05
 YAXW0 = 50.0      # y-axis strip reserved left of the grid (when a panel is present)
 RM0 = 8.0         # right margin (matches, so tiles + panel share x-extent)
 XLAB_H0 = 46.0    # x-label strip height below the panel
 TOPAX0 = 22.0     # legacy top-axis height when no ported strip is supplied
+# Viewer CHROME strip heights (Wref units). The viewer's _sizeBars() sizes the
+# real DOM strips from these (× k) and the Python embed reserves them in the
+# iframe aspect — both read them from compute_layout's output, so they live ONCE.
+CTL_H0 = 30.0     # colormap/controls bar ABOVE the figure
+HUD_H0 = 22.0     # debug hud strip BELOW the figure
+TITLE_H0 = 26.0   # global title bar (only when a title is advertised)
 
 
 def _label_pos(x, y, w, h, pos, pad):
@@ -98,12 +106,34 @@ def compute_layout(grid, layers, panel_axes, container_w, *,
     gridSpanH0 = rows * cw0 + max(0, rows - 1) * gap0
 
     TA = (AX.get("top_axis") if (has_ax and not is_xy) else None)
-    vgap0 = 0.0 if (TA or is_xy) else max(6.0, PAD * cw0)
-    plotW0 = max(20.0, contentW0 - 2 * gap0)
-    plotH0 = gridSpanH0 if has_ax else 0.0
-    TOPAX_H0 = (TA["top_axis_h"] if (TA and TA.get("top_axis_h") is not None)
-                else (TOPAX0 if (has_ax and not is_xy) else 0.0))
-    fullH0 = (totH0 + vgap0 + TOPAX_H0 + plotH0 + XLAB_H0) if has_ax else totH0
+    # ── PANEL-ONLY mode (no image grid): the spectra panel IS the whole figure.
+    # Used by ``scope.plot_spectra(backend='live')`` — a barcode has no FOV
+    # images, just the spectra panel that normally sits below the scene grid.
+    # Without a grid there's no ``gridSpanH0`` to size the panel, so the plot-box
+    # height comes from ``AX['panel_h']`` (Wref units; default = content_w/3.2,
+    # a wide single panel). The grid canvas collapses to zero; the top/bottom
+    # axes + panel stack exactly as in the gridded case.
+    panel_only = bool(has_ax and rows == 0 and cols == 0)
+    if panel_only:
+        totH0 = 0.0
+        gap0 = 0.0
+        # No grid cell, but the border/tick width is bw=cw*0.012 (viewer) — use a
+        # nominal cell width so the spine/ticks stay ~1.5px, not the full panel
+        # width (which would draw a ~14px-thick border).
+        cw0 = WREF / 8.0
+        plotW0 = contentW0
+        plotH0 = float(AX.get("panel_h") or (contentW0 / 3.2))
+        vgap0 = 0.0
+        TOPAX_H0 = (TA["top_axis_h"] if (TA and TA.get("top_axis_h") is not None)
+                    else (TOPAX0 if not is_xy else 0.0))
+        fullH0 = TOPAX_H0 + plotH0 + XLAB_H0
+    else:
+        vgap0 = 0.0 if (TA or is_xy) else max(6.0, PAD * cw0)
+        plotW0 = max(20.0, contentW0 - 2 * gap0)
+        plotH0 = gridSpanH0 if has_ax else 0.0
+        TOPAX_H0 = (TA["top_axis_h"] if (TA and TA.get("top_axis_h") is not None)
+                    else (TOPAX0 if (has_ax and not is_xy) else 0.0))
+        fullH0 = (totH0 + vgap0 + TOPAX_H0 + plotH0 + XLAB_H0) if has_ax else totH0
 
     # scale Wref-units → px
     padL = padL0 * k
@@ -145,4 +175,7 @@ def compute_layout(grid, layers, panel_axes, container_w, *,
         "panel_top": panel_top, "panel_left": content_left + gap,
         "panel_w": plotW, "panel_h": plotH,
         "full_h": fullH,
+        # chrome strip heights (Wref units; unscaled) — single source of truth
+        # for both the viewer's _sizeBars and the Python embed aspect.
+        "ctl_h": CTL_H0, "hud_h": HUD_H0, "title_h": TITLE_H0,
     }
