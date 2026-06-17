@@ -616,6 +616,15 @@ class SVG:
         # ``width`` px) while keeping the viewBox aspect ratio. When the
         # container is wider than ``width``, the SVG stays at its
         # intrinsic size so it doesn't blur in standalone viewers.
+        # Default font is a `font-family` PRESENTATION ATTRIBUTE on the root
+        # <svg>, NOT a `<style>` rule. Per CSS, presentation attributes are the
+        # lowest-priority origin: ANY author `<style>` rule — `svg {…}`, `text
+        # {…}`, `.cls {…}` alike — overrides EVERY per-element `font-family`
+        # attribute (e.g. a mono channel label), regardless of selector. So a
+        # `<style>` default silently defeats element fonts. As a root
+        # presentation attribute the default merely *inherits*, and a child's
+        # own `font-family` attribute (same origin) wins via normal inheritance
+        # — matching how the live viewer's bare SVG renders element fonts.
         self.parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'xmlns:xlink="http://www.w3.org/1999/xlink" '
@@ -623,16 +632,13 @@ class SVG:
             f'viewBox="{vb_str}" '
             f'preserveAspectRatio="xMidYMid meet" '
             f'style="max-width:100%;height:auto" '
+            f'font-family="{escape(default_font_family, quote=True)}" '
             f'shape-rendering="geometricPrecision"{data_str}>'
         ]
         if background is not None:
             # Background covers the full viewBox, not the outer CSS box.
             self.rect(viewBox[0], viewBox[1], viewBox[2], viewBox[3],
                       fill=background)
-        # CSS default font for text elements.
-        self.parts.append(
-            f"<style>text {{ font-family: {default_font_family}; }}</style>"
-        )
 
     def add(self, raw: str):
         self.parts.append(raw)
@@ -654,14 +660,19 @@ class SVG:
     # ── shape primitives ───────────────────────────────────────────────
 
     def rect(self, x, y, w, h, *, fill='none', stroke='none', stroke_width=0,
-             opacity=None, class_=None):
+             opacity=None, class_=None, rx=None, ry=None):
         op = '' if opacity is None else f' opacity="{opacity}"'
         f = rgba_to_css(fill) if not isinstance(fill, str) else fill
         s = rgba_to_css(stroke) if not isinstance(stroke, str) else stroke
         cls = f' class="{escape(class_, quote=True)}"' if class_ else ''
+        rnd = ''
+        if rx is not None:
+            rnd += f' rx="{rx:.2f}"'
+        if ry is not None:
+            rnd += f' ry="{ry:.2f}"'
         self.parts.append(
             f'<rect{cls} x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" '
-            f'fill="{f}" stroke="{s}" stroke-width="{stroke_width}"{op}/>'
+            f'fill="{f}" stroke="{s}" stroke-width="{stroke_width}"{rnd}{op}/>'
         )
 
     def line(self, x1, y1, x2, y2, *, stroke='#666', stroke_width=1,
