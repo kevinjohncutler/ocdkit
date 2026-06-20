@@ -51,7 +51,26 @@
 
   function product(shape) { return shape.reduce((a, b) => a * b, 1); }
 
-  /** Decode a {dtype,shape,gzip,b64} field into {data:TypedArray, shape}. */
+  /** Raw (already-inflated) bytes + dtype + shape -> {data:TypedArray, shape}. */
+  function bytesToTyped(bytes, dtype, shape) {
+    const out_shape = shape.slice();
+    const n = product(out_shape);
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    if (dtype === "float16") {
+      if (HAS_F16) return { data: Float32Array.from(new globalThis.Float16Array(buf, 0, n)), shape: out_shape };
+      const u16 = new Uint16Array(buf, 0, n);
+      const out = new Float32Array(n);
+      for (let i = 0; i < n; i++) out[i] = halfToFloat(u16[i]);
+      return { data: out, shape: out_shape };
+    }
+    const Ctor = DTYPE_CTORS[dtype];
+    if (!Ctor) throw new Error("bytesToTyped: unsupported dtype " + dtype);
+    return { data: new Ctor(buf, 0, n), shape: out_shape };
+  }
+
+  /** Decode a {dtype,shape,gzip,b64} field into {data:TypedArray, shape}.
+   * gzipped fields require a synchronous opts.inflate (Node: zlib.gunzipSync).
+   * In the browser, inflate asynchronously first then call bytesToTyped. */
   function decodeArray(field, opts) {
     opts = opts || {};
     let bytes = b64ToBytes(field.b64);
@@ -59,23 +78,7 @@
       if (!opts.inflate) throw new Error("decodeArray: gzipped field needs opts.inflate");
       bytes = opts.inflate(bytes);
     }
-    const shape = field.shape.slice();
-    const n = product(shape);
-    if (field.dtype === "float16") {
-      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      if (HAS_F16) {
-        const f16 = new globalThis.Float16Array(buf, 0, n);
-        return { data: Float32Array.from(f16), shape };
-      }
-      const u16 = new Uint16Array(buf, 0, n);
-      const out = new Float32Array(n);
-      for (let i = 0; i < n; i++) out[i] = halfToFloat(u16[i]);
-      return { data: out, shape };
-    }
-    const Ctor = DTYPE_CTORS[field.dtype];
-    if (!Ctor) throw new Error("decodeArray: unsupported dtype " + field.dtype);
-    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    return { data: new Ctor(buf, 0, n), shape };
+    return bytesToTyped(bytes, field.dtype, field.shape);
   }
 
   // --- slice views --------------------------------------------------------
@@ -201,7 +204,7 @@
   }
 
   return {
-    decodeArray, volumeSlice, rgbVolumeSlice,
+    decodeArray, bytesToTyped, b64ToBytes, volumeSlice, rgbVolumeSlice,
     inPlaneStepIndices, throughPlaneStepIndices, affinitySliceSegments,
     pointsNearSlice, projectTracks, lineageSegments,
     _halfToFloat: halfToFloat,

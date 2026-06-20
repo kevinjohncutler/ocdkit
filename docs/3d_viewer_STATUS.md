@@ -17,9 +17,10 @@ Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 - [x] client logic `viewer/web/js/volume3d.js`: decodeArray (gzip/b64/typed incl float16), volume/rgb slice views, in/through-plane affinity split, affinity slice segments (deduped), points-near-slice, trajectory projection + lineage segments
 - [x] Node CPU-harness `tests/js/volume3d.test.mjs` — 13 pass incl. exact Python->JS cross-language decode (uint8/float16/uint32). Runtimes: node v26 + deno at /opt/homebrew/bin
 - [x] plugin capability `build_volume_bundle` (base.py contract + manifest flag; omnipose ocdkit_plugin.py + Segmenter.build_volume_bundle_from_files) + ocdkit route `POST /api/volume` (routers/volume.py, registered). Tests `tests/test_volume_route.py` — 4 pass incl. end-to-end through the real omnipose plugin on the spacetime stack (133x302x302, 40 labels, 36 lineage edges). Installed httpx + python-multipart for TestClient.
-- [ ] app.js volume data model + slice nav (scroll/slider/keys) + per-slice texture upload
-- [ ] per-slice overlays (mask/outline, affinity in-plane, points near z, flow/dist slices, trajectory projection)
-- [ ] no-regression: depth==1 identical to today (browser-verify pending)
+- [x] DECISION: built a self-contained volume-viewer PAGE (viewer/web/volume.html + js/volume3d-view.js) using volume3d.js, NOT editing the 11k-line app.js. Zero regression risk; one mount point for 2.5D + P2 WebGPU-3D. Existing app.js untouched, so "depth==1 identical" holds trivially.
+- [x] 2.5D slice page: fetch POST /api/volume (or injected __TEST_BUNDLE__), canvas2d slice render (image/flow/distance/mask) + slice slider/wheel/arrow-keys; async gzip decode via DecompressionStream; refactored volume3d.js to expose bytesToTyped/b64ToBytes
+- [x] per-slice overlays (affinity in-plane segments, points-near-z, trajectory projection + lineage dashed)
+- [x] Playwright smoke test `tests/test_volume_page.py` — PASS in headless Chromium: renders non-blank, slices navigate, all 4 layers render, affinity+trajectory overlays draw, no JS errors
 
 ## P2 — true-3D volume (raw WebGPU, no three.js)
 - [x] (prereq) headless WGSL ray-march proven via wgpu-native: `ocdkit/outputs/repro/wgpu_raymarch_headless/proof.py`

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ocdkit — volume viewer</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #0b0d10; color: #c8ccd0; font: 13px/1.4 system-ui, sans-serif; }
+    #wrap { display: flex; gap: 12px; padding: 12px; align-items: flex-start; }
+    #panel { width: 230px; display: flex; flex-direction: column; gap: 10px; }
+    #panel label { display: flex; align-items: center; gap: 6px; }
+    #panel .row { display: flex; flex-direction: column; gap: 4px; }
+    #stage { background: #000; border: 1px solid #222; }
+    select, input[type=range] { width: 100%; background: #14171b; color: #c8ccd0; border: 1px solid #2a2f36; }
+    #status { color: #7a828c; font-size: 11px; white-space: pre-wrap; }
+    h1 { font-size: 14px; margin: 0 0 4px; color: #9aa3ad; font-weight: 600; }
+    #slicelabel { color: #9aa3ad; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="panel">
+      <h1>volume viewer</h1>
+      <div class="row">
+        <span id="slicelabel">slice</span>
+        <input type="range" id="slice" min="0" max="0" value="0" />
+      </div>
+      <div class="row">
+        <label>layer
+          <select id="layer">
+            <option value="image">image</option>
+            <option value="flow">flow</option>
+            <option value="distance">distance</option>
+            <option value="mask">mask</option>
+          </select>
+        </label>
+      </div>
+      <label><input type="checkbox" id="ov-affinity" /> affinity graph</label>
+      <label><input type="checkbox" id="ov-points" /> points</label>
+      <label><input type="checkbox" id="ov-trajectories" /> trajectories</label>
+      <div id="status">initializing…</div>
+    </div>
+    <canvas id="stage" width="640" height="640"></canvas>
+  </div>
+
+  <script src="js/volume3d.js"></script>
+  <script src="js/volume3d-view.js"></script>
+  <script>
+    (async function () {
+      const canvas = document.getElementById("stage");
+      const status = document.getElementById("status");
+      async function getBundle() {
+        if (window.__TEST_BUNDLE__) return window.__TEST_BUNDLE__;
+        const q = new URLSearchParams(location.search);
+        const masksPath = q.get("masks");
+        if (!masksPath) { status.textContent = "Pass ?masks=<path> (and optional &raw=<path>), or inject __TEST_BUNDLE__."; return null; }
+        const r = await fetch("/api/volume", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null, doAffinity: true }),
+        });
+        if (!r.ok) { status.textContent = "load failed: HTTP " + r.status; return null; }
+        return await r.json();
+      }
+      try {
+        const b = await getBundle();
+        if (!b) return;
+        const vv = await VolumeView.load(canvas, b);
+        vv.bindControls({
+          slider: document.getElementById("slice"),
+          label: document.getElementById("slicelabel"),
+          layer: document.getElementById("layer"),
+          affinity: document.getElementById("ov-affinity"),
+          points: document.getElementById("ov-points"),
+          trajectories: document.getElementById("ov-trajectories"),
+        });
+        document.getElementById("layer").value = vv.layer;
+        vv.render();
+        window.__vv = vv;
+        status.textContent = "loaded " + b.meta.axes.join(",") + " " +
+          [b.meta.depth, b.meta.height, b.meta.width].join("×") + "  nLabels=" + b.meta.nLabels;
+      } catch (e) {
+        status.textContent = "error: " + (e && e.message || e);
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
