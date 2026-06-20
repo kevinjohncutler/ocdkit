@@ -8,75 +8,145 @@
     :root { color-scheme: dark; }
     body { margin: 0; background: #0b0d10; color: #c8ccd0; font: 13px/1.4 system-ui, sans-serif; }
     #wrap { display: flex; gap: 12px; padding: 12px; align-items: flex-start; }
-    #panel { width: 230px; display: flex; flex-direction: column; gap: 10px; }
+    #panel { width: 240px; display: flex; flex-direction: column; gap: 10px; }
     #panel label { display: flex; align-items: center; gap: 6px; }
     #panel .row { display: flex; flex-direction: column; gap: 4px; }
-    #stage { background: #000; border: 1px solid #222; }
-    select, input[type=range] { width: 100%; background: #14171b; color: #c8ccd0; border: 1px solid #2a2f36; }
+    .stage { background: #000; border: 1px solid #222; width: 640px; height: 640px; }
     #status { color: #7a828c; font-size: 11px; white-space: pre-wrap; }
     h1 { font-size: 14px; margin: 0 0 4px; color: #9aa3ad; font-weight: 600; }
+    h2 { font-size: 11px; margin: 6px 0 2px; color: #6b7480; text-transform: uppercase; letter-spacing: .04em; }
+    select, input[type=range] { width: 100%; background: #14171b; color: #c8ccd0; border: 1px solid #2a2f36; }
     #slicelabel { color: #9aa3ad; }
+    .hidden { display: none !important; }
+    .seg { display: flex; gap: 0; }
+    .seg button { flex: 1; background: #14171b; color: #c8ccd0; border: 1px solid #2a2f36; padding: 4px; cursor: pointer; }
+    .seg button.on { background: #2a3a4a; color: #cfe6ff; }
   </style>
 </head>
 <body>
   <div id="wrap">
     <div id="panel">
       <h1>volume viewer</h1>
-      <div class="row">
-        <span id="slicelabel">slice</span>
-        <input type="range" id="slice" min="0" max="0" value="0" />
+      <div class="seg" id="viewseg">
+        <button data-view="2d" class="on">2.5D slices</button>
+        <button data-view="3d">3D volume</button>
       </div>
-      <div class="row">
-        <label>layer
+
+      <div id="ctl2d">
+        <div class="row">
+          <span id="slicelabel">slice</span>
+          <input type="range" id="slice" min="0" max="0" value="0" />
+        </div>
+        <div class="row"><label>layer
           <select id="layer">
-            <option value="image">image</option>
-            <option value="flow">flow</option>
-            <option value="distance">distance</option>
-            <option value="mask">mask</option>
-          </select>
-        </label>
+            <option value="image">image</option><option value="flow">flow</option>
+            <option value="distance">distance</option><option value="mask">mask</option>
+          </select></label></div>
+        <label><input type="checkbox" id="ov-affinity" /> affinity graph</label>
+        <label><input type="checkbox" id="ov-points" /> points</label>
+        <label><input type="checkbox" id="ov-trajectories" /> trajectories</label>
       </div>
-      <label><input type="checkbox" id="ov-affinity" /> affinity graph</label>
-      <label><input type="checkbox" id="ov-points" /> points</label>
-      <label><input type="checkbox" id="ov-trajectories" /> trajectories</label>
+
+      <div id="ctl3d" class="hidden">
+        <h2>render mode</h2>
+        <div class="seg" id="modeseg">
+          <button data-mode="1" class="on">MIP</button>
+          <button data-mode="0">additive</button>
+          <button data-mode="2">mean</button>
+        </div>
+        <div class="row"><label>density <input type="range" id="density" min="0.05" max="3" step="0.05" value="1" /></label></div>
+        <div class="row"><label>z-scale <input type="range" id="zscale" min="0.1" max="5" step="0.1" value="1" /></label></div>
+        <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="0.6" /></label></div>
+        <label><input type="checkbox" id="showlabels" checked /> show labels</label>
+      </div>
+
       <div id="status">initializing…</div>
     </div>
-    <canvas id="stage" width="640" height="640"></canvas>
+    <canvas id="stage" class="stage" width="640" height="640"></canvas>
+    <canvas id="stage3d" class="stage hidden" width="640" height="640"></canvas>
   </div>
 
   <script src="js/volume3d.js"></script>
   <script src="js/volume3d-view.js"></script>
+  <script src="js/mat4.js"></script>
+  <script src="js/volume3d-gpu.js"></script>
   <script>
     (async function () {
-      const canvas = document.getElementById("stage");
+      const canvas2d = document.getElementById("stage");
+      const canvas3d = document.getElementById("stage3d");
       const status = document.getElementById("status");
+      const ctl2d = document.getElementById("ctl2d");
+      const ctl3d = document.getElementById("ctl3d");
+
       async function getBundle() {
         if (window.__TEST_BUNDLE__) return window.__TEST_BUNDLE__;
         const q = new URLSearchParams(location.search);
         const masksPath = q.get("masks");
         if (!masksPath) { status.textContent = "Pass ?masks=<path> (and optional &raw=<path>), or inject __TEST_BUNDLE__."; return null; }
-        const r = await fetch("/api/volume", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null, doAffinity: true }),
-        });
+        const r = await fetch("/api/volume", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null, doAffinity: true }) });
         if (!r.ok) { status.textContent = "load failed: HTTP " + r.status; return null; }
         return await r.json();
       }
+
+      let vv = null, vgpu = null, view = "2d", mode = 1;
+
+      function setSeg(seg, attr, val) {
+        for (const b of seg.querySelectorAll("button")) b.classList.toggle("on", b.dataset[attr] === String(val));
+      }
+
+      function show2D() {
+        view = "2d"; canvas3d.classList.add("hidden"); canvas2d.classList.remove("hidden");
+        ctl3d.classList.add("hidden"); ctl2d.classList.remove("hidden");
+        setSeg(document.getElementById("viewseg"), "view", "2d");
+        if (vv) vv.render();
+      }
+      async function show3D() {
+        view = "3d"; ctl2d.classList.add("hidden"); ctl3d.classList.remove("hidden");
+        canvas2d.classList.add("hidden"); canvas3d.classList.remove("hidden");
+        setSeg(document.getElementById("viewseg"), "view", "3d");
+        if (!vgpu && vv) {
+          status.textContent = "initializing WebGPU…";
+          vgpu = await window.VolumeGPU.create(canvas3d, vv.d, { mode });
+          if (!vgpu) {
+            status.textContent = "WebGPU unavailable in this browser — staying in 2.5D view.";
+            show2D();
+            return false;
+          }
+          status.textContent = "3D volume (WebGPU)";
+        } else if (vgpu) { vgpu.render(); }
+        return true;
+      }
+
       try {
         const b = await getBundle();
         if (!b) return;
-        const vv = await VolumeView.load(canvas, b);
+        vv = await window.VolumeView.load(canvas2d, b);
         vv.bindControls({
-          slider: document.getElementById("slice"),
-          label: document.getElementById("slicelabel"),
-          layer: document.getElementById("layer"),
-          affinity: document.getElementById("ov-affinity"),
-          points: document.getElementById("ov-points"),
-          trajectories: document.getElementById("ov-trajectories"),
+          slider: document.getElementById("slice"), label: document.getElementById("slicelabel"),
+          layer: document.getElementById("layer"), affinity: document.getElementById("ov-affinity"),
+          points: document.getElementById("ov-points"), trajectories: document.getElementById("ov-trajectories"),
         });
         document.getElementById("layer").value = vv.layer;
         vv.render();
+
+        document.getElementById("viewseg").addEventListener("click", (e) => {
+          const v = e.target && e.target.dataset && e.target.dataset.view;
+          if (v === "2d") show2D(); else if (v === "3d") show3D();
+        });
+        document.getElementById("modeseg").addEventListener("click", (e) => {
+          const m = e.target && e.target.dataset && e.target.dataset.mode;
+          if (m == null) return;
+          mode = +m; setSeg(document.getElementById("modeseg"), "mode", mode);
+          if (vgpu) vgpu.setMode(mode);
+        });
+        document.getElementById("density").addEventListener("input", (e) => vgpu && vgpu.setDensity(+e.target.value));
+        document.getElementById("zscale").addEventListener("input", (e) => vgpu && vgpu.setZScale(+e.target.value));
+        document.getElementById("labopacity").addEventListener("input", (e) => vgpu && vgpu.setLabelOpacity(+e.target.value));
+        document.getElementById("showlabels").addEventListener("change", (e) => vgpu && vgpu.setShowLabels(e.target.checked));
+
         window.__vv = vv;
+        window.__viewer = { vv, gpu: () => vgpu, show2D, show3D, hasWebGPU: !!(navigator.gpu) };
         status.textContent = "loaded " + b.meta.axes.join(",") + " " +
           [b.meta.depth, b.meta.height, b.meta.width].join("×") + "  nLabels=" + b.meta.nLabels;
       } catch (e) {

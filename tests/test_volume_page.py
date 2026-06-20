@@ -85,3 +85,39 @@ def test_volume_page_renders_and_navigates():
 
         assert not errs, "JS errors: " + "; ".join(errs)
         browser.close()
+
+
+@pytest.mark.skipif(not os.path.exists(HTML), reason="volume.html missing")
+def test_3d_toggle_degrades_or_renders():
+    """Switching to 3D must either render (if WebGPU present) or fall back to
+    2.5D cleanly (bundled Chromium has no WebGPU) — no uncaught JS errors."""
+    bundle_js = json.dumps(_synth_bundle())
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as e:
+            pytest.skip(f"chromium unavailable: {e}")
+        page = browser.new_page()
+        errs = []
+        page.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        page.add_init_script(f"window.__TEST_BUNDLE__ = {bundle_js};")
+        page.goto("file://" + HTML)
+        page.wait_for_function("window.__viewer !== undefined", timeout=15000)
+
+        # Branch on the ACTUAL result: navigator.gpu may exist yet have no
+        # usable adapter (headless), so show3D()'s return is the source of truth.
+        ok = page.evaluate("async () => await window.__viewer.show3D()")
+        status = page.text_content("#status") or ""
+        c2d_hidden = page.evaluate("document.getElementById('stage').classList.contains('hidden')")
+
+        if ok:
+            assert c2d_hidden is True, "3D active but 2.5D canvas still shown"
+            assert page.evaluate("document.getElementById('stage3d').classList.contains('hidden')") is False
+        else:
+            assert "WebGPU unavailable" in status, status
+            assert c2d_hidden is False, "should have reverted to 2.5D"
+            assert page.evaluate(_CANVAS_SUM) > 0, "2.5D no longer renders after fallback"
+
+        assert not errs, "JS errors: " + "; ".join(errs)
+        browser.close()
