@@ -6,8 +6,15 @@ Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 ## ✅ COMPLETE — P0–P3 implemented, all headless suites green
 Final tally: omnipose pytest 15 · ocdkit pytest 11 (route 4, page 2, raymarch 4,
 overlay 1) · Node 23 (mat4 5, volume3d 13, overlays3d 5) · wgpu-native proof PASS.
-Commits — omnipose: c0013a2, d0cebe7. ocdkit: 3bd3ef9, a85201c, 5fafa99, abbf156,
-fba299a, ce5db13, 34d4ffb, 3274413. Not pushed.
+Commits — omnipose: 881d7b2 (single clean backend commit; see note). ocdkit:
+3bd3ef9, a85201c, 5fafa99, abbf156, fba299a, ce5db13, 34d4ffb, 3274413, d77a547.
+Not pushed.
+
+NOTE (omnipose history): the first backend commit accidentally swept in a large
+pre-staged refactor that was already in the index (test renames, networks/*, etc.
+— NOT 3D-viewer work). Fixed by resetting feat/3d-viewer to main and re-committing
+ONLY the 4 viewer files as 881d7b2. Your refactor is fully preserved, just back to
+unstaged working-tree state (`git add` to re-stage). ocdkit commits were unaffected.
 
 ONE thing needs a real-WebGPU browser (you) for final visual confirmation: the
 live WebGPU device render of the 3D volume + overlays. Its shader, camera math,
