@@ -68,16 +68,20 @@ class Harness:
         return tex.create_view()
 
     def render(self, vol_zyx, lab_zyx, mode, *, imgW, imgH, nsteps,
-               density=1.0, label_opacity=0.0, show_labels=0.0, iscale=1.0):
+               density=1.0, label_opacity=0.0, show_labels=0.0, iscale=1.0,
+               inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
         volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
         labv = self._tex3d(lab_zyx.astype(np.uint8), wgpu.TextureFormat.r8uint, 1)
+        if inv_vp is None:
+            inv_vp = _ortho_inv_vp(NX, NY, NZ)       # axis-aligned ortho (exact)
+            box_min = (0, 0, 0); box_max = (NX, NY, NZ)
 
         u = np.zeros(40, np.float32)
-        u[0:16] = _ortho_inv_vp(NX, NY, NZ)
-        u[16:20] = (0, 0, -1000, 1)              # camPos (unused by ortho rays)
-        u[20:24] = (0, 0, 0, 0)                   # boxMin
-        u[24:28] = (NX, NY, NZ, 0)                # boxMax
+        u[0:16] = np.asarray(inv_vp, np.float32)
+        u[16:20] = (0, 0, -1000, 1)              # camPos (unused by ray reconstruction)
+        u[20:24] = (*box_min, 0)                  # boxMin
+        u[24:28] = (*box_max, 0)                  # boxMax
         u[28:32] = (NX, NY, NZ, mode)             # dims + mode
         u[32:36] = (nsteps, density, label_opacity, show_labels)
         u[36:40] = (iscale, 0, 0, 0)
@@ -156,3 +160,38 @@ def test_label_coloring_and_blend(hz):
     assert np.min(inside[..., 3]) > 0.99
     # outside: transparent
     assert out[0, 0, 3] < 1e-2
+
+
+import json
+import shutil
+import subprocess
+
+_NODE = shutil.which("node") or "/opt/homebrew/bin/node"
+_EMIT = "/Volumes/DataDrive/ocdkit/tests/js/emit_camera.mjs"
+
+
+@pytest.mark.skipif(not os.path.exists(_NODE), reason="node not found")
+@pytest.mark.skipif(not os.path.exists(_EMIT), reason="emit_camera.mjs missing")
+def test_perspective_camera_from_mat4js_composes_with_shader(hz):
+    """Bridge the SHIPPED mat4.js orbit camera into the shader: a centred cube
+    must project to non-empty, roughly-centred pixels (validates the perspective
+    invViewProj path + WebGPU [0,1] depth convention end-to-end)."""
+    out = subprocess.run([_NODE, _EMIT, "0", "0"], capture_output=True, text=True, check=True)
+    cam = json.loads(out.stdout)
+    NX, NY, NZ = cam["dims"]
+    vol = np.zeros((NZ, NY, NX), np.float32)
+    c = NZ // 2
+    vol[c - 2:c + 2, NY // 2 - 2:NY // 2 + 2, NX // 2 - 2:NX // 2 + 2] = 1.0
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    W = H = 64
+    img = hz.render(vol, lab, 1, imgW=W, imgH=H, nsteps=192,
+                    inv_vp=cam["invViewProj"], box_min=cam["box"]["min"], box_max=cam["box"]["max"])
+    alpha = img[..., 3]
+    assert alpha.sum() > 0, "perspective render produced nothing"
+    ys, xs = np.nonzero(alpha > 0.1)
+    assert ys.size > 0
+    cy, cx = ys.mean(), xs.mean()
+    # camera looks at the box centre -> the cube lands near image centre
+    assert abs(cy - H / 2) < H / 4, f"centroid y={cy}"
+    assert abs(cx - W / 2) < W / 4, f"centroid x={cx}"
+
