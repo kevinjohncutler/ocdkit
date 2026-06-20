@@ -58,6 +58,11 @@
         <div class="row"><label>z-scale <input type="range" id="zscale" min="0.1" max="5" step="0.1" value="1" /></label></div>
         <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="0.6" /></label></div>
         <label><input type="checkbox" id="showlabels" checked /> show labels</label>
+        <h2>overlays</h2>
+        <label><input type="checkbox" id="ov3-trajectories" checked /> trajectories + lineage</label>
+        <label><input type="checkbox" id="ov3-points" /> points</label>
+        <label><input type="checkbox" id="ov3-flow" /> flow quiver</label>
+        <label><input type="checkbox" id="ov3-affinity" /> affinity graph</label>
       </div>
 
       <div id="status">initializing…</div>
@@ -69,6 +74,8 @@
   <script src="js/volume3d.js"></script>
   <script src="js/volume3d-view.js"></script>
   <script src="js/mat4.js"></script>
+  <script src="js/volume3d-overlays.js"></script>
+  <script src="js/volume3d-overlays-gpu.js"></script>
   <script src="js/volume3d-gpu.js"></script>
   <script>
     (async function () {
@@ -144,6 +151,10 @@
         document.getElementById("zscale").addEventListener("input", (e) => vgpu && vgpu.setZScale(+e.target.value));
         document.getElementById("labopacity").addEventListener("input", (e) => vgpu && vgpu.setLabelOpacity(+e.target.value));
         document.getElementById("showlabels").addEventListener("change", (e) => vgpu && vgpu.setShowLabels(e.target.checked));
+        for (const [id, name] of [["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {
+          const el = document.getElementById(id);
+          el.addEventListener("change", () => vgpu && vgpu.setOverlay(name, el.checked));
+        }
 
         window.__vv = vv;
         window.__viewer = { vv, gpu: () => vgpu, show2D, show3D, hasWebGPU: !!(navigator.gpu) };

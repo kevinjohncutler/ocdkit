@@ -65,6 +65,10 @@
       self._initState(decoded, opts);
       self._uploadTextures(decoded);
       self._makeBindGroup();
+      if (typeof window !== "undefined" && window.OverlayLayer) {
+        try { self.overlays = await window.OverlayLayer.create(device, self.format, decoded, opts); }
+        catch (e) { self.overlays = null; }
+      }
       self._attachInput();
       self.render();
       return self;
@@ -138,14 +142,18 @@
                radius: Math.max(sx, sy, sz) * 1.6 };
     }
 
-    _writeUniform() {
+    _camera() {
       const box = this._box();
-      const cam = Mat4.orbitCamera({
+      return Mat4.orbitCamera({
         target: [0, 0, 0], up: [0, 1, 0], radius: box.radius,
         yaw: this.yaw, pitch: this.pitch, fovy: this.fovy,
         aspect: this.canvas.width / Math.max(1, this.canvas.height),
         near: this.near, far: box.radius * 4,
       });
+    }
+
+    _writeUniform(cam) {
+      const box = this._box();
       const u = new Float32Array(40);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
@@ -162,7 +170,8 @@
       const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr) || this.canvas.width);
       const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr) || this.canvas.height);
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
-      this._writeUniform();
+      const cam = this._camera();
+      this._writeUniform(cam);
       const enc = this.device.createCommandEncoder();
       const rp = enc.beginRenderPass({
         colorAttachments: [{
@@ -170,11 +179,17 @@
           clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store",
         }],
       });
-      rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3); rp.end();
+      rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
+      if (this.overlays) {
+        const box = this._box();
+        this.overlays.draw(rp, cam.viewProj, box.min, box.max, [this.NX, this.NY, this.NZ]);
+      }
+      rp.end();
       this.device.queue.submit([enc.finish()]);
     }
 
     setMode(m) { this.mode = m | 0; this.render(); }
+    setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
     setDensity(d) { this.density = +d; this.render(); }
     setLabelOpacity(o) { this.labelOpacity = +o; this.render(); }
     setShowLabels(on) { this.showLabels = on ? 1 : 0; this.render(); }

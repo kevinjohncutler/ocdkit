@@ -29,9 +29,10 @@ Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 - [x] P2c: wired into volume.html — second canvas #stage3d (separate context to avoid getContext locking), 2.5D<->3D toggle, MIP/additive/mean buttons + density/zScale/labelOpacity sliders + showLabels (call VolumeGPU methods), shares the decoded bundle (vv.d). Graceful fallback: VolumeGPU.create returns null without a usable adapter -> "WebGPU unavailable", reverts to 2.5D. Playwright test `tests/test_volume_page.py::test_3d_toggle_degrades_or_renders` PASS (headless Chromium has navigator.gpu but no adapter -> verified clean fallback, 2.5D still renders, no JS errors).
 - NOTE: live WebGPU device render is the one piece not headless-verifiable here (bundled Chromium has no adapter). Its shader (P2a) + camera (P2b) + uniform/texture byte-layout (matching the verified wgpu-native harness) are all tested; needs a real-WebGPU browser (Chrome/Safari) or Deno for final visual confirmation.
 
-## P3 — 3D overlays
-- [ ] trajectories/lineage 3D polylines (THICK_LINE+POINT) — do first
-- [ ] points 3D scatter; flow quiver/streamlines; affinity (region-on-demand)
+## P3 — 3D overlays (raw-WebGPU line primitives)
+- [x] P3a: pure builders `viewer/web/js/volume3d-overlays.js` — trajPolylines3D, lineageSegs3D, pointCrosses3D (points as 3D crosses), flowQuiver3D (subsampled, dir-coloured), affinitySegs3D (deduped + decimated with logged cap). All emit line segments in voxel coords + per-vertex colour. Node-tested `tests/js/overlays3d.test.mjs` (5 pass: counts, coords, colour determinism, dedup, cap).
+- [x] P3b: `viewer/web/js/overlay.wgsl` line-list shader (voxel->world via box uniforms -> viewProj, per-vertex colour). wgpu-native test `tests/test_overlay_wgsl.py` (1 pass: known segment -> coloured pixels at expected row/cols).
+- [x] P3c: `viewer/web/js/volume3d-overlays-gpu.js` OverlayLayer (builds GPU buffers from builders, draws into VolumeGPU's render pass sharing the camera). Integrated into volume3d-gpu.js (render computes camera once, draws overlays on top) + decodeBundle now decodes flow.raw. volume.html: 3D overlay checkboxes (trajectories+lineage / points / flow / affinity) -> vgpu.setOverlay. Playwright page tests still pass (no JS errors, graceful degradation).
 
 ## Verification channels
 - backend: `python -m pytest omnipose/tests/test_volume3d.py`

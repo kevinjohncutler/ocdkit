@@ -37,6 +37,7 @@
     out.image = b.image && !b.image.deferred ? await decodeField(b.image) : null;
     if (b.flow) {
       out.flowRgb = await decodeField(b.flow.rgbSlices);
+      if (b.flow.raw) out.flowRaw = await decodeField(b.flow.raw);  // (3,D,H,W) for 3D quiver
     }
     if (b.distance) out.distRgb = await decodeField(b.distance.rgbSlices);
     if (b.affinity && b.affinity.spatial && !b.affinity.spatial.deferred) {
