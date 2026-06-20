@@ -24,10 +24,9 @@ Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 
 ## P2 — true-3D volume (raw WebGPU, no three.js)
 - [x] (prereq) headless WGSL ray-march proven via wgpu-native: `ocdkit/outputs/repro/wgpu_raymarch_headless/proof.py`
-- [ ] renderer.js (device init, HDR rgba16float display-p3 canvas, render loop)
-- [ ] camera.js (arcball/perspective mat4, port from colormaps webgpu-view.js)
-- [ ] raymarch.wgsl.js (MIP/additive/mean + Z-scale) + intensity & label 3D textures + blend
-- [ ] view-mode toggle, picking; wgpu-native shader tests
+- [x] P2a: canonical `viewer/web/js/raymarch.wgsl` (perspective/ortho via invViewProj; MIP/additive/mean; intensity texture_3d<f32> + label texture_3d<u32>; in-shader label colour matching the 2.5D view; density/labelOpacity/showLabels uniforms). Validated by `tests/test_raymarch_wgsl.py` (wgpu-native, loads the EXACT shipped file) — 3 pass: MIP==np.max, mean==np.mean, label colour+blend exact.
+- [ ] P2b: browser host volume3d-gpu.js (device init + feature-detect, rgba16float display-p3 canvas, orbit/perspective camera mat4, 3D texture upload, render loop, mode/density controls) + Node camera-math test
+- [ ] P2c: wire into volume.html (3D canvas + 2.5D<->3D toggle + graceful WebGPU-absent fallback) + Playwright degradation test; picking
 
 ## P3 — 3D overlays
 - [ ] trajectories/lineage 3D polylines (THICK_LINE+POINT) — do first
