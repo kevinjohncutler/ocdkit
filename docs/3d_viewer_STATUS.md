@@ -3,6 +3,20 @@
 Branch `feat/3d-viewer` in both repos (omnipose backend, ocdkit frontend).
 Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 
+## ✅ COMPLETE — P0–P3 implemented, all headless suites green
+Final tally: omnipose pytest 15 · ocdkit pytest 11 (route 4, page 2, raymarch 4,
+overlay 1) · Node 23 (mat4 5, volume3d 13, overlays3d 5) · wgpu-native proof PASS.
+Commits — omnipose: c0013a2, d0cebe7. ocdkit: 3bd3ef9, a85201c, 5fafa99, abbf156,
+fba299a, ce5db13, 34d4ffb, 3274413. Not pushed.
+
+ONE thing needs a real-WebGPU browser (you) for final visual confirmation: the
+live WebGPU device render of the 3D volume + overlays. Its shader, camera math,
+and uniform/texture byte-layouts are each individually headless-verified
+(wgpu-native + Node); only the in-browser device path can't run in headless
+Chromium (no adapter). Open the viewer in Chrome/Safari, or use Deno, to confirm.
+To view: serve the viewer and open `/static/volume.html?masks=<path>&raw=<path>`
+(e.g. the spacetime stack), toggle 2.5D⇄3D.
+
 ## Legend
 [x] done + headless-tested · [~] in progress · [ ] todo
 
