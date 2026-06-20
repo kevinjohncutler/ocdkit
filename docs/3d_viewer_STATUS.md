@@ -14,11 +14,12 @@ Autonomous build against the plan in `3d_viewer_plan.md`. No push.
 - [ ] (deferred to P1 wiring) `do_3D` widget + segment() volume model-eval path — the GT-mask bundle path covers the test case; model-3D is a later refinement
 
 ## P1 — 2.5D slice frontend (existing WebGL2)
-- [ ] route layer: serve volume bundle + per-slice intensity/mask/affinity
+- [x] client logic `viewer/web/js/volume3d.js`: decodeArray (gzip/b64/typed incl float16), volume/rgb slice views, in/through-plane affinity split, affinity slice segments (deduped), points-near-slice, trajectory projection + lineage segments
+- [x] Node CPU-harness `tests/js/volume3d.test.mjs` — 13 pass incl. exact Python->JS cross-language decode (uint8/float16/uint32). Runtimes: node v26 + deno at /opt/homebrew/bin
+- [x] plugin capability `build_volume_bundle` (base.py contract + manifest flag; omnipose ocdkit_plugin.py + Segmenter.build_volume_bundle_from_files) + ocdkit route `POST /api/volume` (routers/volume.py, registered). Tests `tests/test_volume_route.py` — 4 pass incl. end-to-end through the real omnipose plugin on the spacetime stack (133x302x302, 40 labels, 36 lineage edges). Installed httpx + python-multipart for TestClient.
 - [ ] app.js volume data model + slice nav (scroll/slider/keys) + per-slice texture upload
 - [ ] per-slice overlays (mask/outline, affinity in-plane, points near z, flow/dist slices, trajectory projection)
-- [ ] Node CPU-harness tests for payload decode + slice indexing
-- [ ] no-regression: depth==1 identical to today
+- [ ] no-regression: depth==1 identical to today (browser-verify pending)
 
 ## P2 — true-3D volume (raw WebGPU, no three.js)
 - [x] (prereq) headless WGSL ray-march proven via wgpu-native: `ocdkit/outputs/repro/wgpu_raymarch_headless/proof.py`

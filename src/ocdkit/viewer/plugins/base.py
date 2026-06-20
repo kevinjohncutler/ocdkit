@@ -47,6 +47,10 @@ WarmupCallable = Callable[[str], None]
 SetUseGPUCallable = Callable[[bool], None]
 GetUseGPUCallable = Callable[[], bool]
 ClearCacheCallable = Callable[[], None]
+# (masks_path, raw_path=None, links_path=None, **flags) -> bundle dict.
+# Builds the 3D viewer "volume bundle" (flow / affinity / trajectories / points)
+# for a label volume + optional intensity volume. See omnipose.gui._volume3d.
+BuildVolumeBundleCallable = Callable[..., Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -185,6 +189,9 @@ class SegmentationPlugin:
     clear_cache: Optional[ClearCacheCallable] = None
     resegment: Optional[ResegmentCallable] = None
     relabel_from_affinity: Optional[RelabelFromAffinityCallable] = None
+    # Build the 3D "volume bundle" for a label volume (+ optional intensity).
+    # Present only on plugins that support volumetric/3D data (e.g. omnipose).
+    build_volume_bundle: Optional[BuildVolumeBundleCallable] = None
     # Optional list of `extras` keys this plugin can produce in run() output.
     # Drives which host-managed display toggles (Affinity Graph / Flow / etc.)
     # appear in the panel. Toggles for declared keys show always but stay
@@ -235,6 +242,7 @@ class SegmentationPlugin:
                 "clear_cache": self.clear_cache is not None,
                 "resegment": self.resegment is not None,
                 "relabel_from_affinity": self.relabel_from_affinity is not None,
+                "build_volume_bundle": self.build_volume_bundle is not None,
             },
         }
 

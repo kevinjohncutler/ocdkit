@@ -148,7 +148,7 @@ def create_app() -> "Any":
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
 
-    from .routers import index, log, mask, plugin, segment, session_routes, system, trust
+    from .routers import index, log, mask, plugin, segment, session_routes, system, trust, volume
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -201,6 +201,7 @@ def create_app() -> "Any":
     app.include_router(segment.router, tags=["segment"])
     app.include_router(plugin.router, tags=["plugin"])
     app.include_router(mask.router, tags=["mask"])
+    app.include_router(volume.router, tags=["volume"])
     app.include_router(trust.router)
 
     return app
