@@ -43,8 +43,8 @@
     if (b.affinity && b.affinity.spatial && !b.affinity.spatial.deferred) {
       out.affinity = { steps: b.affinity.steps, spatial: await decodeField(b.affinity.spatial) };
     }
-    if (b.points && b.points.encoded) {
-      out.points = { data: (await decodeField({ dtype: "float32", shape: [b.points.count, 3], gzip: b.points.gzip, b64: b.points.encoded })).data, count: b.points.count };
+    if (b.points && b.points.b64) {
+      out.points = { data: (await decodeField(b.points)).data, count: b.points.count };
     }
     return out;
   }

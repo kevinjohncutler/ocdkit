@@ -26,6 +26,7 @@ class VolumePayload(BaseModel):
     doFlow: bool = True
     doAffinity: bool = True
     doTrajectories: bool = True
+    doRecon: bool = False
     embedVolumes: bool = True
     embedAffinity: bool = True
 
@@ -44,6 +45,7 @@ async def api_volume(
         do_flow=payload.doFlow,
         do_affinity=payload.doAffinity,
         do_trajectories=payload.doTrajectories,
+        do_recon=payload.doRecon,
         embed_volumes=payload.embedVolumes,
         embed_affinity=payload.embedAffinity,
     )

@@ -31,7 +31,8 @@ def _synth_bundle():
         m[d, cy:cy + 6, 8:14] = 1
         m[d, 24:30, 10 + d:16 + d] = 2
     raw = (np.random.default_rng(1).random((D, H, W)) * 1000).astype(np.uint16)
-    return v3.build_bundle(raw, m, edges=[[1, 2]], use_gpu=False)
+    # do_recon populates real flow-sink points (exercises the points decode path)
+    return v3.build_bundle(raw, m, edges=[[1, 2]], do_recon=True, use_gpu=False)
 
 
 @pytest.mark.skipif(not os.path.exists(HTML), reason="volume.html missing")
@@ -82,6 +83,10 @@ def test_volume_page_renders_and_navigates():
         with_traj = page.evaluate(_CANVAS_SUM)
         assert with_aff != base, "affinity overlay drew nothing"
         assert with_traj != with_aff, "trajectory overlay drew nothing"
+
+        # points overlay (real recon sinks) decodes + toggles without error
+        page.evaluate("window.__vv.setOverlay('points', true)")
+        assert page.evaluate("window.__vv.d.points && window.__vv.d.points.count > 0")
 
         assert not errs, "JS errors: " + "; ".join(errs)
         browser.close()

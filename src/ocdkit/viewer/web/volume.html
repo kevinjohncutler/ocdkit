@@ -95,7 +95,8 @@
         // &affinity=1 to enable). &flow=0 skips the flow solve for a fast load.
         const r = await fetch("/api/volume", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null,
-            doFlow: q.get("flow") !== "0", doAffinity: q.get("affinity") === "1" }) });
+            doFlow: q.get("flow") !== "0", doAffinity: q.get("affinity") === "1",
+            doRecon: q.get("recon") === "1" }) });
         if (!r.ok) { status.textContent = "load failed: HTTP " + r.status; return null; }
         return await r.json();
       }
