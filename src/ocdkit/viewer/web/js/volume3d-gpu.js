@@ -84,8 +84,12 @@
       this.showLabels = decoded.mask ? 1.0 : 0.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
-      this.yaw = 0.7; this.pitch = 0.4;
-      this.fovy = Math.PI / 4; this.near = 0.05;
+      // Orbit camera matches /Volumes/DataDrive/colormaps OrbitCamera:
+      // yaw=theta(azimuth), pitch=phi(elevation); drag theta-=dx, phi+=dy at
+      // 0.005 rad/px; wheel zooms `distance`.
+      this.yaw = 0.8; this.pitch = 0.6;
+      this.fovy = Math.PI / 4;
+      this.distance = Math.max(this.NX, this.NY, this.NZ * this.zScale) * 1.6;
       this.uniform = device_buf(this.device, 40 * 4);
     }
 
@@ -147,11 +151,12 @@
 
     _camera() {
       const box = this._box();
+      const diag = Math.hypot(this.NX, this.NY, this.NZ * this.zScale);
       return Mat4.orbitCamera({
-        target: [0, 0, 0], up: [0, 1, 0], radius: box.radius,
+        target: [0, 0, 0], up: [0, 1, 0], radius: this.distance,
         yaw: this.yaw, pitch: this.pitch, fovy: this.fovy,
         aspect: this.canvas.width / Math.max(1, this.canvas.height),
-        near: this.near, far: box.radius * 4,
+        near: Math.max(0.01, this.distance - diag), far: this.distance + diag,
       });
     }
 
@@ -204,11 +209,17 @@
       c.addEventListener("pointerup", (e) => { drag = false; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
       c.addEventListener("pointermove", (e) => {
         if (!drag) return;
-        self.yaw += (e.clientX - lx) * 0.01;
-        self.pitch = Math.max(-1.5, Math.min(1.5, self.pitch + (e.clientY - ly) * 0.01));
+        self.yaw -= (e.clientX - lx) * 0.005;                 // colormaps: theta -= dx
+        const lim = Math.PI / 2 - 0.01;
+        self.pitch = Math.max(-lim, Math.min(lim, self.pitch + (e.clientY - ly) * 0.005));  // phi += dy
         lx = e.clientX; ly = e.clientY; self.render();
       });
-      c.addEventListener("wheel", (e) => { e.preventDefault(); self.fovy = Math.max(0.1, Math.min(1.5, self.fovy * (e.deltaY > 0 ? 1.05 : 0.95))); self.render(); }, { passive: false });
+      c.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
+        self.distance = Math.max(diag * 0.3, Math.min(diag * 8, self.distance * (e.deltaY > 0 ? 1.1 : 0.9)));
+        self.render();
+      }, { passive: false });
     }
 
     destroy() { try { this.ctx.unconfigure(); } catch (_) {} try { this.device.destroy(); } catch (_) {} }
