@@ -133,6 +133,21 @@ def test_mip_matches_numpy(hz):
     assert np.max(np.abs(mip - vol.max(axis=0))) < 3e-3
 
 
+def test_inverted_box_y_renders_clean_vertical_flip(hz):
+    """The viewer flips the box Y (min.y>max.y) so 3D matches the 2.5D image
+    orientation. Verify the shader's slab AABB handles an inverted Y range and
+    that it produces exactly a vertical flip (no corruption)."""
+    rng = np.random.default_rng(2)
+    NZ, NY, NX = 6, 8, 10
+    vol = (rng.random((NZ, NY, NX)) * 0.9).astype(np.float32)
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    normal = hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ)[..., 0]
+    inv = hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ,
+                    inv_vp=_ortho_inv_vp(NX, NY, NZ),
+                    box_min=(0, NY, 0), box_max=(NX, 0, NZ))[..., 0]
+    assert np.max(np.abs(inv - np.flipud(normal))) < 3e-3
+
+
 def test_mean_matches_numpy(hz):
     rng = np.random.default_rng(1)
     NZ, NY, NX = 8, 10, 12

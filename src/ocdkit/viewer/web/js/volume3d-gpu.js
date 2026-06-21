@@ -138,7 +138,10 @@
 
     _box() {
       const sx = this.NX, sy = this.NY, sz = this.NZ * this.zScale;
-      return { min: [-sx / 2, -sy / 2, -sz / 2], max: [sx / 2, sy / 2, sz / 2],
+      // Y is inverted (min.y > max.y) so voxel-row 0 maps to world +Y (screen
+      // top), matching the 2.5D image convention (row 0 at top). The shader's
+      // slab AABB uses per-axis min/max, so an inverted Y range is fine.
+      return { min: [-sx / 2, sy / 2, -sz / 2], max: [sx / 2, -sy / 2, sz / 2],
                radius: Math.max(sx, sy, sz) * 1.6 };
     }
 
