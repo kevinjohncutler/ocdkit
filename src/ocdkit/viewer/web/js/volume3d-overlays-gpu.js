@@ -64,6 +64,7 @@
     }
 
     setEnabled(name, on) { this.enabled[name] = !!on; }
+    setFlow(flowRaw) { if (flowRaw && VO) this.layers.flow = this._gpu(VO.flowQuiver3D(flowRaw, 6, 4)); }
     hasAny() { return this.layers && Object.values(this.layers).some(Boolean); }
 
     /** Record overlay draws into an existing render pass (no depth, drawn on top). */

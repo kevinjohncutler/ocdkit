@@ -90,18 +90,43 @@
         const q = new URLSearchParams(location.search);
         const masksPath = q.get("masks");
         if (!masksPath) { status.textContent = "Pass ?masks=<path> (and optional &raw=<path>), or inject __TEST_BUNDLE__."; return null; }
-        // Heavy flags are URL-controlled: flow on by default; affinity OFF by
-        // default (the full (26,D,H,W) graph is huge on big volumes — add
-        // &affinity=1 to enable). &flow=0 skips the flow solve for a fast load.
+        // Fast default: load volume + mask + trajectories only. The flow solve
+        // (~10s) and affinity graph are computed LAZILY when a flow/distance
+        // layer or quiver is selected (see ensureFlow), or eagerly via &flow=1 /
+        // &affinity=1. &recon=1 also runs the (slow) flow-following recon points.
         const r = await fetch("/api/volume", { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null,
-            doFlow: q.get("flow") !== "0", doAffinity: q.get("affinity") === "1",
+            doFlow: q.get("flow") === "1", doAffinity: q.get("affinity") === "1",
             doRecon: q.get("recon") === "1" }) });
         if (!r.ok) { status.textContent = "load failed: HTTP " + r.status; return null; }
         return await r.json();
       }
 
       let vv = null, vgpu = null, view = "2d", mode = 1;
+      let flowLoaded = false, flowLoading = null;
+
+      // Lazily compute the flow field (the ~10s eikonal solve) only when needed.
+      function ensureFlow() {
+        if (flowLoaded) return Promise.resolve(true);
+        if (flowLoading) return flowLoading;
+        const q = new URLSearchParams(location.search);
+        const masksPath = q.get("masks");
+        if (!masksPath && !window.__TEST_BUNDLE__) return Promise.resolve(false);
+        const prev = status.textContent;
+        status.textContent = "computing flow field… (~10s)";
+        flowLoading = (async () => {
+          const r = await fetch("/api/volume", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null,
+              doFlow: true, doAffinity: false, doTrajectories: false, doRecon: false, embedVolumes: false }) });
+          if (!r.ok) { status.textContent = "flow load failed: HTTP " + r.status; flowLoading = null; return false; }
+          const fd = await window.decodeBundle(await r.json());
+          vv.d.flowRgb = fd.flowRgb; vv.d.distRgb = fd.distRgb; vv.d.flowRaw = fd.flowRaw;
+          if (vgpu && fd.flowRaw) vgpu.setFlowRaw(fd.flowRaw);
+          flowLoaded = true; status.textContent = prev;
+          return true;
+        })();
+        return flowLoading;
+      }
 
       function setSeg(seg, attr, val) {
         for (const b of seg.querySelectorAll("button")) b.classList.toggle("on", b.dataset[attr] === String(val));
@@ -136,10 +161,15 @@
         vv = await window.VolumeView.load(canvas2d, b);
         vv.bindControls({
           slider: document.getElementById("slice"), label: document.getElementById("slicelabel"),
-          layer: document.getElementById("layer"), affinity: document.getElementById("ov-affinity"),
+          affinity: document.getElementById("ov-affinity"),
           points: document.getElementById("ov-points"), trajectories: document.getElementById("ov-trajectories"),
         });
-        document.getElementById("layer").value = vv.layer;
+        const layerSel = document.getElementById("layer");
+        layerSel.value = vv.layer;
+        layerSel.addEventListener("change", async () => {
+          vv.setLayer(layerSel.value);                       // renders (blank until flow ready)
+          if (layerSel.value === "flow" || layerSel.value === "distance") { await ensureFlow(); vv.render(); }
+        });
         vv.render();
 
         document.getElementById("viewseg").addEventListener("click", (e) => {
@@ -158,7 +188,10 @@
         document.getElementById("showlabels").addEventListener("change", (e) => vgpu && vgpu.setShowLabels(e.target.checked));
         for (const [id, name] of [["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {
           const el = document.getElementById(id);
-          el.addEventListener("change", () => vgpu && vgpu.setOverlay(name, el.checked));
+          el.addEventListener("change", async () => {
+            if (name === "flow" && el.checked) await ensureFlow();  // quiver needs the flow field
+            if (vgpu) vgpu.setOverlay(name, el.checked);
+          });
         }
 
         window.__vv = vv;

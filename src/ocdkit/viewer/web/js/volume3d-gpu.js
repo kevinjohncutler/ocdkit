@@ -198,6 +198,7 @@
 
     setMode(m) { this.mode = m | 0; this.render(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
+    setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
     setDensity(d) { this.density = +d; this.render(); }
     setLabelOpacity(o) { this.labelOpacity = +o; this.render(); }
     setShowLabels(on) { this.showLabels = on ? 1 : 0; this.render(); }
@@ -211,7 +212,9 @@
         if (!drag) return;
         self.yaw -= (e.clientX - lx) * 0.005;                 // colormaps: theta -= dx
         const lim = Math.PI / 2 - 0.01;
-        self.pitch = Math.max(-lim, Math.min(lim, self.pitch + (e.clientY - ly) * 0.005));  // phi += dy
+        // pitch is negated vs colormaps because our box Y is inverted (to match
+        // the 2.5D image orientation), which flips the vertical drag sense.
+        self.pitch = Math.max(-lim, Math.min(lim, self.pitch - (e.clientY - ly) * 0.005));
         lx = e.clientX; ly = e.clientY; self.render();
       });
       c.addEventListener("wheel", (e) => {
