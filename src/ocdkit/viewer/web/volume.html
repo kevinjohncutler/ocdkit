@@ -90,8 +90,12 @@
         const q = new URLSearchParams(location.search);
         const masksPath = q.get("masks");
         if (!masksPath) { status.textContent = "Pass ?masks=<path> (and optional &raw=<path>), or inject __TEST_BUNDLE__."; return null; }
+        // Heavy flags are URL-controlled: flow on by default; affinity OFF by
+        // default (the full (26,D,H,W) graph is huge on big volumes — add
+        // &affinity=1 to enable). &flow=0 skips the flow solve for a fast load.
         const r = await fetch("/api/volume", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null, doAffinity: true }) });
+          body: JSON.stringify({ masksPath, rawPath: q.get("raw") || null,
+            doFlow: q.get("flow") !== "0", doAffinity: q.get("affinity") === "1" }) });
         if (!r.ok) { status.textContent = "load failed: HTTP " + r.status; return null; }
         return await r.json();
       }
