@@ -41,6 +41,44 @@ from .svg import SVG
 from ..io.figure import SvgFigure
 
 
+def _srgb_oetf(x):
+    """Linear-light → sRGB-gamma (the inverse of the shader's ``eotf``). Used to
+    encode HDR-nearest tile textures so the WebGPU controller's
+    ``eotf→×headroom→oetf`` reconstructs the linear values exactly."""
+    x = np.asarray(x, dtype=np.float32)
+    return np.where(x <= 0.0031308, 12.92 * x, 1.055 * np.power(np.clip(x, 0, None), 1 / 2.4) - 0.055)
+
+
+class _LazyHdrHires:
+    """Deferred hi-res source for a data-hdr cell — a raw float ARRAY or a unified
+    SCENE. The full-res sRGB-OETF + PNG encode (and, for a scene, the linear-P3
+    resolve) runs in ``get_bytes()`` — called on the background hi-res-attach
+    daemon thread — NOT at grid-build time. So a data-hdr grid builds at ~native
+    speed (only the small inline thumb is encoded eagerly) and every cell streams
+    its hi-res the same cheap way (was: a sync ~60ms full-res OETF per array cell,
+    ~7ms per scene thumb). For a scene, ``cell_hdr`` was set only when it already
+    resolved to linear, so the decode here is known-good."""
+    content_type = 'image/png'
+
+    def __init__(self, it):
+        import threading
+        self._it = it
+        self._bytes = None
+        self._lock = threading.Lock()
+
+    def get_bytes(self):
+        with self._lock:
+            if self._bytes is None:
+                from ..io.figure_server import resolve_linear_p3, ArraySource
+                it = self._it
+                lin = (it if isinstance(it, np.ndarray)
+                       else resolve_linear_p3(it, target_px=None))
+                self._bytes = ArraySource(
+                    _srgb_oetf(np.clip(np.asarray(lin, np.float32), 0.0, 1.0)),
+                    fmt='png').get_bytes()
+        return self._bytes
+
+
 def image_grid(
     items,
     *,
@@ -74,6 +112,13 @@ def image_grid(
     outline_color: str = 'currentColor',
     outline_width: float = 0.5,
     raster_format: str | None = None,     # None → autodetect from dtype
+    # Float tiles within [0,1] encode as an sRGB-OETF PNG + ``data-hdr`` and
+    # render through the WebGPU rgba16float canvas with a NEAREST sampler (true
+    # nearest HDR glow, no gain-map interpolation cross) — matching how the
+    # scene's key-slice RGB tile feeds createLinkedHDRLayer. >1 true-HDR tiles
+    # stay on uhdr (per-pixel gain map; large enough that interpolation is
+    # invisible). Default True; set False to force the native-uhdr path.
+    hdr_nearest: bool = True,
     sdr_white_nits: float = 1600.0,
     # Linked pan/zoom: when True, all cells share one viewport state.
     # Drag/wheel on any cell pans/zooms every cell in lockstep — useful
@@ -103,7 +148,8 @@ def image_grid(
     seg_stroke: str = '#ffffff',
     seg_stroke_opacity: float = 0.5,
     seg_stroke_width: float = 0.5,
-    auto_upgrade: bool = False,           # eagerly stream hi-res into inline
+    auto_upgrade='auto',                  # eagerly stream hi-res into inline;
+                                          # 'auto' = on for small/on-disk grids
     # Popup zoom viewer choice. ``None`` (default) uses the CSS-img
     # viewer — a plain <img> + CSS matrix3d transform that keeps the
     # raster on the browser's BitmapImage → CALayer (Safari) / Skia HDR
@@ -299,8 +345,23 @@ def image_grid(
     # not explicitly set. Mixed-dtype grids keep HDR float cells on the
     # uhdr path and route SDR uint8 cells (seg/outline tiles) to lossless
     # PNG via ``cell_fmts`` — see ``_resolve_items``.
+    # Unify HDR rendering when a grid MIXES scene-like (native-uhdr gain-map JPEG)
+    # cells with raw float-array (data-hdr/WebGPU) cells — e.g. imshow([scene,
+    # scene.rgb]). Left split, the two render through different stacks (native
+    # <image> vs WebGPU canvas) → different brightness, zoom viewer, and sharpness
+    # = the seam/flash. Routing the scene cells through the SAME data-hdr path
+    # (resolve to a real linear-P3 float → OETF-PNG + WebGPU) makes both identical.
+    # Scoped to the MIX so an all-scene grid keeps the fast embedded-thumb path.
+    _has_float_arr = any(isinstance(it, np.ndarray)
+                         and np.issubdtype(it.dtype, np.floating) for it in items)
+    _has_scene = any((not isinstance(it, np.ndarray))
+                     and (hasattr(it, 'rgb_path') or hasattr(it, '_rgb_linear_p3')
+                          or hasattr(it, 'rgb')) for it in items)
+    _hdr_unify = bool(hdr_nearest and _has_float_arr and _has_scene)
+
     arrays, auto_fmt, cell_fmts = _resolve_items(items, dx=dx,
-                                                 target_px=int(target_tile_px))
+                                                 target_px=int(target_tile_px),
+                                                 hdr_unify=_hdr_unify)
     if raster_format is None:
         raster_format = auto_fmt
     else:
@@ -315,6 +376,25 @@ def image_grid(
     for i, is_baked in enumerate(baked_lossless):
         if is_baked and np.issubdtype(arrays[i].dtype, np.floating):
             cell_fmts[i] = 'uhdr-lossless'
+
+    # ── HDR-nearest routing ─────────────────────────────────────────────
+    # ``cell_hdr[i]`` flags tiles that render through the WebGPU rgba16float
+    # canvas with a NEAREST sampler (the ``data-hdr`` static controller): a plain
+    # sRGB PNG whose glow comes from the shader's ``eotf×headroom×oetf``. The PNG
+    # carries the REAL sRGB pixels, so nearest sampling shows them exactly — no
+    # gain map, so no bilinear-gain-map cross on small/flat tiles. Only float
+    # tiles fully within [0,1] qualify (no >1 headroom to lose); >1 true-HDR
+    # tiles stay on ``uhdr`` (per-pixel gain map; large enough that the
+    # interpolation is invisible). Opt-in via ``hdr_nearest`` so existing grids'
+    # brightness model is unchanged.
+    cell_hdr = [False] * len(arrays)
+    if hdr_nearest:
+        for i, a in enumerate(arrays):
+            if (np.issubdtype(a.dtype, np.floating)
+                    and cell_fmts[i] in ('uhdr', 'uhdr-lossless')
+                    and float(np.nanmax(a)) <= 1.0 + 1e-6):
+                cell_fmts[i] = 'png'   # plain sRGB texture for the nearest shader
+                cell_hdr[i] = True
 
     # ── source-native cell dimensions ──────────────────────────────────
     # Each cell's SVG bbox is the source's native pixel dims (NOT the
@@ -442,13 +522,24 @@ def image_grid(
     # inline thumbnail. Each cell stays INDEPENDENT (its own attachment + its own
     # click-to-expand popup) — no linked viewport.
     _tbase = _tsid = _tsattach = None
+    _n_encode_hires = 0   # hi-res cells whose bytes need an in-memory encode (ArraySource)
     try:
         from ..io.figure_server import resolve_source, ArraySource
         from ..tileserve.server import ensure_server, register_pending, attach
         _tsattach = attach
 
-        def _hires_source(it, fmt):
+        def _hires_source(it, fmt, is_hdr=False):
+            if fmt == 'png' and is_hdr:
+                # data-hdr cell — unified SCENE or raw float ARRAY. The source float
+                # is linear-light, so the hi-res PNG needs an sRGB-OETF too (without
+                # it the zoom popup gets raw linear stored as 8-bit = VERY DARK).
+                # Defer that OETF + PNG encode (+ the scene's linear-P3 resolve) to the
+                # background attach thread (_LazyHdrHires) so the grid build doesn't
+                # block on it — was a sync ~60ms/array-cell OETF. cell_hdr is set only
+                # when a scene already resolved to linear, so the decode is known-good.
+                return _LazyHdrHires(it)
             if fmt == 'png' and isinstance(it, np.ndarray):
+                # non-HDR png array: raw bytes, no OETF.
                 return ArraySource(it, fmt='png')
             if fmt == 'uhdr-lossless' and isinstance(it, np.ndarray):
                 return ArraySource(it, fmt='uhdr', lossless=True)
@@ -458,14 +549,91 @@ def image_grid(
         # attachment-only source (1×1 placeholder layer never requested); the
         # hi-res bytes ride as named attachments on it.
         _tsid = register_pending(1, 1, ['_hires'])
+        # These attachments (hi-res, display thumb, label matrices) are IMMUTABLE
+        # for the life of this source id, so serve them browser-CACHEABLE instead
+        # of the /attach default ``no-store``. Without this, every click-to-zoom
+        # re-fetched the full-res tile from scratch ("always has to upgrade"),
+        # whereas a Scene's on-disk PathSource is cached by its mtime URL — the
+        # whole reason ``imshow(scene)`` felt instant and ``imshow(scene.rgb)``
+        # (in-memory array) re-upgraded every time.
+        _IMMUTABLE_HDRS = {"Cache-Control": "private, max-age=86400, immutable"}
+        # Encode + attach the hi-res bytes SYNCHRONOUSLY. (Backgrounding this on
+        # a daemon thread was tried to shave the encode off first paint, but the
+        # uhdr/jxl C encoders are not reliably thread-safe — the encode could
+        # fail silently in the worker so the attachment never landed and the tile
+        # never upgraded. The dominant interactive cost is the ncolor relabel,
+        # now content-cached, so the eager encode is an acceptable one-time cost
+        # for a RELIABLE upgrade.) The thumb is already inline, so the figure
+        # still paints immediately; the browser swaps to hi-res once fetched.
+        # Attach the hi-res OFF the critical path. ArraySource already encodes in
+        # its own daemon thread; the only reason imshow(scene.rgb) was ~10x slower
+        # than imshow(scene) (a PathSource file reference, zero encode) is that we
+        # BLOCKED on get_bytes() here — the full-res float→PNG/uhdr encode (~130ms
+        # PNG / ~470ms uhdr, measured). Wait + attach on a per-cell daemon thread
+        # instead: imshow returns immediately (thumb + SVG, ~scene speed), the
+        # /attach endpoint serves 204 until the encode lands, and the tile
+        # controllers poll/retry → swap to hi-res when ready. (A PathSource's
+        # get_bytes is a fast file read, so its waiter finishes ~instantly too.)
+        import threading as _threading
         hires_urls = []
+        # Attach the hi-res bytes OFF the critical path: ``imshow`` returns
+        # immediately with the thumb + URLs, and each ``/attach/.../hiresN`` lands
+        # when its encode finishes (the inline prefetch + popup both 204-retry until
+        # ready). ``ArraySource`` already encodes in its own daemon thread, and a
+        # PathSource (Scene file) is a zero-encode read — so this is non-blocking.
+        def _attach_hires_bg(_src, _name):
+            try:
+                attach(_tsid, _name, _src.get_bytes(), headers=_IMMUTABLE_HDRS,
+                       media=_src.content_type)
+            except Exception:
+                pass   # encode/attach failed → controllers keep the thumb
         for i, it in enumerate(items):
-            src = _hires_source(it, cell_fmts[i])
+            src = _hires_source(it, cell_fmts[i], cell_hdr[i])
             if src is None:
                 hires_urls.append(None)
                 continue
-            attach(_tsid, f'hires{i}', src.get_bytes(), media=src.content_type)
-            hires_urls.append(f'{_tbase}/attach/{_tsid}/hires{i}')
+            if isinstance(src, (ArraySource, _LazyHdrHires)):
+                _n_encode_hires += 1   # in-memory encode (vs zero-cost PathSource file)
+            _name = f'hires{i}'
+            hires_urls.append(f'{_tbase}/attach/{_tsid}/{_name}')
+            _threading.Thread(target=_attach_hires_bg, args=(src, _name),
+                              daemon=True, name=f'ocd-hires-{i}').start()
+        # Stream LARGE label/instance matrices as raw-uint16 attachments instead
+        # of inlining them as multi-MB base64 (a 2048² seg is ~11 MB/matrix; two
+        # tiles sharing one seg ballooned the SVG to ~45 MB and stalled the parse).
+        # The browser fetch()es the bytes straight to the GPU — no base64 inflation,
+        # no giant XML. Dedup by array identity so a seg reused across tiles ships
+        # once. Small tiles stay inline (self-contained, no fetch latency).
+        _STREAM_MIN_BYTES = 1_000_000          # ~> 700² ; below this inline is fine
+        _mat_src_cache = {}                     # id(arr) -> attachment URL
+
+        def _attach_matrix(arr, tag):
+            key = id(arr)
+            u = _mat_src_cache.get(key)
+            if u is not None:
+                return u
+            a = np.asarray(arr)
+            if int(a.max(initial=0)) > 65535:   # uint16 wire: renumber if overflow
+                import fastremap
+                a = fastremap.renumber(a, in_place=False)[0]
+            raw = np.ascontiguousarray(a.astype('<u2')).tobytes()
+            name = f'{tag}{len(_mat_src_cache)}'
+            attach(_tsid, name, raw, headers=_IMMUTABLE_HDRS,
+                   media='application/octet-stream')
+            u = f'{_tbase}/attach/{_tsid}/{name}'
+            _mat_src_cache[key] = u
+            return u
+
+        for i, lt in enumerate(label_tiles):
+            if lt is None:
+                continue
+            lbl = np.asarray(lt['labels'])
+            if lbl.size * 2 < _STREAM_MIN_BYTES:
+                continue                        # small → keep inline base64
+            inst = lt.get('instances')
+            lt['labels_src'] = _attach_matrix(lbl, 'lbl')
+            if inst is not None and not np.array_equal(np.asarray(inst), lbl):
+                lt['instances_src'] = _attach_matrix(inst, 'inst')
     except Exception:
         hires_urls = [None] * len(items)
 
@@ -486,7 +654,15 @@ def image_grid(
                 cached = getattr(it, cache_attr, None)
                 if cached is not None:
                     return cached
-        url = _encode_thumb_url(arrays[idx], fmt, sdr_white_nits)
+        # HDR-nearest tiles: the source float is linear-light P3 (image_grid's
+        # convention). The WebGPU controller's shader does eotf→×headroom→oetf,
+        # so the texture must be sRGB-OETF (gamma) encoded — exactly how the
+        # scene's key-slice RGB tile feeds createLinkedHDRLayer. Gamma-encode
+        # here; the shader eotf's it back to linear before the headroom boost.
+        _enc_arr = arrays[idx]
+        if cell_hdr[idx]:
+            _enc_arr = _srgb_oetf(np.clip(_enc_arr, 0.0, 1.0))
+        url = _encode_thumb_url(_enc_arr, fmt, sdr_white_nits)
         if not isinstance(it, np.ndarray):
             try:
                 setattr(it, cache_attr, url)
@@ -520,10 +696,15 @@ def image_grid(
             import re
             _du = []
             for _i, _u in enumerate(urls):
+                # HDR-nearest tiles stay INLINE: the static HDR controller needs
+                # the texture href immediately (the async stream controller swaps
+                # href later, and the two don't coordinate → the tile would show
+                # as the bare SDR PNG with no WebGPU glow). Small glow swatches
+                # don't benefit from streaming anyway.
                 _mm = re.match(r'data:([^;]+);base64,(.*)$', _u or '', re.S)
-                if _mm:
+                if _mm and not cell_hdr[_i]:
                     _tsattach(_tsid, f'disp{_i}', _b64.b64decode(_mm.group(2)),
-                              media=_mm.group(1))
+                              headers=_IMMUTABLE_HDRS, media=_mm.group(1))
                     _du.append(f'{_tbase}/attach/{_tsid}/disp{_i}')
                 else:
                     _du.append(_u)
@@ -579,6 +760,17 @@ def image_grid(
     # scales the whole SVG element to its CSS size for display, but
     # the relative positions of cells and the integer scaling of
     # raster→cell-bbox stay fixed.
+    # Resolve the ``auto_upgrade='auto'`` default: eagerly stream hi-res into the
+    # inline preview on page load (so a native-uhdr/scene cell isn't stuck showing
+    # the blurry disp thumb until you hover) — but ONLY when warming is cheap. That
+    # is: a small grid, OR a grid with no in-memory encodes (all on-disk PathSource
+    # files, e.g. a wall of Scenes — /attach serves cached bytes, no encode). A
+    # large all-in-memory grid stays hover-gated to avoid an N-way parallel uhdr
+    # encode storm at first paint.
+    if auto_upgrade == 'auto':
+        _n_hires = sum(1 for u in hires_urls if u)
+        auto_upgrade = (_n_hires <= 16) or (_n_encode_hires == 0)
+
     for i, arr in enumerate(arrays):
         r, c = divmod(i, ncol)
         x = margin_vb + sum(cell_w_pxs[r * ncol:r * ncol + c]) + gap_vb * c
@@ -608,9 +800,16 @@ def image_grid(
             #    the bare page. ``light-dark()`` → light in light mode, dark in
             #    dark mode (matches the figure's canvas).
             if label_tiles[i].get('has_base'):
+                # The base under the GPU label canvas (e.g. a gray max-projection)
+                # is an HDR-nearest float tile too — tag it ``data-hdr`` so the
+                # static HDR controller glows it (OETF PNG + WebGPU canvas). The
+                # canvas sits below the SVG; the opacity:0 image lets it show, and
+                # the transparent label canvas (outlines) composites on top.
+                _base_hdr = (f' data-hdr="1" data-hdr-headroom="{sdr_white_nits / 203.0:.4f}"'
+                             if cell_hdr[i] else '')
                 svg.add(
                     f'<image x="{x:.2f}" y="{y:.2f}" '
-                    f'width="{w:.2f}" height="{h:.2f}" href="{urls[i]}" '
+                    f'width="{w:.2f}" height="{h:.2f}" href="{urls[i]}"{_base_hdr} '
                     f'preserveAspectRatio="none" image-rendering="pixelated"/>')
             else:
                 # ``Canvas`` = the CSS system page-background color: WHITE in
@@ -635,63 +834,31 @@ def image_grid(
                                     title=lt_title, fontsize_uu=fontsize_uu,
                                     lpos=lpos))
         elif link_axes:
-            seg_overlay_inner = _link_axes_seg_overlay or ''
-            # Nested <svg viewBox> turns each cell into its own clipped
-            # viewport. The viewBox is the current ROI in source-pixel
-            # coords; the JS controller mutates it on pointer/wheel
-            # input to pan/zoom synchronously across all linked cells.
-            #
-            # ``preserveAspectRatio="xMidYMid slice"`` (NOT "meet") ensures
-            # the image always fills the cell — any tiny aspect drift
-            # from the JS aspect-lock crops a hair instead of leaving
-            # letterbox bars.
-            #
-            # Hi-res image source: prefer the figure_server HTTP URL
-            # (full source resolution, browser caches, no inline base64)
-            # over the inline downsampled thumb. The downsampled thumb
-            # was sharp enough for image_grid's STATIC display, but in
-            # link_axes mode the cell IS the popup — high zoom would
-            # show pixelated NN upscale of the thumb. The hires URL is
-            # the original encoded raster.
-            #
-            # Pointer hit-test: a transparent <rect> at the FRONT of the
-            # nested SVG fires pointer events for the cell's full
-            # viewport. The image gets pointer-events="none" so events
-            # fall through to the rect — robust across Safari, Chrome,
-            # Firefox (pointer-events: bounding-box has spotty support).
+            # Converge on the canonical linked-cell emitter (shared with the
+            # scene key-slice grid): image_grid's per-cell data maps to a
+            # minimal link_ctx (full-image texture per cell + shared raster +
+            # ROI) and a TileInfo-shaped display rect; ``seg_polygons`` rides
+            # as the extra_inner overlay; ``data-cell-index`` is dropped (the
+            # controller pairs cells<->hits by NodeList index). HDR float cells
+            # carry data-hdr so the linked WebGPU HDR layer glows them.
+            from types import SimpleNamespace as _NS
+            from .linked_cell import emit_linked_cell as _emit_linked_cell
             ras_h, ras_w = linked_raster_shape
             img_href = hires_urls[i] if hires_urls[i] else urls[i]
-            svg.add(
-                f'<svg class="ocd-linked-cell" '
-                f'x="{x:.2f}" y="{y:.2f}" '
-                f'width="{w:.2f}" height="{h:.2f}" '
-                f'viewBox="{roi_x:.4f} {roi_y:.4f} {roi_w:.4f} {roi_h:.4f}" '
-                f'preserveAspectRatio="xMidYMid slice" '
-                f'overflow="hidden">'
-                f'<image x="0" y="0" '
-                f'width="{ras_w}" height="{ras_h}" '
-                f'href="{img_href}" preserveAspectRatio="none" '
-                f'image-rendering="pixelated" '
-                f'pointer-events="none"/>'
-                f'{seg_overlay_inner}'
-                f'</svg>'
-                # Hit rect lives OUTSIDE the nested SVG — in the OUTER
-                # viewBox coord system — so its bbox stays the cell's
-                # bbox regardless of the inner viewBox's zoom/pan state.
-                # Putting it inside the nested SVG would mean width="100%"
-                # resolves to the inner viewBox's width (here, the ROI
-                # width 400 px in source coords), and the rect would
-                # cover only a fraction of the visible cell — pan would
-                # work in that fraction only. ``data-cell-index`` links
-                # this rect to its corresponding ocd-linked-cell SVG
-                # (same DOM order, 1:1 correspondence) so the JS
-                # controller can route events to the right cell.
-                f'<rect class="ocd-linked-cell-hit" '
-                f'data-cell-index="{i}" '
-                f'x="{x:.2f}" y="{y:.2f}" '
-                f'width="{w:.2f}" height="{h:.2f}" '
-                f'fill="transparent" pointer-events="all"/>'
-            )
+            _lc = {
+                'tiles': [_NS(x0=0, y0=0, x1=ras_w, y1=ras_h)],
+                'raster_w': ras_w, 'raster_h': ras_h,
+                'roi_str': f'{roi_x:.4f} {roi_y:.4f} {roi_w:.4f} {roi_h:.4f}',
+                'tile_urls': [img_href],
+            }
+            _ti = _NS(x0=x, y0=y, x1=x + w, y1=y + h,
+                      label=(plot_labels[i] if plot_labels and i < len(plot_labels) else ''),
+                      has_content=True)
+            _emit_linked_cell(
+                svg, 0, _ti, _lc, 0,
+                False, 'outline', 0,
+                raster_format='png', linked_outlines=False, tile_box=False,
+                hdr=cell_hdr[i], extra_inner=(_link_axes_seg_overlay or ''))
             if link_axes_debug:
                 # Red dashed outline at the cell's actual bbox in outer-
                 # viewBox units. Anything inside this rect is clickable
@@ -715,22 +882,53 @@ def image_grid(
             # test the actual sampling convention, every non-zero shift
             # trades one artifact for another. Block edges aligned with
             # hires pixel boundaries is the cleanest swap behaviour.
-            if _disp_async:
+            # ``data-hdr`` (WebGPU-nearest path) is set ONLY for ``hdr-nearest``
+            # tiles — a plain sRGB PNG whose glow comes from the shader's
+            # ``eotf×headroom×oetf`` (the texture carries the REAL sRGB pixels, so
+            # nearest sampling shows them exactly). A native ``uhdr`` tile must
+            # NOT get data-hdr: its decoded base is the tonemapped/peak-normalized
+            # SDR layer, and boosting THAT by headroom ignores the per-pixel gain
+            # map (wrong colors). uhdr stays on native browser compositing.
+            # ``data-hdr-headroom`` = the content's encoded headroom
+            # (``sdr_white_nits/203``, ≈7.88 for the 1600-nit default). The HDR
+            # controller boosts the sRGB PNG by THIS (not the flaky JS-detected
+            # display headroom, which Chrome won't report → falls to 4.0 and
+            # renders DIMMER than the matching native-uhdr cell). The
+            # ``toneMapping:'extended'`` canvas then caps at the real display
+            # headroom in hardware — so the glow matches the uhdr path exactly.
+            _hdr_attr = (f' data-hdr="1" data-hdr-headroom="{sdr_white_nits / 203.0:.4f}"'
+                         if cell_hdr[i] else '')
+            if _disp_async and not cell_hdr[i]:
                 # tileserve-hosted display tile: no inline href — the stream
                 # controller fetches data-tile-src (via the proxy resolver) and
                 # sets href. data-tile-async lets the SVG compose immediately.
+                # (HDR-nearest tiles stay inline — see the _disp_async block.)
                 svg.add(
                     f'<image x="{x:.2f}" y="{y:.2f}" '
                     f'width="{w:.2f}" height="{h:.2f}" '
-                    f'data-tile-async="1" data-tile-src="{urls[i]}" '
-                    f'preserveAspectRatio="none" image-rendering="pixelated"/>'
+                    f'data-tile-async="1" data-tile-src="{urls[i]}"{_hdr_attr} '
+                    # ``auto`` (smooth), NOT ``pixelated``: this is photographic content
+                    # scaled into a cell. Nearest (pixelated) at a non-integer ratio drops
+                    # columns irregularly = the "columns of pixels missing" seam, worst on
+                    # the low-res disp thumb when the hi-res upgrade is slow/stalled. Smooth
+                    # scaling never drops columns; the hi-res swap keeps auto too.
+                    f'preserveAspectRatio="none" image-rendering="auto"/>'
                 )
             else:
+                # HDR-nearest tiles carry ``data-hdr`` here (inline sRGB PNG); the
+                # static HDR controller overlays a host WebGPU canvas (NEAREST +
+                # glow) and sets the image to ``opacity:0`` (invisible but still
+                # hit-testable, so click-to-zoom keeps working). A foreignObject
+                # canvas was tried but the SVG compositor clamps it to SDR (no
+                # glow) — the host-overlay is the proven HDR path.
                 svg.add(
                     f'<image x="{x:.2f}" y="{y:.2f}" '
                     f'width="{w:.2f}" height="{h:.2f}" '
-                    f'href="{urls[i]}" preserveAspectRatio="none" '
-                    f'image-rendering="pixelated"/>'
+                    f'href="{urls[i]}"{_hdr_attr} preserveAspectRatio="none" '
+                    # smooth scaling (see the data-tile-async branch): photographic
+                    # content, nearest would drop columns = the seam. data-hdr cells
+                    # hide this <image> (opacity:0) so it only affects native tiles.
+                    f'image-rendering="auto"/>'
                 )
         if outline:
             svg.rect(x, y, w, h,
@@ -790,7 +988,11 @@ def image_grid(
                 # segmentation in a mixed grid) when the HDR toggle
                 # changes, even though that cell never actually renders
                 # differently.
-                is_hdr_cell = cell_fmts[i] in ('uhdr', 'jxl-hdr-pq')
+                # ``cell_hdr`` tiles render through the WebGPU HDR canvas (glow
+                # ×headroom), so the label contrast pick must use the HDR-aware
+                # luminance sampler too — even though the tile encodes as PNG
+                # (cell_fmts == 'png'), not uhdr/jxl.
+                is_hdr_cell = cell_fmts[i] in ('uhdr', 'jxl-hdr-pq') or cell_hdr[i]
                 label_str = str(label)
                 per_letter = fontcolor != 'auto-cell'
                 from html import escape as _html_escape
@@ -1168,16 +1370,29 @@ def _label_tile_svg(lt, x, y, w, h, title=None, fontsize_uu=0.0, lpos='top_middl
 
     labels = np.asarray(lt['labels'])
     lh, lw = labels.shape[:2]
-    lbl_b64 = base64.b64encode(
-        np.ascontiguousarray(labels.astype('<u2')).tobytes()).decode('ascii')
+    # Large matrices are STREAMED (``labels_src`` set by the caller): emit a
+    # ``data-labels-src`` URL and omit the multi-MB inline base64; the figure
+    # shell's controller fetches the raw uint16 bytes. Small matrices stay
+    # inline (self-contained, no fetch).
+    _lbl_src = lt.get('labels_src')
+    if _lbl_src:
+        lbl_data_attr = f' data-labels-src="{_lbl_src}"'
+    else:
+        lbl_b64 = base64.b64encode(
+            np.ascontiguousarray(labels.astype('<u2')).tobytes()).decode('ascii')
+        lbl_data_attr = f' data-labels="{lbl_b64}"'
 
     # Instance ids for hover/picking. Only shipped when they differ from the
     # color ids (i.e. ncolor relabel happened); otherwise the color ids
     # double as instances on the GPU side, saving the extra payload. Clamp
     # to 16-bit (renumber if a crop somehow exceeds 65535 cells).
     inst_attr = ''
+    _inst_src = lt.get('instances_src')
     inst = lt.get('instances')
-    if inst is not None:
+    if _inst_src:
+        inst_attr = f' data-instances-src="{_inst_src}"'
+    elif not _lbl_src and inst is not None:
+        # Inline path (streamed labels never carry inline instances).
         inst = np.asarray(inst)
         if not np.array_equal(inst, labels):
             if int(inst.max(initial=0)) > 65535:
@@ -1227,8 +1442,8 @@ def _label_tile_svg(lt, x, y, w, h, title=None, fontsize_uu=0.0, lpos='top_middl
         f'<foreignObject x="{x:.2f}" y="{y:.2f}" '
         f'width="{w:.2f}" height="{h:.2f}">'
         f'<canvas xmlns="http://www.w3.org/1999/xhtml" data-label-tile="1" '
-        f'data-w="{lw}" data-h="{lh}"{title_attr} '
-        f'data-labels="{lbl_b64}"{inst_attr} data-palette="{pal_attr}" '
+        f'data-w="{lw}" data-h="{lh}"{title_attr}'
+        f'{lbl_data_attr}{inst_attr} data-palette="{pal_attr}" '
         f'data-opacity="{lt["opacity"]:.3f}" data-style="{lt["style"]}" '
         f'data-outlines="{1 if lt["outlines"] else 0}" '
         f'data-outline-hdr="{lt.get("outline_hdr", 1.0):.3f}"{oc_attr} '
@@ -1356,7 +1571,7 @@ def _encode_thumb_url(arr, raster_format, sdr_white_nits):
     return "data:image/png;base64," + base64.b64encode(png).decode('ascii')
 
 
-def _resolve_items(items, *, dx, target_px=None):
+def _resolve_items(items, *, dx, target_px=None, hdr_unify=False):
     """Return ``(arrays, raster_format)``. For scene-like inputs, prefer
     the on-disk HDR JXL via :func:`ocdkit.io.figure_server.resolve_linear_p3`
     so thumbnails preserve the same scene-referred HDR brightness as the
@@ -1432,21 +1647,28 @@ def _resolve_items(items, *, dx, target_px=None):
                 ds = max(1, src_longest // int(target_px))
             else:
                 ds = 4
-            uhdr_resolved = resolve_uhdr_thumb_bytes(it, downsample=ds)
-            if uhdr_resolved is not None:
-                # Placeholder float array sized to match the actual
-                # thumb pixel dims so ``_native_dims`` reports the cell
-                # bbox at the same resolution the bytes encode — browser
-                # renders the embedded UHDR JPEG 1:1 inside the bbox.
-                thumb_bytes, (h, w) = uhdr_resolved
-                from .hdr_cmap import HdrCmapArray
-                arr = HdrCmapArray(np.zeros((h, w, 3), dtype=np.float32))
-                arr._uhdr_thumb_bytes = thumb_bytes
-                return arr  # bypass the dx-stride below
-            # Fall back to float decode + re-encode for items without
-            # UHDR-decodable bytes (rare: scenes with only ``_rgb``
-            # set and no on-disk JPG / in-memory UHDR cache).
-            arr = resolve_linear_p3(it, target_px=target_px)
+            # hdr_unify routes scene cells through the data-hdr/WebGPU path, which
+            # needs REAL linear-P3 pixels — so try resolve_linear_p3 first and SKIP
+            # the embedded-uhdr-thumb fast-path (it returns a zeros placeholder for
+            # the native <image>). If the scene can't decode to linear, fall back to
+            # the native embedded thumb so it still renders (just not unified).
+            arr = resolve_linear_p3(it, target_px=target_px) if hdr_unify else None
+            if arr is None:
+                uhdr_resolved = resolve_uhdr_thumb_bytes(it, downsample=ds)
+                if uhdr_resolved is not None:
+                    # Placeholder float array sized to match the actual
+                    # thumb pixel dims so ``_native_dims`` reports the cell
+                    # bbox at the same resolution the bytes encode — browser
+                    # renders the embedded UHDR JPEG 1:1 inside the bbox.
+                    thumb_bytes, (h, w) = uhdr_resolved
+                    from .hdr_cmap import HdrCmapArray
+                    arr = HdrCmapArray(np.zeros((h, w, 3), dtype=np.float32))
+                    arr._uhdr_thumb_bytes = thumb_bytes
+                    return arr  # bypass the dx-stride below
+                # Fall back to float decode + re-encode for items without
+                # UHDR-decodable bytes (rare: scenes with only ``_rgb``
+                # set and no on-disk JPG / in-memory UHDR cache).
+                arr = resolve_linear_p3(it, target_px=target_px)
             if arr is None:
                 rgb = getattr(it, 'rgb', None)
                 if rgb is None:

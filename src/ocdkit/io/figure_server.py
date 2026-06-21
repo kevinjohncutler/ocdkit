@@ -787,13 +787,28 @@ def resolve_uhdr_thumb_bytes(item, downsample=4):
             embedded = _uhdr.read_thumbnail_bytes(fast_source)
             if embedded is not None and _uhdr.is_uhdr(embedded):
                 info = _uhdr._cython_extract_layers(embedded)
-                result = (embedded, (int(info["height"]), int(info["width"])))
+                emb_long = max(int(info["height"]), int(info["width"]))
+                # The embedded thumb is a FIXED size baked at encode time (often
+                # ~250px). Only use it when it's at least the resolution the caller
+                # asked for (``src_long // downsample``) — otherwise it shows
+                # UPSCALED (blurry / "JPEG-compressed") in a larger cell, which is
+                # the whole reason a grid of scenes looked low-res. When it's too
+                # small, fall through to the on-demand IDCT subsample below, which
+                # honors ``downsample`` and yields a ~src/n px thumb.
                 try:
-                    setattr(item, cache_attr, result)
-                    setattr(item, fp_attr, fp_now)
+                    _si = _uhdr.probe(fast_source)
+                    src_long = max(int(_si["width"]), int(_si["height"]))
                 except Exception:
-                    pass
-                return result
+                    src_long = emb_long   # can't size the source → accept the thumb
+                want = max(1, src_long // n)
+                if emb_long >= want:
+                    result = (embedded, (int(info["height"]), int(info["width"])))
+                    try:
+                        setattr(item, cache_attr, result)
+                        setattr(item, fp_attr, fp_now)
+                    except Exception:
+                        pass
+                    return result
         except Exception:
             pass
 

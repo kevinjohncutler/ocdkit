@@ -631,8 +631,15 @@ _SHELL_CSS = """
        panels. Default to viewport-cover for non-Jupyter hosts. */
     top: 0; left: 0; right: 0; bottom: 0;
     display: none;
-    background: rgba(0, 0, 0, 0.85);
-    z-index: 10000;
+    /* Blur the page behind, NO tint (an 85%-black scrim was brutal over
+       light-mode Jupyter). Fully transparent + blur adapts to light OR dark. */
+    background: transparent;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    /* 9998 (NOT 10000): sit just BELOW JupyterLab's notification/news toast
+       (react-toastify, --toastify-z-index=9999) so a news popup isn't blurred
+       under the zoom. Still well above the notebook content it covers. */
+    z-index: 9998;
     cursor: zoom-out;
     /* Compositor isolation: tell the browser this subtree is layout/
        paint/style-self-contained, and force it onto its own composite
@@ -809,18 +816,15 @@ _SHELL_JS = r"""
     // (e.g. JupyterLab tab moves between split panes) — the IIFE-time
     // pane reference would point at a detached node after that.
     function resolvePane() {
-      // Prefer the LARGEST sensible notebook container so the dim
-      // backdrop covers the whole notebook (toolbar + scrollable cell
-      // area + footer), not just the inner scroll region.  ``closest``
-      // returns the nearest matching ancestor, so order matters: try
-      // outer-most class names first, narrowing down as fallbacks.
-      // ``.jp-NotebookPanel`` is the outer container (includes the
-      // cell toolbar); ``.jp-NotebookPanel-notebook`` is the inner
-      // scrollable area only.
-      return wrapper.closest('.jp-MainAreaWidget')
-          || wrapper.closest('.jp-NotebookPanel')
-          || wrapper.closest('.jp-NotebookPanel-notebook')
+      // Cover just the notebook CONTENTS, not the toolbar above them: prefer
+      // the inner scrollable cell area (``.jp-NotebookPanel-notebook`` /
+      // ``.jp-Notebook``) over the outer container (``.jp-NotebookPanel`` /
+      // ``.jp-MainAreaWidget``, which INCLUDE the cell toolbar). ``closest``
+      // returns the nearest matching ancestor, so order = preference.
+      return wrapper.closest('.jp-NotebookPanel-notebook')
           || wrapper.closest('.jp-Notebook')
+          || wrapper.closest('.jp-NotebookPanel')
+          || wrapper.closest('.jp-MainAreaWidget')
           || wrapper.closest('.jp-Cell')
           || document.body;
     }
@@ -1234,7 +1238,15 @@ void main() {
           return;
         }
         try {
-          const resp = await fetch(url);
+          // 204 = hi-res still background-encoding (numpy path) -> poll until ready
+          // instead of erroring out and stranding the popup on the thumb. Cache-
+          // buster on the fetch only; the LRU key stays the bare url argument.
+          let resp, attempt = 0;
+          for (;;) {
+            resp = await fetch(url + (attempt ? ((url.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt) : ''));
+            if (resp.status !== 204 || ++attempt > 20) break;
+            await new Promise(r => setTimeout(r, 250));
+          }
           if (!resp.ok) throw new Error('HTTP ' + resp.status);
           const blob = await resp.blob();
           const bmp = await createImageBitmap(blob);
@@ -1775,6 +1787,16 @@ void main() {
     // the SAME eotf→×headroom→oetf shader on an rgba16float/display-p3/extended
     // canvas (NEAREST mag), so the enlarged view glows too. Same redraw(state)/
     // loadImage contract + same fit/pan/zoom vertex math as createPopupWebglViewer.
+    // Display EDR headroom for popup HDR rendering; default 4 when the screen
+    // API is unavailable (Chrome usually doesn't expose it), matching the inline
+    // controllers / createLinkedHDRLayer.
+    function _popupHdrHeadroom() {
+      try { var sc = window.screen || {};
+        var ks = ['highDynamicRangeHeadroom','dynamicRangeHeadroom','hdrHeadroom','currentEDRHeadroom'];
+        for (var i = 0; i < ks.length; i++) { var v = sc[ks[i]]; if (typeof v === 'number' && v > 0) return Math.max(1, v); }
+      } catch (e) {}
+      return 4.0;
+    }
     function createPopupWebgpuHdrViewer(parent) {
       if (!navigator.gpu) return null;
       const canvas = document.createElement('canvas');
@@ -1790,6 +1812,10 @@ void main() {
         return null;
       }
       let N = 4.0; { const d = detectHeadroom(); if (d) N = d; }
+      // Track the HDR headroom separately from the live N so the HDR→SDR toggle can
+      // force N=1.0 (SDR white) and RESTORE the content headroom on toggle-off.
+      // ``_lastState`` is the most recent pan/zoom so the toggle can redraw in place.
+      let _hdrN = N, _sdr = false, _lastState = null;
       const code = `
 struct U { canvasPx: vec2f, imagePx: vec2f, translatePx: vec2f, dpr: f32, zoom: f32, headroom: f32, _p: f32 };
 @group(0) @binding(0) var t: texture_2d<f32>;
@@ -1818,23 +1844,76 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
   return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0);
 }`;
       let device = null, pipe = null, sampler = null, ubuf = null, tex = null, bg = null;
+      let _blitPipe = null, _blitSampler = null;   // mipmap generator (see async init)
       let imgW = 1, imgH = 1, textureLoaded = false, ready = false;
       let _pendingDraw = null, _pendingTex = null;
+      // Persistent decoded-texture cache, keyed by the BARE hi-res URL and shared
+      // across popup-viewer instances via ``self`` (textures live on the ONE shared
+      // device). A re-zoom of the same tile rebinds an already-decoded texture
+      // INSTANTLY instead of re-fetching+re-decoding — the HDR equivalent of the
+      // CSS-img viewer's imgLRU. Without this the HDR popup "forgot" the hi-res and
+      // re-decoded on every open.
+      const _hpc = self.__ocdHdrPopupTexCache
+                 || (self.__ocdHdrPopupTexCache = { map: new Map(), bytes: 0, MAX: 2 * 1024 * 1024 * 1024 });
       (async function () {
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) return;
-        device = await adapter.requestDevice();
+        // Share ocdkit's ONE WebGPU device (HdrColormap.getDevice singleton) so
+        // the GPU paths in a figure don't each spin up a separate device (which
+        // serialise = contention, defeating any prewarm). Private device only if
+        // the colormap module isn't present.
+        // ONE shared device for ALL popup-viewer instances, cached on ``self`` to
+        // MATCH the global _hpc texture cache. HdrColormap (the getDevice singleton)
+        // is NOT loaded in image_grid figures, so the fallback below used to run
+        // per-instance → each rebuilt viewer got its OWN private device. A texture
+        // cached on viewer A's device is then invalid on viewer B's
+        // ("TextureView ... associated with [Device], cannot be used with [Device]")
+        // → the bind group + draw silently fail → the popup is BLANK on every open
+        // after the first (the classic "shows once, then blank on arrow-nav"). One
+        // cached device keeps the textures valid across rebuilds.
+        try {
+          if (!self.__ocdHdrPopupDevicePromise) {
+            self.__ocdHdrPopupDevicePromise = (async function () {
+              const _HC = self.HdrColormap || (typeof window !== 'undefined' && window.HdrColormap);
+              if (_HC && _HC.getDevice) return await _HC.getDevice();
+              const ad = await navigator.gpu.requestAdapter();
+              return await ad.requestDevice();
+            })();
+          }
+          device = await self.__ocdHdrPopupDevicePromise;
+        } catch (e) { self.__ocdHdrPopupDevicePromise = null; return; }
+        if (!device) return;
         try { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3', alphaMode:'premultiplied', toneMapping:{ mode:'extended' } }); }
         catch (e) { try { ctx.configure({ device, format:'rgba16float', colorSpace:'display-p3', alphaMode:'premultiplied' }); } catch (e2) { return; } }
         const mod = device.createShaderModule({ code });
-        sampler = device.createSampler({ magFilter:'nearest', minFilter:'linear' });
+        // nearest MAG (crisp pixel inspection when zoomed in — unchanged), but
+        // trilinear MIN (mipmapFilter) so the FIT/zoomed-out view averages the
+        // full-res source through the mip chain instead of point-sampling it
+        // (which dropped ~20% of fine lines = aliasing). Mips built in _ingest.
+        sampler = device.createSampler({ magFilter:'nearest', minFilter:'linear', mipmapFilter:'linear' });
         pipe = device.createRenderPipeline({ layout:'auto',
           vertex:{ module: mod, entryPoint:'vs' },
           fragment:{ module: mod, entryPoint:'fs', targets:[{ format:'rgba16float' }] },
           primitive:{ topology:'triangle-strip' } });
+        // Mipmap generator: a fullscreen-triangle blit that linearly downsamples
+        // level N-1 → N. Built once; used by _genMips after each texture upload.
+        const _blitMod = device.createShaderModule({ code: `
+struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
+  var p = array<vec2f,3>(vec2f(-1.0,-1.0), vec2f(3.0,-1.0), vec2f(-1.0,3.0));
+  var u = array<vec2f,3>(vec2f(0.0,1.0), vec2f(2.0,1.0), vec2f(0.0,-1.0));
+  var o: VO; o.pos = vec4f(p[vi],0.0,1.0); o.uv = u[vi]; return o;
+}
+@group(0) @binding(0) var bt: texture_2d<f32>;
+@group(0) @binding(1) var bs: sampler;
+@fragment fn fs(in: VO) -> @location(0) vec4f { return textureSample(bt, bs, in.uv); }` });
+        _blitSampler = device.createSampler({ magFilter:'linear', minFilter:'linear' });
+        _blitPipe = device.createRenderPipeline({ layout:'auto',
+          vertex:{ module: _blitMod, entryPoint:'vs' },
+          fragment:{ module: _blitMod, entryPoint:'fs', targets:[{ format:'rgba8unorm' }] },
+          primitive:{ topology:'triangle-list' } });
         ubuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         ready = true;
-        if (_pendingTex) { const p = _pendingTex; _pendingTex = null; _upload(p.bmp, p.onLoaded); }
+        if (_pendingTex) { const p = _pendingTex; _pendingTex = null;
+          if (p.entry) _activateEntry(p.entry, p.onLoaded); else _ingest(p.bmp, p.key, p.onLoaded); }
         if (_pendingDraw) { const s = _pendingDraw; _pendingDraw = null; redraw(s); }
       })();
 
@@ -1849,28 +1928,84 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         if (canvas.height !== h) canvas.height = h;
         _sizeDirty = false;
       }
-      function _upload(bmp, onLoaded) {
-        imgW = bmp.width; imgH = bmp.height;
-        if (tex) { try { tex.destroy(); } catch (e) {} }
-        tex = device.createTexture({ size:[imgW, imgH], format:'rgba8unorm',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-        device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [imgW, imgH]);
-        if (bmp.close) bmp.close();
+      // Rebind an already-decoded cache entry as the active texture (no upload).
+      function _activateEntry(entry, onLoaded) {
+        tex = entry.tex; imgW = entry.w; imgH = entry.h;
         bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries:[
           { binding:0, resource: tex.createView() }, { binding:1, resource: sampler },
           { binding:2, resource:{ buffer: ubuf } }] });
         textureLoaded = true;
         if (onLoaded) onLoaded();
       }
+      function _evictHpc() {
+        if (_hpc.bytes <= _hpc.MAX) return;
+        for (const k of Array.from(_hpc.map.keys())) {
+          if (_hpc.bytes <= _hpc.MAX) break;
+          const ev = _hpc.map.get(k);
+          if (!ev || ev.tex === tex) continue;   // never evict the live texture
+          try { ev.tex.destroy(); } catch (e) {}
+          _hpc.bytes -= (ev.bytes || 0);
+          _hpc.map.delete(k);
+        }
+      }
+      // Build the full mip chain for a texture by linearly downsampling each level
+      // from the previous (so trilinear minification has real averaged levels).
+      function _genMips(t, w, h, levels) {
+        const enc = device.createCommandEncoder();
+        for (let lvl = 1; lvl < levels; lvl++) {
+          const src = t.createView({ baseMipLevel: lvl - 1, mipLevelCount: 1 });
+          const dst = t.createView({ baseMipLevel: lvl, mipLevelCount: 1 });
+          const bbg = device.createBindGroup({ layout: _blitPipe.getBindGroupLayout(0), entries: [
+            { binding:0, resource: src }, { binding:1, resource: _blitSampler } ] });
+          const rp = enc.beginRenderPass({ colorAttachments:[{ view: dst,
+            loadOp:'clear', clearValue:{ r:0,g:0,b:0,a:0 }, storeOp:'store' }] });
+          rp.setPipeline(_blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
+        }
+        device.queue.submit([enc.finish()]);
+      }
+      // Decode an ImageBitmap into a GPU texture, cache it under ``key``, activate it.
+      function _ingest(bmp, key, onLoaded) {
+        const w = bmp.width, h = bmp.height;
+        const levels = Math.floor(Math.log2(Math.max(w, h))) + 1;
+        const t = device.createTexture({ size:[w, h], format:'rgba8unorm', mipLevelCount: levels,
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+        device.queue.copyExternalImageToTexture({ source: bmp }, { texture: t }, [w, h]);
+        if (bmp.close) bmp.close();
+        if (_blitPipe && levels > 1) { try { _genMips(t, w, h, levels); } catch (e) {} }
+        // ~1.33× base for the mip chain in the byte budget.
+        const entry = { tex: t, w: w, h: h, bytes: Math.round(w * h * 4 * 1.34) };
+        if (key) { _hpc.map.set(key, entry); _hpc.bytes += entry.bytes; _evictHpc(); }
+        _activateEntry(entry, onLoaded);
+      }
       function loadImage(url, onLoaded) {
+        const key = url;   // bare-url key → revisits hit regardless of ?_r= buster
+        const hit = _hpc.map.get(key);
+        if (hit) {
+          // Already decoded → rebind instantly (defer one frame if the device is
+          // still configuring). No re-fetch, no re-decode — this is the "remember".
+          if (ready) _activateEntry(hit, onLoaded);
+          else _pendingTex = { entry: hit, key, onLoaded };
+          return;
+        }
         let u = url;
         try { if (window.__ocdResolveTileUrl) u = window.__ocdResolveTileUrl(url); } catch (e) {}
-        fetch(u).then(r => r.blob())
-          .then(b => createImageBitmap(b, { colorSpaceConversion:'none', premultiplyAlpha:'none' }))
-          .then(bmp => { if (viewer.disposed) return; if (ready) _upload(bmp, onLoaded); else _pendingTex = { bmp, onLoaded }; })
-          .catch(e => console.warn('SvgFigure WebGPU-HDR: image load failed:', url, e));
+        let attempt = 0;
+        const tryFetch = () => {
+          // 204 = the numpy hi-res is still background-encoding → retry rather than
+          // strand the popup on the thumb (a scene's on-disk hi-res is 200 first try).
+          fetch(u + (attempt ? ((u.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt) : ''))
+            .then(r => { if (r.status === 204) throw new Error('204'); return r.blob(); })
+            .then(b => createImageBitmap(b, { colorSpaceConversion:'none', premultiplyAlpha:'none' }))
+            .then(bmp => { if (viewer.disposed) return; if (ready) _ingest(bmp, key, onLoaded); else _pendingTex = { bmp, key, onLoaded }; })
+            .catch(e => {
+              if (attempt < 20) { attempt++; setTimeout(tryFetch, 250); }
+              else console.warn('SvgFigure WebGPU-HDR: image load failed:', url, e);
+            });
+        };
+        tryFetch();
       }
       function redraw(s) {
+        _lastState = s;
         if (!ready || !textureLoaded) { _pendingDraw = s; return; }
         syncSize();
         device.queue.writeBuffer(ubuf, 0, new Float32Array([
@@ -1894,10 +2029,25 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       function clearActive() { imgW = 1; imgH = 1; textureLoaded = false; }
       function dispose() {
         viewer.disposed = true;
-        try { if (tex) tex.destroy(); if (ubuf) ubuf.destroy(); } catch (e) {}
+        // ``tex`` points into the shared _hpc cache — do NOT destroy it here, or a
+        // later viewer that rebinds the same cache entry renders a freed texture.
+        // Only the per-viewer ubuf is ours to drop.
+        try { if (ubuf) ubuf.destroy(); } catch (e) {}
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
       }
-      const viewer = { canvas, redraw, loadImage, isPointInImage, dispose, clearActive,
+      // Boost the zoomed image by the CONTENT headroom (passed from the tile's
+      // data-hdr-headroom) so the popup glow matches the inline cell + the native
+      // uhdr path, instead of the JS-detected display value (4.0 on Chrome → dim).
+      function setHeadroom(hr) { if (typeof hr === 'number' && hr > 0) { _hdrN = hr; if (!_sdr) N = hr; } }
+      // HDR→SDR toggle (the shell's HDR button calls webglViewer.setSdr). Force the
+      // shader headroom to 1.0 (SDR white) on, restore the content headroom off, and
+      // redraw in place. Without this the WebGPU popup ignored the toggle while the
+      // native-uhdr (CSS-img) popup honored it — so scene.rgb's zoom stayed HDR.
+      function setSdr(sdr) {
+        _sdr = !!sdr; N = _sdr ? 1.0 : _hdrN;
+        if (_lastState && ready && textureLoaded) redraw(_lastState);
+      }
+      const viewer = { canvas, redraw, loadImage, isPointInImage, dispose, clearActive, setHeadroom, setSdr,
         get textureLoaded() { return textureLoaded; }, disposed: false, isHdr: true };
       return viewer;
     }
@@ -2083,6 +2233,21 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       // (no-op for data:/relative thumbs)
       if (thumbHref && window.__ocdResolveTileUrl) thumbHref = window.__ocdResolveTileUrl(thumbHref);
       const viewerAtOpen = webglViewer;
+      // Boost the HDR popup by the tile's CONTENT headroom (data-hdr-headroom,
+      // from image_grid) so the zoom glow matches the inline cell + uhdr path
+      // instead of the JS-detected display value (4.0 on Chrome → dim).
+      if (viewerAtOpen && viewerAtOpen.setHeadroom) {
+        let _hrEl = tile.querySelector ? tile.querySelector('[data-hdr-headroom]') : null;
+        if (!_hrEl && tile.getAttribute && tile.getAttribute('data-hdr-headroom')) _hrEl = tile;
+        const _thr = _hrEl ? parseFloat(_hrEl.getAttribute('data-hdr-headroom')) : NaN;
+        if (isFinite(_thr) && _thr > 0) viewerAtOpen.setHeadroom(_thr);
+      }
+      // Sync the current HDR/SDR toggle to the freshly-opened viewer: a tile opened
+      // (or arrowed-to) WHILE HDR is already off must start SDR, not snap back to HDR.
+      if (viewerAtOpen && viewerAtOpen.setSdr && wrapper
+          && wrapper.classList.contains('ocd-sdr-mode')) {
+        viewerAtOpen.setSdr(true);
+      }
       // Defer the visible backdrop until the first frame of content
       // is ready. Otherwise the user sees a dark backdrop with empty
       // contents for the duration of the thumb decode (~40 ms in
@@ -2111,14 +2276,27 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         showPopup();
         if (webglViewer === viewerAtOpen) applyTransform();
       } else if (thumbHref) {
-        viewerAtOpen.loadImage(thumbHref, () => {
-          showPopup();
-          if (webglViewer === viewerAtOpen) applyTransform();
-          upgradeToHires();
-        });
+        // Thumb FIRST → paint the cheap subsampled image instantly (snappy arrow-key
+        // toggle), THEN upgrade to hi-res — which is browser/texture-cached, so on a
+        // revisit the sharpen is an instant cache hit (no lingering low-res).
+        // EXCEPTION: if the inline tile ALREADY upgraded (data-hires-ready=1), the
+        // hi-res bytes are browser-cached, so open STRAIGHT at hi-res — no thumb-first
+        // flash and no redundant "separate upgrade" on a tile that's already sharp.
+        var _hiresReady = (tile.getAttribute('data-hires-ready') === '1');
+        if (_hiresReady && hiresHref && hiresHref !== thumbHref) {
+          viewerAtOpen.loadImage(hiresHref, () => {
+            showPopup();
+            if (webglViewer === viewerAtOpen) applyTransform();
+          });
+        } else {
+          viewerAtOpen.loadImage(thumbHref, () => {
+            showPopup();
+            if (webglViewer === viewerAtOpen) applyTransform();
+            upgradeToHires();
+          });
+        }
       } else if (hiresHref) {
-        // No thumb available -- fall through to hires for the first
-        // visible frame.
+        // No thumb available -- fall through to hires for the first visible frame.
         viewerAtOpen.loadImage(hiresHref, () => {
           showPopup();
           if (webglViewer === viewerAtOpen) applyTransform();
@@ -2282,6 +2460,15 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         // matrix3d -> own GPU layer; transform updates skip
         // layout+paint and only touch the compositor. matrix3d is
         // column-major: matrix3d(m11, m12, m13, m14, m21, m22, ...).
+        // Adaptive resampling (THE seam fix). At minification (eff < 1 — the fit /
+        // zoomed-out view of a full-res scene image) ``image-rendering:pixelated``
+        // is nearest-neighbour DECIMATION: scaling 2000px→~250px drops ~90% of
+        // columns → the "vertical strip missing / left-right drift" seam. Switch to
+        // the browser's smooth high-quality downscaler there, and keep pixelated
+        // only at magnification (eff >= 1) for crisp pixel inspection — exactly the
+        // WebGPU viewer's nearest-mag + linear-min behaviour (which is why numpy
+        // tiles never showed the seam).
+        img.style.imageRendering = (eff < 1) ? 'auto' : 'pixelated';
         img.style.transform =
           'matrix3d(' + a + ',' + d + ',0,0, '
           + b + ',' + e + ',0,0, '
@@ -2290,7 +2477,9 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       }
 
       function loadImage(url, onLoaded) {
-        // LRU hit: instant swap, no fetch, no decode.
+        // LRU hit: instant swap, no fetch, no decode. Keyed on the BARE url so a
+        // revisit always hits regardless of any ``?_r=`` retry cache-buster used
+        // below — that's what makes a re-zoom open instantly instead of "forgetting".
         const cached = imgLRU.get(url);
         if (cached) {
           setActiveImg_(url, cached);
@@ -2303,28 +2492,45 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         if (inFlight.has(url)) return;
         inFlight.add(url);
 
-        const newImg = document.createElement('img');
-        newImg.draggable = false;
-        newImg.style.cssText = IMG_STYLE + ' display:none;';
-        wrap.appendChild(newImg);
-        newImg.addEventListener('load', () => {
-          inFlight.delete(url);
-          const entry = {
-            el: newImg,
-            w: newImg.naturalWidth || 0,
-            h: newImg.naturalHeight || 0,
-          };
-          imgLRU.set(url, entry);
-          setActiveImg_(url, entry);
-          evictIfFull_();
-          if (onLoaded) onLoaded();
-        });
-        newImg.addEventListener('error', (e) => {
-          inFlight.delete(url);
-          if (newImg.parentElement) newImg.parentElement.removeChild(newImg);
-          console.warn('SvgFigure CSS-img viewer image load failed', url, e);
-        });
-        newImg.src = url;
+        // A numpy array's hi-res is encoded off the critical path, so the tileserve
+        // attachment returns HTTP 204 (→ <img> error) until the encode lands ~0.1-0.5s
+        // later. Retry with backoff + a cache-buster (mirrors the inline hover-prefetch
+        // at the 20×250ms poll) so the popup UPGRADES the moment the hi-res is ready,
+        // instead of silently giving up and staying on the low-res thumb. A scene's
+        // on-disk hi-res is ready on the first try, so this loop no-ops for it.
+        let attempt = 0;
+        const tryLoad = () => {
+          const newImg = document.createElement('img');
+          newImg.draggable = false;
+          newImg.style.cssText = IMG_STYLE + ' display:none;';
+          wrap.appendChild(newImg);
+          newImg.addEventListener('load', () => {
+            inFlight.delete(url);
+            const entry = {
+              el: newImg,
+              w: newImg.naturalWidth || 0,
+              h: newImg.naturalHeight || 0,
+            };
+            imgLRU.set(url, entry);   // canonical (bare-url) key
+            setActiveImg_(url, entry);
+            evictIfFull_();
+            if (onLoaded) onLoaded();
+          });
+          newImg.addEventListener('error', (e) => {
+            if (newImg.parentElement) newImg.parentElement.removeChild(newImg);
+            if (attempt < 20) {
+              attempt++;
+              setTimeout(tryLoad, 250);
+            } else {
+              inFlight.delete(url);
+              console.warn('SvgFigure CSS-img viewer image load failed', url, e);
+            }
+          });
+          // Cache-buster on the SRC only (never the LRU key) so a cached 204 can't
+          // mask the eventual 200, while revisits still hit the bare-url entry.
+          newImg.src = url + (attempt ? ((url.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt) : '');
+        };
+        tryLoad();
       }
 
       function isPointInImage(clientX, clientY) {
@@ -2384,7 +2590,17 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         const sib = g && g.querySelector('image');
         const href = (cfg.baseSrc) || (sib && (sib.getAttribute('href')
           || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
-        if (href) {
+        const isHdrBase = !!(sib && sib.getAttribute('data-hdr') === '1');
+        if (href && isHdrBase) {
+          // HDR base (hdr_nearest sRGB-OETF PNG): render it INSIDE this single
+          // HDR (rgba16float) label canvas via the GPU, with the EOTF×headroom×
+          // OETF lift — so the base GLOWS and composites with the outlines in ONE
+          // canvas. A separate overlapping WebGPU canvas does NOT composite as HDR
+          // (the browser flattens stacked HDR canvases → black). buildRenderer's
+          // base layer draws it; no <img>.
+          cfg = Object.assign({}, cfg, { baseSrc: href,
+            uniforms: Object.assign({}, cfg.uniforms, { baseHeadroom: (_popupHdrHeadroom() || 4.0) }) });
+        } else if (href) {
           baseImg = document.createElement('img');
           baseImg.crossOrigin = 'anonymous';
           baseImg.style.cssText = 'position:absolute; left:0; top:0;'
@@ -2449,8 +2665,18 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         syncSize();
         gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
         gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+        // Screen-px outline at the CURRENT zoom: the image spans
+        // imgW*fit*scale device px on screen; u_outlineLod = log2(matrix /
+        // that) keeps the boundary ~1 screen px (and goes to 0 = crisp as you
+        // zoom in). Mirrors the inline controller's updateOutlineLod.
+        var _fit = Math.min(_cssW / imgW, _cssH / imgH);
+        var _dispW = Math.max(1, imgW * _fit * ((s && s.s) || 1) * _dpr);
+        var _ratio = imgW / _dispW;
+        var _lod = _ratio > 1.001 ? Math.log(_ratio) / Math.LN2 : 0.0;
+        var _thr = _lod > 0.001 ? Math.max(0.06, Math.min(0.5, 0.55 / Math.pow(2, _lod))) : 0.5;
+        r.setUniforms({ outlineLod: _lod, outlineThresh: _thr });
         r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));
-        // Track the HDR base <img> to the SAME fit+pan+zoom the shader uses
+        // Track the SDR base <img> to the SAME fit+pan+zoom the shader uses
         // (mat3ForFit's geometry), so the browser-composited HDR base stays
         // pixel-aligned with the GPU label/outline overlay.
         if (baseImg) {
@@ -2480,8 +2706,9 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
           if (!tip) {
             tip = document.createElement('div');
             tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
-              + 'background:rgba(20,20,20,.92);color:#eee;font:11px sans-serif;'
-              + 'padding:2px 6px;border-radius:4px;';
+              + 'background:rgba(20,20,22,0.4);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);'
+              + 'color:#eee;font:11px system-ui,sans-serif;padding:4px 8px;border-radius:6px;'
+              + 'box-shadow:0 2px 8px rgba(0,0,0,0.3);';
             document.body.appendChild(tip);
           }
           tip.textContent = 'label ' + id; tip.style.display = 'block';
@@ -2557,14 +2784,26 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         return out; }
       // imgW/imgH are LET: they grow to the full-res dims once the streamed
       // hi-res scalar lands (see below), so fitMatrix + isPointInImage track it.
-      let imgW = +srcCanvas.getAttribute('data-w'), imgH = +srcCanvas.getAttribute('data-h');
       const cmap = srcCanvas.getAttribute('data-cmap') || 'magma';
       const lo = parseFloat(srcCanvas.getAttribute('data-lo') || '0');
       const hi = parseFloat(srcCanvas.getAttribute('data-hi') || '1');
-      const scalar = f16to32(new Uint16Array(
-        b64bytes(srcCanvas.getAttribute('data-scalar')).buffer));
+      // Reuse the full-res scalar the inline face already fetched + decoded (stashed
+      // on the source canvas by the colormap-tile controller's auto-upgrade), so the
+      // popup opens crisp immediately — no thumb flash, no second fetch/decode. Falls
+      // back to the embedded thumb only if the upgrade hasn't landed yet.
+      const cachedHi = srcCanvas.__hiresScalar;
+      let imgW, imgH, scalar;
+      if (cachedHi) {
+        imgW = cachedHi.w; imgH = cachedHi.h; scalar = cachedHi.data;
+      } else {
+        imgW = +srcCanvas.getAttribute('data-w'); imgH = +srcCanvas.getAttribute('data-h');
+        scalar = f16to32(new Uint16Array(
+          b64bytes(srcCanvas.getAttribute('data-scalar')).buffer));
+      }
       let lastState = { s: 1, tx: 0, ty: 0 }, renderer = null, ready = false;
-      self.ColormapImage.createColormapRenderer(canvas).then(function (r) {
+      // Match the inline tile's backend: SDR → synchronous WebGL2 (no flash).
+      const cmapOpts = srcCanvas.getAttribute('data-cmap-sdr') === '1' ? { forceWebgl: true } : {};
+      self.ColormapImage.createColormapRenderer(canvas, cmapOpts).then(function (r) {
         renderer = r; r.setColormap(cmap); r.setRange(lo, hi);
         r.setImage(scalar, imgW, imgH); ready = true; redraw(lastState);
         // Upgrade to the FULL-RES scalar (streamed) so the zoom is crisp at
@@ -2573,12 +2812,15 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         // embedded thumb shows (instant). Mirrors the RGB thumb→hires upgrade.
         const hsrc = srcCanvas.getAttribute('data-hires-scalar');
         const hw = +srcCanvas.getAttribute('data-hires-w'), hh = +srcCanvas.getAttribute('data-hires-h');
-        if (hsrc && hw && hh && (hw > imgW || hh > imgH)) {
+        if (!cachedHi && hsrc && hw && hh && (hw > imgW || hh > imgH)) {
           const url = (window.__ocdResolveTileUrl ? window.__ocdResolveTileUrl(hsrc) : hsrc);
           fetch(url).then(function (resp) { return resp.ok ? resp.arrayBuffer() : null; })
             .then(function (buf) {
               if (!buf || !renderer) return;
-              renderer.setImage(f16to32(new Uint16Array(buf)), hw, hh);
+              const hi32 = f16to32(new Uint16Array(buf));
+              renderer.setImage(hi32, hw, hh);
+              // Stash so the NEXT zoom (and the inline face) skips the refetch.
+              srcCanvas.__hiresScalar = { data: hi32, w: hw, h: hh };
               imgW = hw; imgH = hh;        // fit + hit-test now use full-res dims
               redraw(lastState);
             }).catch(function (e) { console.warn('ColormapImage hi-res:', e); });
@@ -3035,33 +3277,62 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       if (hiresHref && window.__ocdResolveTileUrl) hiresHref = window.__ocdResolveTileUrl(hiresHref);
       if (hiresHref) {
         const autoUpgrade = (tile.getAttribute('data-auto-upgrade') === '1');
-        let prefetched = false;
-        const prefetch = () => {
-          if (prefetched) return;
-          prefetched = true;
+        let upgraded = false, fetching = false;
+        const prefetch = (attempt) => {
+          if (upgraded || fetching) return;
+          fetching = true;
           const probe = new Image();
           probe.draggable = false;
           probe.addEventListener('load', () => {
+            upgraded = true; fetching = false;
             const inlineImg = tile.querySelector('image');
             if (inlineImg) {
               inlineImg.setAttribute('href', hiresHref);
               inlineImg.setAttributeNS(
                 'http://www.w3.org/1999/xlink',
                 'xlink:href', hiresHref);
+              // The hi-res is a full-res source DOWNSCALED into a small cell.
+              // ``image-rendering:pixelated`` (the tile default, right for the
+              // upscaled low-res disp) would nearest-decimate it — dropping columns
+              // irregularly at a non-integer ratio = the checkerboard "squish/seam".
+              // Switch to the browser's smooth downscaler now that it's minified.
+              inlineImg.style.imageRendering = 'auto';
+              // Single "the hi-res is live" contract shared with the static-HDR
+              // controller (which sets the same marker). openZoom reads it to open
+              // the popup straight at this hi-res — no low-res reload. Set only HERE,
+              // after the swap succeeds, so a still-204 hi-res never gets picked.
+              inlineImg.setAttribute('data-hires-ready', '1');
+              tile.setAttribute('data-hires-ready', '1');
             }
           });
-          probe.addEventListener('error', (e) => {
-            // Leave the thumb in place if hi-res fetch fails (e.g.
-            // server unreachable, browser can't decode JXL).
-            console.warn('SvgFigure hi-res upgrade failed for',
-                         hiresHref, e);
+          probe.addEventListener('error', () => {
+            // If the attach isn't there yet the server returns 204 "not ready"
+            // (an Image load error). Poll a few times before giving up; leave
+            // the thumb on failure (server unreachable / can't decode JXL).
+            fetching = false;
+            const n = (attempt || 0);
+            // Retry for ~25s (was 5s), backing off to 750ms. On a CELL RE-RUN the
+            // in-kernel tile server is GIL-starved by the kernel re-executing, so the
+            // hi-res attach can take well over 5s; the old 20×250ms gave up too early
+            // and stranded the tile on the low-res disp thumb (= the no-upgrade / seam
+            // on the 2nd run). image-rendering:auto keeps that wait seam-free meanwhile.
+            if (n < 50) setTimeout(() => prefetch(n + 1), Math.min(250 + n * 25, 750));
+            else console.warn('SvgFigure hi-res upgrade gave up for', hiresHref);
           });
-          probe.src = hiresHref;
+          // First attempt: BARE url (exactly the original working behavior — so
+          // the proxy / URL resolution is never perturbed). Only retries add a
+          // cache-buster, to get past a browser-pinned 204.
+          const n = (attempt || 0);
+          const bust = n ? ((hiresHref.indexOf('?') >= 0 ? '&' : '?') + '_r=' + n) : '';
+          probe.src = hiresHref + bust;
         };
-        tile.addEventListener('pointerenter', prefetch);
+        // Wrap so the DOM Event isn't passed as ``attempt`` (which broke the
+        // retry counter + cache-buster).
+        const kick = () => prefetch();
+        tile.addEventListener('pointerenter', kick);
         // Touch devices: prefetch on first touchstart so a tap that
         // turns into a click already has the bytes warm.
-        tile.addEventListener('touchstart', prefetch, { passive: true });
+        tile.addEventListener('touchstart', kick, { passive: true });
         // Auto-upgrade tiles kick the prefetch immediately on load.
         if (autoUpgrade) prefetch();
       }
@@ -4080,9 +4351,13 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
               hdrCells.push({ im, hit: hits[i], isExc });
           }
           if (!hdrCells.length) return null;
-          const adapter = await navigator.gpu.requestAdapter();
-          if (!adapter) return null;
-          const device = await adapter.requestDevice();
+          // Shared device (see HdrColormap.getDevice) — avoids a per-path device.
+          const _HC = self.HdrColormap || (typeof window !== 'undefined' && window.HdrColormap);
+          let device = null;
+          try { device = _HC && _HC.getDevice ? await _HC.getDevice()
+                       : await (await navigator.gpu.requestAdapter()).requestDevice(); }
+          catch (e) {}
+          if (!device) return null;
           const host = svg.closest('.ocd-svgfig') || svg.parentElement;
           if (!host) return null;
           const code = `
@@ -4887,6 +5162,10 @@ _LABEL_CONTROLLER_JS = r"""
         gl.drawingBufferStorage(gl.RGBA16F, w, h);
       } catch (e) {}
     }
+    // Streamed matrices (large tiles ship the label/instance arrays as
+    // tileserve attachments, not inline base64, to keep the SVG small): fetch
+    // them before building. Inline tiles resolve synchronously (no-op).
+    self.LabelGL.fetchMatrices(cfg).then(function () {
     var r;
     try { r = self.LabelGL.buildRenderer(gl, cfg, function () { render(); }); }
     catch (e) { console.warn('LabelGL:', e); return; }
@@ -4895,9 +5174,30 @@ _LABEL_CONTROLLER_JS = r"""
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       r.draw(self.LabelGL.ortho());
     }
+    // Screen-px outline: the GPU outline is 1 matrix-texel wide, which goes
+    // sub-pixel (invisible) when a large matrix (e.g. 2048 seg) is drawn small.
+    // Set u_outlineLod = log2(matrixTexels / deviceDisplayPx) so the shader
+    // samples a coarser mip and the boundary stays ~1 screen px; floor the
+    // threshold to keep the averaged edge solid. Recompute on resize. LOD 0
+    // (matrix == display) keeps small tiles bit-crisp (the original behavior).
+    function updateOutlineLod() {
+      var rect = cv.getBoundingClientRect();
+      var dpr = window.devicePixelRatio || 1;
+      var dispW = Math.max(1, rect.width * dpr);
+      var ratio = w / dispW;
+      var lod = ratio > 1.001 ? Math.log(ratio) / Math.LN2 : 0.0;
+      var thresh = lod > 0.001 ? Math.max(0.06, Math.min(0.5, 0.55 / Math.pow(2, lod))) : 0.5;
+      r.setUniforms({ outlineLod: lod, outlineThresh: thresh });
+    }
+    updateOutlineLod();
     render();
     cv.__labelRender = render;
     cv.__labelRenderer = r;
+    cv.__labelUpdateLod = updateOutlineLod;
+    try {
+      var _ro = new ResizeObserver(function () { updateOutlineLod(); render(); });
+      _ro.observe(cv);
+    } catch (e) {}
     // HDR toggle response: in SDR mode drop the boosts to 1.0 so the outline /
     // hover emit at SDR white (≤1.0) instead of HDR-bright; in HDR mode use
     // the configured boosts. Exposed for the shell's HDR button; applied now
@@ -4915,8 +5215,9 @@ _LABEL_CONTROLLER_JS = r"""
       if (!tip) {
         tip = document.createElement('div');
         tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
-          + 'background:rgba(20,20,20,.92);color:#eee;font:11px sans-serif;'
-          + 'padding:2px 6px;border-radius:4px;display:none;';
+          + 'background:rgba(20,20,22,0.4);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);'
+          + 'color:#eee;font:11px system-ui,sans-serif;padding:4px 8px;border-radius:6px;'
+          + 'box-shadow:0 2px 8px rgba(0,0,0,0.3);display:none;';
         document.body.appendChild(tip);
       }
       return tip;
@@ -4944,6 +5245,7 @@ _LABEL_CONTROLLER_JS = r"""
       cur = 0; r.setUniforms({ highlightLabel: 0 }); render();
       if (tip) tip.style.display = 'none';
     });
+    }).catch(function (e) { console.warn('LabelGL fetch/build failed:', e); });
   });
 })();
 """.strip()
@@ -5008,11 +5310,33 @@ _COLORMAP_CONTROLLER_JS = r"""
     var lo = parseFloat(cv.getAttribute('data-lo') || '0');
     var hi = parseFloat(cv.getAttribute('data-hi') || '1');
     var scalar = f16to32(new Uint16Array(b64bytes(cv.getAttribute('data-scalar')).buffer));
-    self.ColormapImage.createColormapRenderer(cv).then(function (r) {
+    // SDR tiles use the synchronous WebGL2 path (no cold WebGPU device init → no
+    // blank-canvas flash); HDR tiles keep WebGPU. See colormap_tile_canvas(hdr=…).
+    var cmapOpts = cv.getAttribute('data-cmap-sdr') === '1' ? { forceWebgl: true } : {};
+    self.ColormapImage.createColormapRenderer(cv, cmapOpts).then(function (r) {
       r.setColormap(cmap);
       r.setRange(lo, hi);
-      r.setImage(scalar, w, h);   // R32F NEAREST → crisp; default fill matrix
+      r.setImage(scalar, w, h);   // thumb first → instant low-res paint
       cv.__cmapRenderer = r;
+      // Auto-upgrade the inline face to FULL resolution as soon as it renders:
+      // fetch the streamed raw f16 scalar and re-upload. The tile is served with
+      // an ``immutable`` cache header, so the bytes are HTTP-cached — a later
+      // click-to-zoom popup reuses them (no second fetch). Opt out with
+      // ``data-hires-auto="0"`` (the cache still spares the zoom a refetch).
+      var hsrc = cv.getAttribute('data-hires-scalar');
+      var hw = +cv.getAttribute('data-hires-w'), hh = +cv.getAttribute('data-hires-h');
+      if (hsrc && hw && hh && cv.getAttribute('data-hires-auto') !== '0') {
+        fetch(hsrc).then(function (resp) { return resp.ok ? resp.arrayBuffer() : null; })
+          .then(function (buf) {
+            if (buf && cv.__cmapRenderer) {
+              var hi32 = f16to32(new Uint16Array(buf));
+              r.setImage(hi32, hw, hh);
+              // Stash the decoded full-res scalar on the canvas so the click-to-zoom
+              // popup reuses it directly (no thumb flash, no second fetch/decode).
+              cv.__hiresScalar = { data: hi32, w: hw, h: hh };
+            }
+          }).catch(function (e) { console.warn('ColormapImage hi-res:', e); });
+      }
     }).catch(function (e) { console.warn('ColormapImage:', e); });
   });
 })();
@@ -5021,7 +5345,8 @@ _COLORMAP_CONTROLLER_JS = r"""
 
 def colormap_tile_canvas(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
                          class_name="", extra_style="", title=None,
-                         hires_scalar_url=None, hires_w=None, hires_h=None):
+                         hires_scalar_url=None, hires_w=None, hires_h=None,
+                         hdr=True):
     """Emit a ``<canvas data-colormap-tile>`` the figure shell renders via
     :class:`ColormapImage` (raw scalar → GPU normalize → colormap LUT; WebGPU-HDR
     with a WebGL2-SDR fallback).
@@ -5037,6 +5362,13 @@ def colormap_tile_canvas(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
     thumbnail; the click-to-zoom popup (``createColormapViewer``) fetches this and
     re-uploads at full res — so the inline payload is bounded but the zoom is crisp
     at native resolution (mirrors the RGB tile's thumb + streamed-hires pattern).
+
+    ``hdr=False`` renders through the synchronous WebGL2 path instead of WebGPU.
+    For SDR content (a colormap LUT mapping [vmin,vmax]→RGB, e.g. an ncolor group
+    map) WebGL2 is visually identical AND paints immediately — WebGPU's one-time
+    async adapter/device init otherwise leaves the canvas blank for a beat (a
+    visible flash on a fast-rendering document). Leave ``True`` only for colormaps
+    whose output genuinely exceeds SDR (HDR glow).
     """
     import base64
     import numpy as np
@@ -5048,6 +5380,9 @@ def colormap_tile_canvas(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
     b64 = base64.b64encode(a.astype("<f2").tobytes()).decode("ascii")
     title_attr = f' data-title="{_esc(str(title))}"' if title else ""
     cls = f' class="{class_name}"' if class_name else ""
+    # SDR tiles opt into the synchronous WebGL2 renderer (no cold WebGPU device
+    # init on the paint path → no blank-canvas flash). Absent attr = HDR/WebGPU.
+    sdr_attr = "" if hdr else ' data-cmap-sdr="1"'
     hires_attr = ""
     if hires_scalar_url and hires_w and hires_h:
         hires_attr = (f' data-hires-scalar="{_esc(str(hires_scalar_url))}" '
@@ -5055,9 +5390,56 @@ def colormap_tile_canvas(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
     return (
         f'<canvas{cls} data-colormap-tile="1" data-w="{w}" data-h="{h}" '
         f'data-cmap="{cmap}" data-lo="{float(vmin):.6g}" data-hi="{float(vmax):.6g}" '
-        f'data-scalar="{b64}"{hires_attr}{title_attr} '
+        f'data-scalar="{b64}"{sdr_attr}{hires_attr}{title_attr} '
         f'style="image-rendering:pixelated;{extra_style}"></canvas>'
     )
+
+
+def streaming_colormap_tile(scalar, *, cmap="magma", vmin=0.0, vmax=1.0,
+                            thumb_px=128, class_name="", extra_style="", title=None,
+                            hdr=False):
+    """A :func:`colormap_tile_canvas` whose full resolution is **streamed**, not
+    embedded — the "scalar → tiny thumb + tileserve hi-res" recipe in one call.
+
+    Registers ``scalar`` as a content-addressed tileserve source
+    (:func:`~ocdkit.tileserve.register_array`) and returns a
+    ``<canvas data-colormap-tile>`` whose inline ``data-scalar`` is only a small
+    NEAREST-downsampled thumbnail (≈``thumb_px`` px) while the native-resolution
+    scalar streams from ``/tile/<sid>/scalar/99?fmt=raw`` (served float16 +
+    ``immutable``). The figure shell auto-upgrades the inline face on render and
+    the click-to-zoom popup reuses the same bytes — so the document stays KB-sized
+    yet zoom is crisp at native resolution.
+
+    Use this instead of hand-wiring ``register_pending``/``fill`` +
+    ``colormap_tile_canvas(hires_scalar_url=…)``. The content-addressing means
+    repeated calls with identical data reuse one source (no per-caller cache, no
+    stale tiles). Falls back to embedding a bounded scalar if the server is
+    unavailable, so the tile still renders offline.
+    """
+    import numpy as np
+    a = np.ascontiguousarray(np.asarray(scalar, dtype=np.float32))
+    if a.ndim != 2:
+        raise ValueError(f"streaming_colormap_tile: scalar must be 2-D, got {a.shape}")
+    h, w = a.shape
+    hires_url = None
+    try:
+        from ..tileserve.server import register_array, ensure_server
+        sid, label = register_array(
+            a, label="scalar", single_level=True,
+            meta={"mode": "intensity", "lo": float(vmin), "hi": float(vmax),
+                  "kind": "reduction", "bit_max": 1.0, "downsample": "nearest"})
+        hires_url = f"{ensure_server()}/tile/{sid}/{label}/99?fmt=raw"
+    except Exception:
+        hires_url = None
+    # Tiny thumb when streaming (the hi-res streams); bound even the offline
+    # fallback so a failed server never embeds a multi-MB scalar.
+    cap = thumb_px if hires_url else 1024
+    f = max(1, int(np.ceil(max(h, w) / float(cap))))
+    thumb = np.ascontiguousarray(a[::f, ::f]) if f > 1 else a
+    return colormap_tile_canvas(
+        thumb, cmap=cmap, vmin=vmin, vmax=vmax, class_name=class_name,
+        extra_style=extra_style, title=title, hdr=hdr,
+        hires_scalar_url=hires_url, hires_w=w, hires_h=h)
 
 
 def _load_spectra_gl_js():
@@ -5136,9 +5518,9 @@ _SPECTRA_CONTROLLER_JS = r"""
     if (!t) {
       t = document.createElement('div'); t.id = 'sg-tooltip';
       t.style.cssText = 'position:fixed;z-index:99999;pointer-events:none;display:none;'
-        + 'background:rgba(20,20,22,0.92);color:#ddd;font:11px/1.35 system-ui,sans-serif;'
-        + 'padding:4px 7px;border-radius:4px;border:1px solid #444;white-space:nowrap;'
-        + 'box-shadow:0 2px 8px rgba(0,0,0,0.4)';
+        + 'background:rgba(20,20,22,0.4);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);'
+        + 'color:#eee;font:11px/1.35 system-ui,sans-serif;padding:4px 8px;border-radius:6px;'
+        + 'white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
       document.body.appendChild(t);
     }
     return t;
@@ -5297,17 +5679,40 @@ _TILE_STREAM_CONTROLLER_JS = r"""
   var XLINK = 'http://www.w3.org/1999/xlink';
   var imgs = Array.prototype.slice.call(
     wrapper.querySelectorAll('image[data-tile-async]'));
+  // One-time notice when the backing tileserve is gone (e.g. a saved notebook
+  // output reopened after the kernel that produced it restarted). Idempotent.
+  var _staleShown = false;
+  function _ocdTileStale() {
+    if (_staleShown) return; _staleShown = true;
+    try {
+      var n = document.createElement('div');
+      n.className = 'ocd-tile-stale';
+      n.textContent = 'live tiles unavailable - re-run the cell (the kernel/tile server that produced this figure is gone)';
+      n.style.cssText = 'font:11px ui-monospace,SFMono-Regular,Menlo,monospace;color:#f0b000;'
+        + 'background:rgba(0,0,0,.55);padding:3px 9px;border-radius:5px;margin:4px 0;display:inline-block';
+      (wrapper.parentNode || wrapper).insertBefore(n, wrapper.nextSibling || null);
+    } catch (e) {}
+  }
   imgs.forEach(function (im) {
     var src = (window.__ocdResolveTileUrl
                ? window.__ocdResolveTileUrl(im.getAttribute('data-tile-src'))
                : im.getAttribute('data-tile-src'));
     if (!src) return;
-    var tries = 0;
+    var tries = 0, errs = 0;
     function poll() {
       fetch(src, { cache: 'no-store' }).then(function (r) {
         if (r.status === 200) return r.blob();
-        if (tries++ < 400) setTimeout(poll, 250);   // 204 = not projected yet
-        return null;
+        // X-Tileserve-Gone (set by the Jupyter proxy when the upstream tileserve is
+        // unreachable — a stale saved figure whose kernel restarted): terminal, stop.
+        if (r.headers.get('X-Tileserve-Gone')) { _ocdTileStale(); return null; }
+        // 204 = tile not projected yet (live; fills on a background thread) → poll on.
+        if (r.status === 204) { if (tries++ < 400) setTimeout(poll, 250); return null; }
+        // Anything else (502 = proxy can't reach the tileserve / kernel restarted,
+        // other 5xx/4xx) will NOT fix itself by hammering. Allow a couple retries
+        // for a transient server-startup blip, then STOP and show the notice — the
+        // durable fix for the "reopened notebook → 502 flood" (no Clear Outputs).
+        if (errs++ < 2) { setTimeout(poll, 500); return null; }
+        _ocdTileStale(); return null;
       }).then(function (blob) {
         if (!blob) return;
         var u = URL.createObjectURL(blob);
@@ -5323,7 +5728,9 @@ _TILE_STREAM_CONTROLLER_JS = r"""
         var cell = im.closest('svg.ocd-linked-cell');
         if (cell) { var d = cell.style.display; cell.style.display = 'none';
                     void cell.getBoundingClientRect(); cell.style.display = d; }
-      }).catch(function () { if (tries++ < 400) setTimeout(poll, 400); });
+      }).catch(function () {   // true network error (server unreachable) → bounded, then notice
+        if (errs++ < 2) setTimeout(poll, 600); else _ocdTileStale();
+      });
     }
     poll();
   });
@@ -5468,7 +5875,7 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     + "struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };\n"
     + "@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {\n"
     + "  var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));\n"
-    + "  var uv = array<vec2f,3>(vec2f(0,0), vec2f(2,0), vec2f(0,2));\n"
+    + "  var uv = array<vec2f,3>(vec2f(0,1), vec2f(2,1), vec2f(0,-1));\n"
     + "  var o: VO; o.pos = vec4f(p[i],0,1); o.uv = uv[i]; return o; }\n"
     + "fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }\n"
     + "fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }\n"
@@ -5490,11 +5897,19 @@ _STATIC_HDR_CONTROLLER_JS = r"""
   }
 
   (async function () {
-    var adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) return;
-    var device = await adapter.requestDevice();
+    // Shared device (see HdrColormap.getDevice) — avoids a per-path device.
+    var _HC = self.HdrColormap || (typeof window !== 'undefined' && window.HdrColormap);
+    var device = null;
+    try { device = _HC && _HC.getDevice ? await _HC.getDevice()
+                 : await (await navigator.gpu.requestAdapter()).requestDevice(); }
+    catch (e) {}
+    if (!device) return;
     var module = device.createShaderModule({ code: code });
-    var sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' });
+    // nearest MAG (crisp when magnified) but LINEAR MIN: the texture is decoded at
+    // display density, but a relayout between decode and draw leaves it a few device-
+    // px off the canvas; nearest then resamples that mismatch → the numpy-cell moiré
+    // ("seam"). Linear smooths it (the popup viewer already does this).
+    var sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'linear' });
     var pipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: module, entryPoint: 'vs' },
       fragment: { module: module, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
@@ -5507,37 +5922,118 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     var _hdrN = N, _sdr = false;
     var cells = [];
 
-    function place() {
-      var hostR = host.getBoundingClientRect();
+    // Per-cell place/draw so a single tile's hover doesn't reflow + re-render
+    // EVERY HDR canvas each frame (that O(n) getBoundingClientRect storm was the
+    // hover jank). ``place()`` / ``draw()`` (all cells) are kept for init/resize.
+    var _hostR = null;   // cached host rect; refreshed by place()/scroll
+    function placeOne(c) {
+      var hostR = _hostR || host.getBoundingClientRect();
+      var r = c.im.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) { c.ok = false; return; }
       var dpr = window.devicePixelRatio || 1;
-      cells.forEach(function (c) {
-        var r = c.im.getBoundingClientRect();
-        if (r.width < 1 || r.height < 1) { c.ok = false; return; }
-        c.canvas.style.left = (r.left - hostR.left) + 'px';
-        c.canvas.style.top  = (r.top  - hostR.top)  + 'px';
-        c.canvas.style.width  = r.width + 'px';
-        c.canvas.style.height = r.height + 'px';
-        var bw = Math.max(1, Math.round(r.width * dpr)), bh = Math.max(1, Math.round(r.height * dpr));
-        if (c.canvas.width !== bw) c.canvas.width = bw;
-        if (c.canvas.height !== bh) c.canvas.height = bh;
-        c.ok = true;
-      });
+      c.canvas.style.left = (r.left - hostR.left) + 'px';
+      c.canvas.style.top  = (r.top  - hostR.top)  + 'px';
+      c.canvas.style.width  = r.width + 'px';
+      c.canvas.style.height = r.height + 'px';
+      var bw = Math.max(1, Math.round(r.width * dpr)), bh = Math.max(1, Math.round(r.height * dpr));
+      if (c.canvas.width !== bw) c.canvas.width = bw;
+      if (c.canvas.height !== bh) c.canvas.height = bh;
+      c.ok = true;
     }
-    function draw() {
-      place();
-      cells.forEach(function (c) {
-        if (!c.ready || !c.ok) return;
-        device.queue.writeBuffer(c.ubuf, 0, new Float32Array([N, 0, 0, 0]));
-        var enc = device.createCommandEncoder();
-        var pass = enc.beginRenderPass({ colorAttachments: [{
-          view: c.ctx.getCurrentTexture().createView(),
-          loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:1 }, storeOp: 'store' }] });
-        pass.setPipeline(pipe); pass.setBindGroup(0, c.bg); pass.draw(3); pass.end();
-        device.queue.submit([enc.finish()]);
-        c.canvas.style.visibility = 'visible';
-      });
+    function drawOne(c) {
+      placeOne(c);
+      if (!c.ready || !c.ok) return;
+      // Content headroom (c.hr) when known — matches the native-uhdr glow; the
+      // global N (detected/4.0) is only a fallback. SDR toggle forces 1.0.
+      var _Nc = _sdr ? 1.0 : (c.hr || N);
+      device.queue.writeBuffer(c.ubuf, 0, new Float32Array([_Nc, 0, 0, 0]));
+      var enc = device.createCommandEncoder();
+      var pass = enc.beginRenderPass({ colorAttachments: [{
+        view: c.ctx.getCurrentTexture().createView(),
+        loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:1 }, storeOp: 'store' }] });
+      pass.setPipeline(pipe); pass.setBindGroup(0, c.bg); pass.draw(3); pass.end();
+      device.queue.submit([enc.finish()]);
+      c.canvas.style.visibility = 'visible';
     }
+    function place() { _hostR = host.getBoundingClientRect(); cells.forEach(placeOne); _hostR = null; }
+    function draw() { _hostR = host.getBoundingClientRect(); cells.forEach(drawOne); _hostR = null; }
 
+    // Persistent decoded-texture cache (the static-HDR equivalent of the /grid
+    // viewer's texCache): keyed by URL@device-density, it survives controller
+    // re-inits/re-renders so a tile whose hi-res was already fetched paints at
+    // full res IMMEDIATELY — no low-res flash — exactly like the grid "remembers"
+    // its high res. Only when the hi-res ISN'T cached do we show the thumb first.
+    var _texCache = (self.__ocdHdrTexCache || (self.__ocdHdrTexCache = new Map()));
+    // Target device-pixel box for a cell = on-screen CSS size × devicePixelRatio.
+    // Decoding the source to THIS size band-limits it to the display density —
+    // sharp at on-screen size, no minification speckle on thin features.
+    function _cellDevPx(c) {
+      var r = c.im.getBoundingClientRect();
+      var dpr = window.devicePixelRatio || 1;
+      return { w: Math.max(1, Math.round(r.width * dpr)), h: Math.max(1, Math.round(r.height * dpr)) };
+    }
+    function _resolve(href) {
+      try { if (window.__ocdResolveTileUrl) return window.__ocdResolveTileUrl(href); } catch (e) {}
+      return href;
+    }
+    function _bindTex(c, e, isHires) {   // atomically swap a decoded {tex,w} into the cell + redraw
+      c._texW = e.w;
+      c.bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: e.tex.createView() },
+        { binding: 1, resource: sampler },
+        { binding: 2, resource: { buffer: c.ubuf } }] });
+      c.ready = true;
+      // opacity:0 (NOT visibility:hidden) → invisible but still hit-testable, so the
+      // canvas shows through while click-to-zoom keeps working.
+      c.im.style.opacity = '0';
+      // Mark the tile once its hi-res is shown so the click-to-zoom popup can open
+      // straight at full-res (no low-res flash) when it's already available; a tile
+      // not yet upgraded keeps thumb-first in the popup (fast arrow-key nav).
+      if (isHires) { try { var g = c.im.closest && c.im.closest('g.fig-tile'); if (g) g.setAttribute('data-hires-ready', '1'); c.im.setAttribute('data-hires-ready', '1'); } catch (e2) {} }
+      drawOne(c);
+    }
+    // ``resize`` (optional) = {w,h} device px to decode to (resizeQuality 'high' =
+    // the browser's area-mean/Lanczos downscale). RENDER_ATTACHMENT is REQUIRED by
+    // copyExternalImageToTexture (it blits internally) — without it the upload
+    // fails and the tile is blank. Returns {tex,w,h}.
+    function _decode(url, resize) {
+      return fetch(url).then(function (r) {
+        // 204 = the hi-res is still encoding (now attached off the critical path) —
+        // signal the caller to retry rather than decoding an empty body.
+        if (r.status === 204) return Promise.reject('204');
+        if (!r.ok) return Promise.reject(r.status);
+        return r.blob();
+      })
+        .then(function (blob) {
+          var opt = { colorSpaceConversion: 'none', premultiplyAlpha: 'none' };
+          if (resize && resize.w >= 1 && resize.h >= 1) {
+            opt.resizeWidth = resize.w; opt.resizeHeight = resize.h; opt.resizeQuality = 'high';
+          }
+          return createImageBitmap(blob, opt);
+        })
+        .then(function (bmp) {
+          var w = bmp.width, h = bmp.height;
+          var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+          device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
+          if (bmp.close) bmp.close();
+          return { tex: tex, w: w, h: h };
+        });
+    }
+    // Show the hi-res at the current display density; instant from cache, else
+    // decode + cache. Retries while the encode is still in flight (204). Sets
+    // c._hiresDone so a late thumb can't overwrite it.
+    function _showHires(c, tries) {
+      var dp = _cellDevPx(c), key = c._hiresUrl + '@' + dp.w;
+      var hit = _texCache.get(key);
+      if (hit) { _bindTex(c, hit, true); c._hiresDone = true; return Promise.resolve(); }
+      return _decode(c._hiresUrl, dp).then(function (e) {
+        _texCache.set(key, e); c._hiresDone = true; _bindTex(c, e, true);
+      }).catch(function (err) {
+        if (err === '204' && (tries || 0) < 400) setTimeout(function () { _showHires(c, (tries || 0) + 1); }, 200);
+        // else: give up (keep the thumb) — encode failed or no hi-res
+      });
+    }
     function loadTex(c, tries) {
       var href = c.im.getAttribute('href')
         || c.im.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
@@ -5545,26 +6041,30 @@ _STATIC_HDR_CONTROLLER_JS = r"""
         if ((tries || 0) < 600) return void setTimeout(function () { loadTex(c, (tries||0)+1); }, 250);
         return;
       }
-      var url = href;
-      try { if (window.__ocdResolveTileUrl) url = window.__ocdResolveTileUrl(href); } catch (e) {}
-      fetch(url).then(function (r) { return r.blob(); })
-        .then(function (blob) { return createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' }); })
-        .then(function (bmp) {
-          var w = bmp.width, h = bmp.height;
-          var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-          device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
-          if (bmp.close) bmp.close();
-          c.bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
-            { binding: 0, resource: tex.createView() },
-            { binding: 1, resource: sampler },
-            { binding: 2, resource: { buffer: c.ubuf } }] });
-          c.ready = true;
-          // opacity:0 (NOT visibility:hidden) → invisible but still hit-testable,
-          // so the canvas shows through while click-to-zoom keeps working.
-          c.im.style.opacity = '0';
-          draw();
-        }).catch(function (e) { console.warn('static HDR tile:', e); });
+      var thumbUrl = _resolve(href);
+      // data-hires-href lives on the <image> OR (image_grid's case) on the parent
+      // <g class="fig-tile"> wrapper — check both.
+      var g = c.im.closest && c.im.closest('g.fig-tile');
+      var hi = c.im.getAttribute('data-hires-href') || (g && g.getAttribute('data-hires-href'));
+      var hiUrl = (hi && _resolve(hi) !== thumbUrl) ? _resolve(hi) : null;
+      if (!hiUrl) {   // no hi-res for this tile → just the thumb
+        _decode(thumbUrl).then(function (e) { _bindTex(c, e); })
+          .catch(function (ex) { c.im.style.opacity = ''; console.warn('static HDR tile:', ex); });
+        return;
+      }
+      c._hiresUrl = hiUrl;
+      // REMEMBERED: hi-res already decoded at this density → show it immediately,
+      // NO low-res flash (matches the grid).
+      var dp0 = _cellDevPx(c);
+      if (_texCache.has(hiUrl + '@' + dp0.w)) { _bindTex(c, _texCache.get(hiUrl + '@' + dp0.w), true); c._hiresDone = true; return; }
+      // NOT fetched yet → show the cheap thumb FIRST (instant), and upgrade to the
+      // hi-res when it lands. The thumb is guarded so it never overwrites the hi-res.
+      _showHires(c).catch(function () {});
+      // Decode the thumb at DISPLAY DENSITY too (not its full native size): otherwise
+      // a full-res thumb texture is nearest-minified into the smaller canvas = moiré
+      // before the hi-res lands. Matches _showHires so the texture==canvas (1:1).
+      _decode(thumbUrl, _cellDevPx(c)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
+        .catch(function () { if (!c._hiresDone) c.im.style.opacity = ''; });
     }
 
     imgs.forEach(function (im) {
@@ -5577,31 +6077,59 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       catch (e) { try { ctx.configure({ device: device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'opaque' }); } catch (e2) { return; } }
       var ubuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       var c = { im: im, canvas: canvas, ctx: ctx, ubuf: ubuf, bg: null, ready: false, ok: false };
+      // Hide the inline sRGB <image> up front. It's the UN-boosted SDR PNG; if it
+      // shows before the HDR canvas paints, the ×c.hr boost then makes DIM content
+      // visibly brighten (sRGB 0.30 → 0.78, still SDR-range) = the "dim cells flash
+      // bright" flash (verified). We already returned above when WebGPU is absent
+      // (keeping it visible); on a decode failure loadTex restores it.
+      im.style.opacity = '0';
+      // Per-cell CONTENT headroom (``data-hdr-headroom`` from image_grid =
+      // sdr_white_nits/203). Boosting the sRGB PNG by this — not the JS-detected
+      // display headroom (Chrome won't report it → 4.0 → dimmer than the native
+      // uhdr cell) — makes the glow match the uhdr path; ``toneMapping:'extended''
+      // caps at the real display headroom in hardware.
+      var _hr = parseFloat(im.getAttribute('data-hdr-headroom'));
+      c.hr = (isFinite(_hr) && _hr > 0) ? _hr : 0;
       cells.push(c);
       loadTex(c, 0);
     });
 
-    try { new ResizeObserver(function () { draw(); }).observe(wrapper); } catch (e) {}
+    // On a real size change, re-decode the hi-res at the NEW display density so a
+    // grown cell stays sharp (and a shrunk one stays speckle-free). Debounced; the
+    // >25% guard avoids re-decoding on sub-pixel/hover-scale jitter.
+    var _redecodeT = 0;
+    function _redecodeForSize() {
+      if (_redecodeT) clearTimeout(_redecodeT);
+      _redecodeT = setTimeout(function () {
+        cells.forEach(function (c) {
+          if (!c._hiresUrl) return;
+          var dp = _cellDevPx(c);
+          if (dp.w < 1 || !c._texW) return;
+          if (Math.abs(dp.w - c._texW) / c._texW > 0.25) _showHires(c).catch(function () {});
+        });
+      }, 200);
+    }
+    try { new ResizeObserver(function () { draw(); _redecodeForSize(); }).observe(wrapper); } catch (e) {}
     window.addEventListener('scroll', function () { place(); }, { passive: true });
     // Hover-scale sync: the .fig-tile:hover CSS transform scales the (opacity:0)
-    // image, so its getBoundingClientRect grows — re-place + redraw the overlay
-    // canvas for ~400ms (the transition window) so the glow jiggles WITH the
-    // tile instead of staying put.
-    var _hoverRaf = 0;
-    function hoverSync() {
-      if (_hoverRaf) return;
+    // image, so its getBoundingClientRect grows — re-place + redraw ONLY the
+    // hovered tile's canvas for ~400ms (the transition window) so the glow
+    // jiggles with it. Per-cell (not draw()) keeps hover smooth: redrawing every
+    // HDR canvas + reflowing all of them each frame was the jank.
+    function hoverSyncCell(c) {
+      if (c._hoverRaf) return;
       var t0 = (window.performance && performance.now) ? performance.now() : 0;
       (function loop() {
-        draw();
+        drawOne(c);
         var now = (window.performance && performance.now) ? performance.now() : t0 + 999;
-        _hoverRaf = (now - t0 < 420) ? requestAnimationFrame(loop) : 0;
+        c._hoverRaf = (now - t0 < 420) ? requestAnimationFrame(loop) : 0;
       })();
     }
     cells.forEach(function (c) {
       var g = c.im.closest && c.im.closest('g.fig-tile');
       if (!g) return;
-      g.addEventListener('mouseenter', hoverSync);
-      g.addEventListener('mouseleave', hoverSync);
+      g.addEventListener('mouseenter', function () { hoverSyncCell(c); });
+      g.addEventListener('mouseleave', function () { hoverSyncCell(c); });
     });
     var mo = new MutationObserver(function () {
       var sdr = wrapper.classList.contains('ocd-sdr-mode');
