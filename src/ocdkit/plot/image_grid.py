@@ -79,6 +79,45 @@ class _LazyHdrHires:
         return self._bytes
 
 
+class _RawF16Source:
+    """Raw float16 RGBA tile for DIRECT GPU upload — NO image codec at all. The
+    static-HDR controller fetches these bytes and does ``device.queue.writeTexture``
+    into an ``rgba16float`` texture; the shader then skips ``eotf`` because the data
+    is already linear-light. Zero encode (vs ~280-820ms PNG) and full HDR precision
+    (no 8-bit boost-banding). Bytes = an 8-byte header ``struct('<II', w, h)`` then
+    ``w*h*4`` float16 (RGBA, alpha=1). For a Scene it resolves linear-P3 lazily; for
+    an ndarray it uses it directly. ``downsample`` decimates (``arr[::ds,::ds]``,
+    ~free) for the progressive low-res tier that paints before the full-res lands."""
+    content_type = 'application/octet-stream'
+
+    def __init__(self, it, downsample=1):
+        import threading
+        self._it = it
+        self._ds = max(1, int(downsample))
+        self._bytes = None
+        self._lock = threading.Lock()
+
+    def get_bytes(self):
+        with self._lock:
+            if self._bytes is None:
+                import struct
+                it = self._it
+                if isinstance(it, np.ndarray):
+                    lin = it
+                else:
+                    from ..io.figure_server import resolve_linear_p3
+                    lin = resolve_linear_p3(it, target_px=None)
+                a = np.asarray(lin, np.float32)
+                if self._ds > 1:
+                    a = a[::self._ds, ::self._ds]
+                h, w = a.shape[:2]
+                rgb = np.clip(a[..., :3], 0.0, None)
+                rgba = np.dstack([rgb, np.ones((h, w), np.float32)]).astype(np.float16)
+                self._bytes = (struct.pack('<II', int(w), int(h))
+                               + np.ascontiguousarray(rgba).tobytes())
+        return self._bytes
+
+
 def image_grid(
     items,
     *,
@@ -530,14 +569,13 @@ def image_grid(
 
         def _hires_source(it, fmt, is_hdr=False):
             if fmt == 'png' and is_hdr:
-                # data-hdr cell — unified SCENE or raw float ARRAY. The source float
-                # is linear-light, so the hi-res PNG needs an sRGB-OETF too (without
-                # it the zoom popup gets raw linear stored as 8-bit = VERY DARK).
-                # Defer that OETF + PNG encode (+ the scene's linear-P3 resolve) to the
-                # background attach thread (_LazyHdrHires) so the grid build doesn't
-                # block on it — was a sync ~60ms/array-cell OETF. cell_hdr is set only
-                # when a scene already resolved to linear, so the decode is known-good.
-                return _LazyHdrHires(it)
+                # data-hdr cell — unified SCENE or raw float ARRAY. Ship the linear
+                # float as RAW float16 straight to the GPU (no image codec): the
+                # static-HDR controller does writeTexture into rgba16float and the
+                # shader skips eotf. Zero encode (was ~280-820ms PNG) + full HDR
+                # precision (no 8-bit boost-banding). cell_hdr is set only when a
+                # scene already resolved to linear, so the decode is known-good.
+                return _RawF16Source(it)
             if fmt == 'png' and isinstance(it, np.ndarray):
                 # non-HDR png array: raw bytes, no OETF.
                 return ArraySource(it, fmt='png')
@@ -576,6 +614,7 @@ def image_grid(
         # get_bytes is a fast file read, so its waiter finishes ~instantly too.)
         import threading as _threading
         hires_urls = []
+        raw_disp_urls = []   # data-hdr raw path: decimated f16 disp tier (progressive)
         # Attach the hi-res bytes OFF the critical path: ``imshow`` returns
         # immediately with the thumb + URLs, and each ``/attach/.../hiresN`` lands
         # when its encode finishes (the inline prefetch + popup both 204-retry until
@@ -591,13 +630,25 @@ def image_grid(
             src = _hires_source(it, cell_fmts[i], cell_hdr[i])
             if src is None:
                 hires_urls.append(None)
+                raw_disp_urls.append(None)
                 continue
-            if isinstance(src, (ArraySource, _LazyHdrHires)):
+            if isinstance(src, (ArraySource, _LazyHdrHires, _RawF16Source)):
                 _n_encode_hires += 1   # in-memory encode (vs zero-cost PathSource file)
             _name = f'hires{i}'
             hires_urls.append(f'{_tbase}/attach/{_tsid}/{_name}')
             _threading.Thread(target=_attach_hires_bg, args=(src, _name),
                               daemon=True, name=f'ocd-hires-{i}').start()
+            # data-hdr raw path: also attach a DECIMATED raw-f16 disp so the WebGPU
+            # cell paints a cheap low-res first, then upgrades to the full-res raw.
+            # All raw, no codec; arr[::4,::4] is ~free.
+            if cell_hdr[i] and isinstance(src, _RawF16Source):
+                _dname = f'rawdisp{i}'
+                raw_disp_urls.append(f'{_tbase}/attach/{_tsid}/{_dname}')
+                _threading.Thread(target=_attach_hires_bg,
+                                  args=(_RawF16Source(it, downsample=4), _dname),
+                                  daemon=True, name=f'ocd-rawdisp-{i}').start()
+            else:
+                raw_disp_urls.append(None)
         # Stream LARGE label/instance matrices as raw-uint16 attachments instead
         # of inlining them as multi-MB base64 (a 2048² seg is ~11 MB/matrix; two
         # tiles sharing one seg ballooned the SVG to ~45 MB and stalled the parse).
@@ -778,6 +829,9 @@ def image_grid(
         w, h = cell_w_pxs[i], cell_h_pxs[i]
         hires_attr = (f' data-hires-href="{hires_urls[i]}"'
                       if hires_urls[i] else '')
+        # data-hdr raw path: the decimated raw-f16 disp tier (progressive first paint).
+        raw_disp_attr = (f' data-raw-disp-href="{raw_disp_urls[i]}"'
+                         if raw_disp_urls[i] else '')
         upgrade_attr = (' data-auto-upgrade="1"'
                         if auto_upgrade and hires_urls[i] else '')
         # Persist the original thumb URL separately from the inline
@@ -788,7 +842,7 @@ def image_grid(
         thumb_attr = f' data-thumb-href="{urls[i]}"'
         svg.add(
             f'<g class="fig-tile" data-bbox="{x:.2f} {y:.2f} {w:.2f} {h:.2f}"'
-            f'{thumb_attr}{hires_attr}{upgrade_attr}>'
+            f'{thumb_attr}{hires_attr}{raw_disp_attr}{upgrade_attr}>'
         )
         if label_tiles[i] is not None:
             # Behind the (transparent) GPU label canvas:

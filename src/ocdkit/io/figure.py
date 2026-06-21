@@ -1839,8 +1839,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }
 fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }
 @fragment fn fs(in: VO) -> @location(0) vec4f {
-  let s = textureSample(t, sm, in.uv).rgb;
-  let lin = vec3f(eotf(s.r), eotf(s.g), eotf(s.b)) * u.headroom;
+  let lin = textureSample(t, sm, in.uv).rgb * u.headroom;
   return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0);
 }`;
       let device = null, pipe = null, sampler = null, ubuf = null, tex = null, bg = null;
@@ -1908,12 +1907,12 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         _blitSampler = device.createSampler({ magFilter:'linear', minFilter:'linear' });
         _blitPipe = device.createRenderPipeline({ layout:'auto',
           vertex:{ module: _blitMod, entryPoint:'vs' },
-          fragment:{ module: _blitMod, entryPoint:'fs', targets:[{ format:'rgba8unorm' }] },
+          fragment:{ module: _blitMod, entryPoint:'fs', targets:[{ format:'rgba16float' }] },
           primitive:{ topology:'triangle-list' } });
         ubuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         ready = true;
         if (_pendingTex) { const p = _pendingTex; _pendingTex = null;
-          if (p.entry) _activateEntry(p.entry, p.onLoaded); else _ingest(p.bmp, p.key, p.onLoaded); }
+          if (p.entry) _activateEntry(p.entry, p.onLoaded); else _ingest(p.raw, p.key, p.onLoaded); }
         if (_pendingDraw) { const s = _pendingDraw; _pendingDraw = null; redraw(s); }
       })();
 
@@ -1963,17 +1962,16 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         }
         device.queue.submit([enc.finish()]);
       }
-      // Decode an ImageBitmap into a GPU texture, cache it under ``key``, activate it.
-      function _ingest(bmp, key, onLoaded) {
-        const w = bmp.width, h = bmp.height;
+      // Upload a RAW float16 tile {data,w,h} into a GPU texture, cache it, activate it.
+      function _ingest(raw, key, onLoaded) {
+        const w = raw.w, h = raw.h;
         const levels = Math.floor(Math.log2(Math.max(w, h))) + 1;
-        const t = device.createTexture({ size:[w, h], format:'rgba8unorm', mipLevelCount: levels,
+        const t = device.createTexture({ size:[w, h], format:'rgba16float', mipLevelCount: levels,
           usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-        device.queue.copyExternalImageToTexture({ source: bmp }, { texture: t }, [w, h]);
-        if (bmp.close) bmp.close();
+        device.queue.writeTexture({ texture: t }, raw.data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
         if (_blitPipe && levels > 1) { try { _genMips(t, w, h, levels); } catch (e) {} }
-        // ~1.33× base for the mip chain in the byte budget.
-        const entry = { tex: t, w: w, h: h, bytes: Math.round(w * h * 4 * 1.34) };
+        // rgba16f = 8 B/px; ~1.33× for the mip chain in the byte budget.
+        const entry = { tex: t, w: w, h: h, bytes: Math.round(w * h * 8 * 1.34) };
         if (key) { _hpc.map.set(key, entry); _hpc.bytes += entry.bytes; _evictHpc(); }
         _activateEntry(entry, onLoaded);
       }
@@ -1994,9 +1992,12 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           // 204 = the numpy hi-res is still background-encoding → retry rather than
           // strand the popup on the thumb (a scene's on-disk hi-res is 200 first try).
           fetch(u + (attempt ? ((u.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt) : ''))
-            .then(r => { if (r.status === 204) throw new Error('204'); return r.blob(); })
-            .then(b => createImageBitmap(b, { colorSpaceConversion:'none', premultiplyAlpha:'none' }))
-            .then(bmp => { if (viewer.disposed) return; if (ready) _ingest(bmp, key, onLoaded); else _pendingTex = { bmp, key, onLoaded }; })
+            .then(r => { if (r.status === 204) throw new Error('204'); return r.arrayBuffer(); })
+            .then(buf => {   // _RawF16Source: 8-byte (w,h) header + float16 RGBA
+              const hdr = new Uint32Array(buf, 0, 2);
+              const raw = { data: new Uint16Array(buf, 8), w: hdr[0], h: hdr[1] };
+              if (viewer.disposed) return;
+              if (ready) _ingest(raw, key, onLoaded); else _pendingTex = { raw, key, onLoaded }; })
             .catch(e => {
               if (attempt < 20) { attempt++; setTimeout(tryFetch, 250); }
               else console.warn('SvgFigure WebGPU-HDR: image load failed:', url, e);
@@ -2226,9 +2227,14 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // why we don't read it here). Falls back to inline <image href>
       // for older SVGs / direct ``<g class="fig-tile">`` usage that
       // doesn't set data-thumb-href.
-      let thumbHref = tile.getAttribute('data-thumb-href')
-                     || (tile.querySelector('image')
-                          && tile.querySelector('image').getAttribute('href'));
+      // HDR tile uses the WebGPU viewer, which now ingests RAW float16 — so its
+      // thumb-first must be the raw disp tier (data-raw-disp-href), NOT the PNG
+      // data-thumb-href (the raw decoder would misread a PNG's bytes). Non-HDR
+      // (css-img) tiles keep the PNG thumb.
+      let thumbHref = (isHdrTile && tile.getAttribute('data-raw-disp-href'))
+                     || (!isHdrTile && (tile.getAttribute('data-thumb-href')
+                          || (tile.querySelector('image')
+                               && tile.querySelector('image').getAttribute('href'))));
       // remote pages: a tileserve-hosted thumb URL routes through the proxy
       // (no-op for data:/relative thumbs)
       if (thumbHref && window.__ocdResolveTileUrl) thumbHref = window.__ocdResolveTileUrl(thumbHref);
@@ -5880,8 +5886,8 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     + "fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }\n"
     + "fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }\n"
     + "@fragment fn fs(in: VO) -> @location(0) vec4f {\n"
-    + "  let s = textureSample(t, sm, in.uv).rgb;\n"
-    + "  let lin = vec3f(eotf(s.r), eotf(s.g), eotf(s.b)) * u.p.x;\n"
+    + "  // raw-f16 texture is ALREADY linear-light (no eotf): just boost + oetf.\n"
+    + "  let lin = textureSample(t, sm, in.uv).rgb * u.p.x;\n"
     + "  return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0); }\n";
 
   function detectHeadroom() {
@@ -5909,11 +5915,41 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     // display density, but a relayout between decode and draw leaves it a few device-
     // px off the canvas; nearest then resamples that mismatch → the numpy-cell moiré
     // ("seam"). Linear smooths it (the popup viewer already does this).
-    var sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'linear' });
+    var sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'linear', mipmapFilter: 'linear' });
     var pipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: module, entryPoint: 'vs' },
       fragment: { module: module, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
       primitive: { topology: 'triangle-list' } });
+    // Mip generator: full-res raw-f16 textures get minified into the display-density
+    // canvas, so trilinear needs real averaged mips (else thin features alias). A
+    // fullscreen-triangle blit linearly downsamples level N-1 -> N. Built once.
+    var _blitMod = device.createShaderModule({ code:
+      "struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };\n"
+      + "@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {\n"
+      + "  var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));\n"
+      + "  var u = array<vec2f,3>(vec2f(0,1), vec2f(2,1), vec2f(0,-1));\n"
+      + "  var o: VO; o.pos = vec4f(p[i],0,1); o.uv = u[i]; return o; }\n"
+      + "@group(0) @binding(0) var bt: texture_2d<f32>;\n"
+      + "@group(0) @binding(1) var bs: sampler;\n"
+      + "@fragment fn fs(in: VO) -> @location(0) vec4f { return textureSample(bt, bs, in.uv); }" });
+    var _blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    var _blitPipe = device.createRenderPipeline({ layout: 'auto',
+      vertex: { module: _blitMod, entryPoint: 'vs' },
+      fragment: { module: _blitMod, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
+      primitive: { topology: 'triangle-list' } });
+    function _genMips(t, w, h, levels) {
+      var enc = device.createCommandEncoder();
+      for (var lvl = 1; lvl < levels; lvl++) {
+        var src = t.createView({ baseMipLevel: lvl - 1, mipLevelCount: 1 });
+        var dst = t.createView({ baseMipLevel: lvl, mipLevelCount: 1 });
+        var bbg = device.createBindGroup({ layout: _blitPipe.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: src }, { binding: 1, resource: _blitSampler } ] });
+        var rp = enc.beginRenderPass({ colorAttachments: [{ view: dst,
+          loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:0 }, storeOp: 'store' }] });
+        rp.setPipeline(_blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
+      }
+      device.queue.submit([enc.finish()]);
+    }
     // Default headroom 4.0 (match createLinkedHDRLayer) so tiles glow even when
     // the display headroom API is unavailable (Chrome usually doesn't expose
     // screen.highDynamicRangeHeadroom). The interval below adopts the live value
@@ -5996,27 +6032,25 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     // the browser's area-mean/Lanczos downscale). RENDER_ATTACHMENT is REQUIRED by
     // copyExternalImageToTexture (it blits internally) — without it the upload
     // fails and the tile is blank. Returns {tex,w,h}.
-    function _decode(url, resize) {
+    function _decode(url, resize) {   // resize ignored — raw f16 is full-res + mips
       return fetch(url).then(function (r) {
-        // 204 = the hi-res is still encoding (now attached off the critical path) —
-        // signal the caller to retry rather than decoding an empty body.
+        // 204 = the tile is still resolving (attached off the critical path) —
+        // signal the caller to retry rather than reading an empty body.
         if (r.status === 204) return Promise.reject('204');
         if (!r.ok) return Promise.reject(r.status);
-        return r.blob();
+        return r.arrayBuffer();
       })
-        .then(function (blob) {
-          var opt = { colorSpaceConversion: 'none', premultiplyAlpha: 'none' };
-          if (resize && resize.w >= 1 && resize.h >= 1) {
-            opt.resizeWidth = resize.w; opt.resizeHeight = resize.h; opt.resizeQuality = 'high';
-          }
-          return createImageBitmap(blob, opt);
-        })
-        .then(function (bmp) {
-          var w = bmp.width, h = bmp.height;
-          var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+        .then(function (buf) {
+          // _RawF16Source bytes: struct('<II', w, h) header + w*h*4 float16 RGBA,
+          // LINEAR. No image decode — write the raw bits straight into the texture.
+          var hdr = new Uint32Array(buf, 0, 2);
+          var w = hdr[0], h = hdr[1];
+          var data = new Uint16Array(buf, 8);     // float16 payload (bit-for-bit)
+          var levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
+          var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-          device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
-          if (bmp.close) bmp.close();
+          device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
+          if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
           return { tex: tex, w: w, h: h };
         });
     }
@@ -6024,47 +6058,38 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     // decode + cache. Retries while the encode is still in flight (204). Sets
     // c._hiresDone so a late thumb can't overwrite it.
     function _showHires(c, tries) {
-      var dp = _cellDevPx(c), key = c._hiresUrl + '@' + dp.w;
+      var key = c._hiresUrl;   // raw f16 is density-independent (full-res + mips)
       var hit = _texCache.get(key);
       if (hit) { _bindTex(c, hit, true); c._hiresDone = true; return Promise.resolve(); }
-      return _decode(c._hiresUrl, dp).then(function (e) {
+      return _decode(c._hiresUrl).then(function (e) {
         _texCache.set(key, e); c._hiresDone = true; _bindTex(c, e, true);
       }).catch(function (err) {
         if (err === '204' && (tries || 0) < 400) setTimeout(function () { _showHires(c, (tries || 0) + 1); }, 200);
-        // else: give up (keep the thumb) — encode failed or no hi-res
+        // else: give up (no raw hi-res) — loadTex restores the native <image>
       });
     }
     function loadTex(c, tries) {
-      var href = c.im.getAttribute('href')
-        || c.im.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
-      if (!href) {
-        if ((tries || 0) < 600) return void setTimeout(function () { loadTex(c, (tries||0)+1); }, 250);
-        return;
-      }
-      var thumbUrl = _resolve(href);
-      // data-hires-href lives on the <image> OR (image_grid's case) on the parent
-      // <g class="fig-tile"> wrapper — check both.
+      // Raw f16 path: the texture comes from the RAW tile (data-raw-disp-href for a
+      // fast decimated first paint, data-hires-href for full-res) — NOT the PNG
+      // <image> (an rgba8 thumb can't share the rgba16float pipeline). Both are
+      // attached off the build thread, so retry while they're still 204.
       var g = c.im.closest && c.im.closest('g.fig-tile');
       var hi = c.im.getAttribute('data-hires-href') || (g && g.getAttribute('data-hires-href'));
-      var hiUrl = (hi && _resolve(hi) !== thumbUrl) ? _resolve(hi) : null;
-      if (!hiUrl) {   // no hi-res for this tile → just the thumb
-        _decode(thumbUrl).then(function (e) { _bindTex(c, e); })
-          .catch(function (ex) { c.im.style.opacity = ''; console.warn('static HDR tile:', ex); });
-        return;
+      if (!hi) {
+        if ((tries || 0) < 600) return void setTimeout(function () { loadTex(c, (tries||0)+1); }, 250);
+        c.im.style.opacity = ''; return;   // no raw tile → fall back to the native <image>
       }
-      c._hiresUrl = hiUrl;
-      // REMEMBERED: hi-res already decoded at this density → show it immediately,
-      // NO low-res flash (matches the grid).
-      var dp0 = _cellDevPx(c);
-      if (_texCache.has(hiUrl + '@' + dp0.w)) { _bindTex(c, _texCache.get(hiUrl + '@' + dp0.w), true); c._hiresDone = true; return; }
-      // NOT fetched yet → show the cheap thumb FIRST (instant), and upgrade to the
-      // hi-res when it lands. The thumb is guarded so it never overwrites the hi-res.
+      c._hiresUrl = _resolve(hi);
+      // REMEMBERED: this raw tile already uploaded → bind instantly, no re-fetch.
+      if (_texCache.has(c._hiresUrl)) { _bindTex(c, _texCache.get(c._hiresUrl), true); c._hiresDone = true; return; }
+      // Progressive: decimated raw disp FIRST (cheap, instant) if present, then the
+      // full-res raw upgrades when it lands (guarded so it can't overwrite the hi-res).
+      var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'));
       _showHires(c).catch(function () {});
-      // Decode the thumb at DISPLAY DENSITY too (not its full native size): otherwise
-      // a full-res thumb texture is nearest-minified into the smaller canvas = moiré
-      // before the hi-res lands. Matches _showHires so the texture==canvas (1:1).
-      _decode(thumbUrl, _cellDevPx(c)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
-        .catch(function () { if (!c._hiresDone) c.im.style.opacity = ''; });
+      if (disp) {
+        _decode(_resolve(disp)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
+          .catch(function () {});
+      }
     }
 
     imgs.forEach(function (im) {
