@@ -2591,46 +2591,50 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // pan/zoom (see redraw). The label canvas above stays transparent
       // (baseSrc is NOT passed to buildRenderer → imageVisible 0).
       let baseImg = null;
-      let _hdrBaseUpgrade = null;   // called after buildRenderer to swap in the hi-res base
+      let _hdrBaseUpgrade = null;   // called after buildRenderer to load the raw GPU base
       {
         const g = srcCanvas.closest && srcCanvas.closest('g.fig-tile');
         const sib = g && g.querySelector('image');
-        // The cheap thumb (inline, always ready) for an INSTANT first paint; the
-        // full-res hi-res (attached off-thread, 204 until its encode lands) for the
-        // upgrade. Prefer the persisted data-thumb-href over the <image> href,
-        // which the hover-prefetch may have already swapped to the (still-204)
-        // hi-res — loading that directly is what strands the first zoom on blank.
-        const thumbHref = (g && g.getAttribute('data-thumb-href'))
-          || (sib && (sib.getAttribute('href')
-            || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
-        const hiresHref = g && g.getAttribute('data-hires-href');
-        const href = (cfg.baseSrc) || thumbHref;
         const isHdrBase = !!(sib && sib.getAttribute('data-hdr') === '1');
-        if (href && isHdrBase) {
-          // HDR base (hdr_nearest sRGB-OETF PNG): render it INSIDE this single
-          // HDR (rgba16float) label canvas via the GPU, with the EOTF×headroom×
-          // OETF lift — so the base GLOWS and composites with the outlines in ONE
-          // canvas. A separate overlapping WebGPU canvas does NOT composite as HDR
-          // (the browser flattens stacked HDR canvases → black). buildRenderer's
-          // base layer draws it; no <img>.
-          cfg = Object.assign({}, cfg, { baseSrc: href,
-            uniforms: Object.assign({}, cfg.uniforms, { baseHeadroom: (_popupHdrHeadroom() || 4.0) }) });
-          // Upgrade the GPU base to the full-res hi-res once it lands, RETRYING
-          // while it is still 204 (encoding). LabelGL's own base load does not
-          // retry, so without this the FIRST zoom strands on the thumb and only a
-          // SECOND zoom (after the encode finished) is sharp — the reported bug.
-          if (hiresHref && hiresHref !== href) {
-            _hdrBaseUpgrade = function (rr) {
-              (function load(tries) {
-                const im = new Image();
-                im.crossOrigin = 'anonymous';
-                im.onload = function () { try { rr.setBase(im); redraw(lastState); } catch (e) {} };
-                im.onerror = function () { if ((tries || 0) < 80) setTimeout(function () { load((tries || 0) + 1); }, 300); };
-                im.src = hiresHref + ((tries || 0) ? ((hiresHref.indexOf('?') >= 0 ? '&' : '?') + '_r=' + tries) : '');
-              })(0);
-            };
-          }
-        } else if (href) {
+        // RAW f16 tiers: decimated disp (instant first paint) + full-res hi-res.
+        const rawDisp = g && g.getAttribute('data-raw-disp-href');
+        const rawHires = g && g.getAttribute('data-hires-href');
+        function _rsv(u) { try { return (u && window.__ocdResolveTileUrl) ? window.__ocdResolveTileUrl(u) : u; } catch (e) { return u; } }
+        if (isHdrBase && rawHires) {
+          // RAW f16 HDR base: upload straight to the GPU via LabelGL.setBaseRaw —
+          // NO image codec. The base composites with the outlines in this ONE
+          // rgba16float canvas (stacked HDR canvases flatten to black), with the
+          // ×headroom×OETF lift so it GLOWS, exactly like the inline static-HDR
+          // controller. Paint the decimated disp instantly, then upgrade to the
+          // full-res hi-res — RETRYING while it is still 204 (encoding) — so the
+          // FIRST zoom is never blank and auto-sharpens with no re-click. Because
+          // it's raw (no PNG encode), the upgrade is as fast as a standalone cell.
+          cfg = Object.assign({}, cfg, { uniforms: Object.assign({}, cfg.uniforms,
+            { baseHeadroom: (_popupHdrHeadroom() || 4.0) }) });
+          _hdrBaseUpgrade = function (rr) {
+            let _hiLoaded = false;
+            function loadRaw(url, isHires, tries) {
+              if (!url) return;
+              fetch(url).then(function (resp) {
+                if (resp.status === 204) return Promise.reject('204');
+                if (!resp.ok) return Promise.reject(resp.status);
+                return resp.arrayBuffer();
+              }).then(function (buf) {
+                if (isHires) _hiLoaded = true; else if (_hiLoaded) return;  // disp can't clobber hi-res
+                const hd = new Uint32Array(buf, 0, 2);
+                rr.setBaseRaw(new Uint16Array(buf, 8), hd[0], hd[1]);
+                redraw(lastState);
+              }).catch(function (e) {
+                if (e === '204' && (tries || 0) < 120) setTimeout(function () { loadRaw(url, isHires, (tries || 0) + 1); }, 250);
+              });
+            }
+            loadRaw(_rsv(rawDisp), false, 0);    // instant decimated first paint
+            loadRaw(_rsv(rawHires), true, 0);    // full-res upgrade (retries through 204)
+          };
+        } else if (cfg.baseSrc || (sib && (sib.getAttribute('href')
+            || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')))) {
+          const href = (cfg.baseSrc) || (sib && (sib.getAttribute('href')
+            || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
           baseImg = document.createElement('img');
           baseImg.crossOrigin = 'anonymous';
           baseImg.style.cssText = 'position:absolute; left:0; top:0;'
@@ -5921,11 +5925,8 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     + "fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }\n"
     + "fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }\n"
     + "@fragment fn fs(in: VO) -> @location(0) vec4f {\n"
-    + "  let s = textureSample(t, sm, in.uv).rgb;\n"
-    + "  // u.p.y != 0 -> raw f16 tile, ALREADY linear-light (skip eotf). Else an\n"
-    + "  // sRGB-OETF PNG (a label-tile HDR base kept as an image for the label zoom)\n"
-    + "  // -> linearize first. Then boost (u.p.x) + re-encode.\n"
-    + "  let lin = select(vec3f(eotf(s.r), eotf(s.g), eotf(s.b)), s, u.p.y != 0.0) * u.p.x;\n"
+    + "  // raw-f16 texture is ALREADY linear-light (no eotf): just boost + oetf.\n"
+    + "  let lin = textureSample(t, sm, in.uv).rgb * u.p.x;\n"
     + "  return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0); }\n";
 
   function detectHeadroom() {
@@ -5975,26 +5976,16 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       vertex: { module: _blitMod, entryPoint: 'vs' },
       fragment: { module: _blitMod, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
       primitive: { topology: 'triangle-list' } });
-    // sRGB-OETF PNG bases (label tiles) live in an rgba8unorm texture — matching
-    // the original controller. copyExternalImageToTexture into rgba16float
-    // LINEARIZES the sRGB source, which the shader's eotf then double-darkens
-    // (= the "not HDR" label base). rgba8unorm keeps the raw OETF bytes; the
-    // shader's eotf restores linear-light. Its mips need an rgba8unorm target.
-    var _blitPipe8 = device.createRenderPipeline({ layout: 'auto',
-      vertex: { module: _blitMod, entryPoint: 'vs' },
-      fragment: { module: _blitMod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
-      primitive: { topology: 'triangle-list' } });
-    function _genMips(t, w, h, levels, blitPipe) {
-      blitPipe = blitPipe || _blitPipe;
+    function _genMips(t, w, h, levels) {
       var enc = device.createCommandEncoder();
       for (var lvl = 1; lvl < levels; lvl++) {
         var src = t.createView({ baseMipLevel: lvl - 1, mipLevelCount: 1 });
         var dst = t.createView({ baseMipLevel: lvl, mipLevelCount: 1 });
-        var bbg = device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0), entries: [
+        var bbg = device.createBindGroup({ layout: _blitPipe.getBindGroupLayout(0), entries: [
           { binding: 0, resource: src }, { binding: 1, resource: _blitSampler } ] });
         var rp = enc.beginRenderPass({ colorAttachments: [{ view: dst,
           loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:0 }, storeOp: 'store' }] });
-        rp.setPipeline(blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
+        rp.setPipeline(_blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
       }
       device.queue.submit([enc.finish()]);
     }
@@ -6030,8 +6021,7 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       // Content headroom (c.hr) when known — matches the native-uhdr glow; the
       // global N (detected/4.0) is only a fallback. SDR toggle forces 1.0.
       var _Nc = _sdr ? 1.0 : (c.hr || N);
-      // p.y = isLinear: 1 for a raw-f16 (linear) tile, 0 for an sRGB-OETF PNG base.
-      device.queue.writeBuffer(c.ubuf, 0, new Float32Array([_Nc, (c._isLinear == null ? 1 : c._isLinear), 0, 0]));
+      device.queue.writeBuffer(c.ubuf, 0, new Float32Array([_Nc, 0, 0, 0]));
       var enc = device.createCommandEncoder();
       var pass = enc.beginRenderPass({ colorAttachments: [{
         view: c.ctx.getCurrentTexture().createView(),
@@ -6063,7 +6053,6 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     }
     function _bindTex(c, e, isHires) {   // atomically swap a decoded {tex,w} into the cell + redraw
       c._texW = e.w;
-      c._isLinear = (e.linear == null ? 1 : e.linear);   // raw f16 = linear; PNG base = sRGB-OETF
       c.bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
         { binding: 0, resource: e.tex.createView() },
         { binding: 1, resource: sampler },
@@ -6082,48 +6071,26 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     // the browser's area-mean/Lanczos downscale). RENDER_ATTACHMENT is REQUIRED by
     // copyExternalImageToTexture (it blits internally) — without it the upload
     // fails and the tile is blank. Returns {tex,w,h}.
-    function _decode(url, resize) {   // resize ignored — full-res + mips
+    function _decode(url, resize) {   // resize ignored — raw f16 is full-res + mips
       return fetch(url).then(function (r) {
         // 204 = the tile is still resolving (attached off the critical path) —
         // signal the caller to retry rather than reading an empty body.
         if (r.status === 204) return Promise.reject('204');
         if (!r.ok) return Promise.reject(r.status);
-        var ct = (r.headers.get('Content-Type') || '');
-        return r.arrayBuffer().then(function (buf) { return { buf: buf, ct: ct }; });
+        return r.arrayBuffer();
       })
-        .then(function (o) {
-          var levels;
-          if (o.ct.indexOf('octet-stream') >= 0) {
-            // _RawF16Source bytes: struct('<II', w, h) header + w*h*4 float16 RGBA,
-            // LINEAR. No image decode — write the raw bits straight into the texture.
-            var hdr = new Uint32Array(o.buf, 0, 2);
-            var w = hdr[0], h = hdr[1];
-            var data = new Uint16Array(o.buf, 8);     // float16 payload (bit-for-bit)
-            levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
-            var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
-              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-            device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
-            if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
-            return { tex: tex, w: w, h: h, linear: 1 };
-          }
-          // sRGB-OETF PNG — a label tile's HDR base, kept as an image so the label
-          // ZOOM (createLabelViewer) can load it. Decode and copy into the SAME
-          // rgba16float texture (8-bit OETF values stored as f16, NO color
-          // conversion); the shader's isLinear=0 path applies eotf. Sharing the
-          // format lets the one pipeline + mip path serve both tile kinds.
-          return createImageBitmap(new Blob([o.buf]),
-              { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }).then(function (bmp) {
-            var w = bmp.width, h = bmp.height;
-            levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
-            // rgba8unorm (NOT rgba16float): keeps the raw sRGB-OETF bytes so the
-            // shader's eotf restores linear-light. mips via the rgba8unorm blit.
-            var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm', mipLevelCount: levels,
-              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-            device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
-            try { bmp.close(); } catch (e) {}
-            if (_blitPipe8 && levels > 1) { try { _genMips(tex, w, h, levels, _blitPipe8); } catch (e) {} }
-            return { tex: tex, w: w, h: h, linear: 0 };
-          });
+        .then(function (buf) {
+          // _RawF16Source bytes: struct('<II', w, h) header + w*h*4 float16 RGBA,
+          // LINEAR. No image decode — write the raw bits straight into the texture.
+          var hdr = new Uint32Array(buf, 0, 2);
+          var w = hdr[0], h = hdr[1];
+          var data = new Uint16Array(buf, 8);     // float16 payload (bit-for-bit)
+          var levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
+          var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+          device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
+          if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
+          return { tex: tex, w: w, h: h };
         });
     }
     // Show the hi-res at the current display density; instant from cache, else
@@ -6154,12 +6121,9 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       c._hiresUrl = _resolve(hi);
       // REMEMBERED: this raw tile already uploaded → bind instantly, no re-fetch.
       if (_texCache.has(c._hiresUrl)) { _bindTex(c, _texCache.get(c._hiresUrl), true); c._hiresDone = true; return; }
-      // Progressive first paint: the decimated raw disp (standalone data-hdr cells)
-      // if present, else the inline PNG thumb (label-tile PNG bases have no raw
-      // disp) — _decode handles either by Content-Type. Then the full-res hi-res
-      // upgrades when it lands (guarded so it can't overwrite the hi-res).
-      var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'))
-               || c.im.getAttribute('data-thumb-href') || (g && g.getAttribute('data-thumb-href'));
+      // Progressive: decimated raw disp FIRST (cheap, instant) if present, then the
+      // full-res raw upgrades when it lands (guarded so it can't overwrite the hi-res).
+      var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'));
       _showHires(c).catch(function () {});
       if (disp) {
         _decode(_resolve(disp)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
