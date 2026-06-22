@@ -2591,11 +2591,20 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // pan/zoom (see redraw). The label canvas above stays transparent
       // (baseSrc is NOT passed to buildRenderer → imageVisible 0).
       let baseImg = null;
+      let _hdrBaseUpgrade = null;   // called after buildRenderer to swap in the hi-res base
       {
         const g = srcCanvas.closest && srcCanvas.closest('g.fig-tile');
         const sib = g && g.querySelector('image');
-        const href = (cfg.baseSrc) || (sib && (sib.getAttribute('href')
-          || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
+        // The cheap thumb (inline, always ready) for an INSTANT first paint; the
+        // full-res hi-res (attached off-thread, 204 until its encode lands) for the
+        // upgrade. Prefer the persisted data-thumb-href over the <image> href,
+        // which the hover-prefetch may have already swapped to the (still-204)
+        // hi-res — loading that directly is what strands the first zoom on blank.
+        const thumbHref = (g && g.getAttribute('data-thumb-href'))
+          || (sib && (sib.getAttribute('href')
+            || sib.getAttributeNS('http://www.w3.org/1999/xlink', 'href')));
+        const hiresHref = g && g.getAttribute('data-hires-href');
+        const href = (cfg.baseSrc) || thumbHref;
         const isHdrBase = !!(sib && sib.getAttribute('data-hdr') === '1');
         if (href && isHdrBase) {
           // HDR base (hdr_nearest sRGB-OETF PNG): render it INSIDE this single
@@ -2606,6 +2615,21 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           // base layer draws it; no <img>.
           cfg = Object.assign({}, cfg, { baseSrc: href,
             uniforms: Object.assign({}, cfg.uniforms, { baseHeadroom: (_popupHdrHeadroom() || 4.0) }) });
+          // Upgrade the GPU base to the full-res hi-res once it lands, RETRYING
+          // while it is still 204 (encoding). LabelGL's own base load does not
+          // retry, so without this the FIRST zoom strands on the thumb and only a
+          // SECOND zoom (after the encode finished) is sharp — the reported bug.
+          if (hiresHref && hiresHref !== href) {
+            _hdrBaseUpgrade = function (rr) {
+              (function load(tries) {
+                const im = new Image();
+                im.crossOrigin = 'anonymous';
+                im.onload = function () { try { rr.setBase(im); redraw(lastState); } catch (e) {} };
+                im.onerror = function () { if ((tries || 0) < 80) setTimeout(function () { load((tries || 0) + 1); }, 300); };
+                im.src = hiresHref + ((tries || 0) ? ((hiresHref.indexOf('?') >= 0 ? '&' : '?') + '_r=' + tries) : '');
+              })(0);
+            };
+          }
         } else if (href) {
           baseImg = document.createElement('img');
           baseImg.crossOrigin = 'anonymous';
@@ -2640,6 +2664,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
         return null;
       }
+      // Kick off the thumb→hi-res base upgrade (retries while the hi-res is 204).
+      if (_hdrBaseUpgrade) { try { _hdrBaseUpgrade(r); } catch (e) {} }
       // HDR toggle response (mirror the inline controller): SDR → boosts to
       // 1.0 (SDR white); HDR → configured boosts. Applied on open + on toggle.
       const _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
