@@ -131,5 +131,35 @@
     return out;
   }
 
-  return { trajPolylines3D, lineageSegs3D, pointCrosses3D, flowQuiver3D, affinitySegs3D, _labelColor: labelColor };
+  function _vcross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+  function _vnorm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+
+  /** XYZ arrow triad at the volume origin corner (voxel coords). X=red, Y=green,
+   *  Z=blue. Each axis length = frac * max(dims), with a 4-segment arrowhead. */
+  function axesTriad3D(dims, frac) {
+    frac = frac == null ? 0.5 : frac;
+    const L = Math.max(dims[0], dims[1], dims[2]) * frac;
+    const O = [0, 0, 0];
+    const AX = [
+      { dir: [1, 0, 0], col: [1.0, 0.25, 0.25] },   // X red
+      { dir: [0, 1, 0], col: [0.25, 1.0, 0.25] },   // Y green
+      { dir: [0, 0, 1], col: [0.35, 0.55, 1.0] },   // Z blue
+    ];
+    const pos = [], col = [];
+    for (const { dir, col: c } of AX) {
+      const tip = [O[0] + dir[0] * L, O[1] + dir[1] * L, O[2] + dir[2] * L];
+      _seg(pos, col, O, tip, c);                                  // shaft
+      const ref = Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+      const p1 = _vnorm(_vcross(dir, ref)), p2 = _vcross(dir, p1);
+      const base = [tip[0] - dir[0] * L * 0.18, tip[1] - dir[1] * L * 0.18, tip[2] - dir[2] * L * 0.18];
+      const w = L * 0.08;
+      for (const [s, t] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        _seg(pos, col, tip,
+          [base[0] + (p1[0] * s + p2[0] * t) * w, base[1] + (p1[1] * s + p2[1] * t) * w, base[2] + (p1[2] * s + p2[2] * t) * w], c);
+      }
+    }
+    return _pack(pos, col);
+  }
+
+  return { trajPolylines3D, lineageSegs3D, pointCrosses3D, flowQuiver3D, affinitySegs3D, axesTriad3D, _labelColor: labelColor };
 });

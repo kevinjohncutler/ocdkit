@@ -71,4 +71,15 @@ test("affinitySegs3D: dedup + decimation cap is logged", () => {
   assert.ok(r2.total > 1);
 });
 
+test("axesTriad3D: 3 colour-coded axes from origin + arrowheads", () => {
+  const r = O.axesTriad3D([10, 20, 30], 0.5);
+  // 3 axes x (1 shaft + 4 head) = 15 segments = 30 vertices
+  assert.equal(r.count, 30);
+  // first shaft starts at origin, goes +X (len = max(dims)*0.5 = 15)
+  assert.deepEqual(arr(r.positions, 0, 6), [0, 0, 0, 15, 0, 0]);
+  // X shaft colour is red-dominant
+  const c = arr(r.colors, 0, 3);
+  assert.ok(c[0] > c[1] && c[0] > c[2], "X axis should be red");
+});
+
 console.log(`\n${n} passed`);

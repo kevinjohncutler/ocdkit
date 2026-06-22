@@ -60,6 +60,7 @@
         <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="0.6" /></label></div>
         <label><input type="checkbox" id="showlabels" checked /> show labels</label>
         <h2>overlays</h2>
+        <label><input type="checkbox" id="ov3-axes" checked /> axes (X=red Y=green Z=blue)</label>
         <label><input type="checkbox" id="ov3-trajectories" checked /> trajectories + lineage</label>
         <label><input type="checkbox" id="ov3-points" /> points</label>
         <label><input type="checkbox" id="ov3-flow" /> flow quiver</label>
@@ -187,7 +188,7 @@
         document.getElementById("zscale").addEventListener("input", (e) => vgpu && vgpu.setZScale(+e.target.value));
         document.getElementById("labopacity").addEventListener("input", (e) => vgpu && vgpu.setLabelOpacity(+e.target.value));
         document.getElementById("showlabels").addEventListener("change", (e) => vgpu && vgpu.setShowLabels(e.target.checked));
-        for (const [id, name] of [["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {
+        for (const [id, name] of [["ov3-axes", "axes"], ["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {
           const el = document.getElementById(id);
           el.addEventListener("change", async () => {
             if (name === "flow" && el.checked) await ensureFlow();  // quiver needs the flow field

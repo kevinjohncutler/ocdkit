@@ -38,7 +38,7 @@
       self.pipeline = pipeline;
       self.uniform = device.createBuffer({ size: 28 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       self.bindGroup = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: self.uniform } }] });
-      self.enabled = { trajectories: true, points: false, flow: false, affinity: false };
+      self.enabled = { axes: true, trajectories: true, points: false, flow: false, affinity: false };
       self._build(decoded);
       return self;
     }
@@ -54,6 +54,7 @@
 
     _build(d) {
       this.layers = {};
+      if (d.meta) this.layers.axes = this._gpu(VO.axesTriad3D([d.meta.width, d.meta.height, d.meta.depth], 0.5));
       if (d.trajectories) {
         this.layers.traj = this._gpu(VO.trajPolylines3D(d.trajectories.tracks));
         this.layers.lineage = this._gpu(VO.lineageSegs3D(d.trajectories.tracks, d.trajectories.edges || []));
@@ -78,6 +79,7 @@
       pass.setPipeline(this.pipeline);
       pass.setBindGroup(0, this.bindGroup);
       const draw = (L) => { if (!L) return; pass.setVertexBuffer(0, L.p); pass.setVertexBuffer(1, L.c); pass.draw(L.count); };
+      if (this.enabled.axes) draw(this.layers.axes);
       if (this.enabled.affinity) draw(this.layers.affinity);
       if (this.enabled.flow) draw(this.layers.flow);
       if (this.enabled.trajectories) { draw(this.layers.traj); draw(this.layers.lineage); }
