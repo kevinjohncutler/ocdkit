@@ -60,4 +60,22 @@ test("project then unproject round-trips a world point", () => {
   assert.ok(vclose(w, [0.3, -0.5, 0.2], 1e-4), "round-trip " + w);
 });
 
+test("arcball: drag rotates around the CURRENT up — no pole lock, any orientation", () => {
+  // mirrors the viewer's rotate: orient' = qMul(qFromAxisAngle(up, a), orient)
+  const drag = (o, a) => M.quatNormalize(M.quatMul(M.quatFromAxisAngle(M.quatRotate(o, [0, 1, 0]), a), o));
+  // from identity, a horizontal drag preserves up (rotates around it)
+  let o = drag([0, 0, 0, 1], 0.7);
+  assert.ok(vclose(M.quatRotate(o, [0, 1, 0]), [0, 1, 0], 1e-6), "up preserved at identity");
+  // tilt so current up is +Z, then horizontal drag must preserve +Z (rotate around it)
+  let o2 = M.quatFromAxisAngle([1, 0, 0], Math.PI / 2);  // +Y -> +Z
+  assert.ok(vclose(M.quatRotate(o2, [0, 1, 0]), [0, 0, 1], 1e-5));
+  o2 = drag(o2, 0.9);
+  assert.ok(vclose(M.quatRotate(o2, [0, 1, 0]), [0, 0, 1], 1e-5), "rotates around whatever is up");
+  // many drags never lock up (free rotation): keep rotating 'over the top'
+  let o3 = [0, 0, 0, 1];
+  const pitch = (o, a) => M.quatNormalize(M.quatMul(M.quatFromAxisAngle(M.quatRotate(o, [1, 0, 0]), a), o));
+  for (let i = 0; i < 20; i++) o3 = pitch(o3, 0.5);   // > 2π of pitch, no clamp
+  assert.ok(Math.abs(Math.hypot(o3[0], o3[1], o3[2], o3[3]) - 1) < 1e-6, "stays a unit quat");
+});
+
 console.log(`\n${n} passed`);

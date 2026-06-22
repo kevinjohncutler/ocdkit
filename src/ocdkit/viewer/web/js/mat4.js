@@ -117,5 +117,34 @@
     return { eye, viewProj, invViewProj: invert(viewProj) };
   }
 
-  return { identity, multiply, transformVec4, perspective, lookAt, invert, orbitEye, orbitCamera };
+  // --- quaternions for the arcball camera [x,y,z,w] ------------------------
+  function quatFromAxisAngle(axis, angle) {
+    const l = Math.hypot(axis[0], axis[1], axis[2]) || 1;
+    const s = Math.sin(angle / 2) / l;
+    return [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(angle / 2)];
+  }
+  function quatMul(a, b) {  // a * b (apply b, then a)
+    return [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+      a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+      a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ];
+  }
+  function quatRotate(q, v) {  // rotate vec3 v by quaternion q
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const tx = 2 * (y * v[2] - z * v[1]);
+    const ty = 2 * (z * v[0] - x * v[2]);
+    const tz = 2 * (x * v[1] - y * v[0]);
+    return [v[0] + w * tx + (y * tz - z * ty),
+            v[1] + w * ty + (z * tx - x * tz),
+            v[2] + w * tz + (x * ty - y * tx)];
+  }
+  function quatNormalize(q) {
+    const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+    return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];
+  }
+
+  return { identity, multiply, transformVec4, perspective, lookAt, invert, orbitEye, orbitCamera,
+           quatFromAxisAngle, quatMul, quatRotate, quatNormalize };
 });

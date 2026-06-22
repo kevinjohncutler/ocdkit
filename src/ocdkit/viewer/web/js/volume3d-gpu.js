@@ -69,7 +69,7 @@
         try { self.overlays = await window.OverlayLayer.create(device, self.format, decoded, opts); }
         catch (e) { self.overlays = null; }
       }
-      await self._initCamera(opts);
+      self._initCamera(opts);
       self.render();
       return self;
     }
@@ -84,9 +84,7 @@
       this.showLabels = decoded.mask ? 1.0 : 0.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
-      // Camera + interaction are handled by real three.js OrbitControls (set up
-      // in _initCamera) — we only read its eye/target/up/fov to build the WGSL
-      // matrices. No hand-rolled orbit math.
+      // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
       this.uniform = device_buf(this.device, 40 * 4);
     }
 
@@ -144,35 +142,70 @@
                diag: Math.hypot(sx, sy, sz) };
     }
 
-    // three.js OrbitControls drives the camera; rebuild the WGSL matrices from it.
-    async _initCamera(opts) {
-      const THREE = await import("three");
-      const { OrbitControls } = await import(opts.orbitUrl || "/static/js/vendor/OrbitControls.js");
-      const diag = Math.hypot(this.NX, this.NY, this.NZ * this.zScale);
-      const aspect = (this.canvas.clientWidth || this.canvas.width) /
-                     (this.canvas.clientHeight || this.canvas.height || 1);
-      const cam = new THREE.PerspectiveCamera(45, aspect, Math.max(0.01, diag * 0.02), diag * 16);
-      const r = diag * 1.5;
-      cam.position.set(r * 0.55, r * 0.5, r * 0.7);
-      cam.up.set(0, 1, 0);
-      const controls = new OrbitControls(cam, this.canvas);
-      controls.target.set(0, 0, 0);
-      controls.enableDamping = false;
-      controls.update();
-      controls.addEventListener("change", () => this.render());
-      this.threeCam = cam; this.controls = controls;
+    // Quaternion arcball: free rotation in any orientation — no gimbal lock /
+    // pole limit, no three.js. orient = camera orientation; eye = target +
+    // orient*(0,0,radius); up = orient*(0,1,0). Left-drag rotate (around the
+    // current up/right), right-/shift-drag pan, wheel dolly.
+    _initCamera(opts) {
+      this.target = [0, 0, 0];
+      this.orient = Mat4.quatNormalize(Mat4.quatMul(
+        Mat4.quatFromAxisAngle([1, 0, 0], -0.5),
+        Mat4.quatFromAxisAngle([0, 1, 0], 0.6)));            // initial 3/4 view
+      this.fovy = ((opts.fovy != null ? opts.fovy : 45)) * Math.PI / 180;
+      this.radius = Math.hypot(this.NX, this.NY, this.NZ * this.zScale) * 1.5;
+      this._attachInput();
+    }
+
+    _eye() {
+      const o = Mat4.quatRotate(this.orient, [0, 0, this.radius]);
+      return [this.target[0] + o[0], this.target[1] + o[1], this.target[2] + o[2]];
     }
 
     _camera() {
-      const cam = this.threeCam, t = this.controls.target;
-      const eye = [cam.position.x, cam.position.y, cam.position.z];
-      const target = [t.x, t.y, t.z];
-      const up = [cam.up.x, cam.up.y, cam.up.z];
-      const aspect = this.canvas.width / Math.max(1, this.canvas.height);
-      const view = Mat4.lookAt(eye, target, up);
-      const proj = Mat4.perspective(cam.fov * Math.PI / 180, aspect, cam.near, cam.far);
+      const diag = Math.hypot(this.NX, this.NY, this.NZ * this.zScale);
+      const eye = this._eye();
+      const up = Mat4.quatRotate(this.orient, [0, 1, 0]);
+      const view = Mat4.lookAt(eye, this.target, up);
+      const proj = Mat4.perspective(this.fovy, this.canvas.width / Math.max(1, this.canvas.height),
+        Math.max(0.01, this.radius - diag * 1.2), this.radius + diag * 1.2);
       const viewProj = Mat4.multiply(proj, view);
       return { eye, viewProj, invViewProj: Mat4.invert(viewProj) };
+    }
+
+    _attachInput() {
+      const c = this.canvas, self = this;
+      let drag = 0, lx = 0, ly = 0;   // 0 none, 1 rotate, 2 pan
+      c.addEventListener("contextmenu", (e) => e.preventDefault());
+      c.addEventListener("pointerdown", (e) => {
+        drag = (e.button === 2 || e.button === 1 || e.shiftKey) ? 2 : 1;
+        lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
+      });
+      c.addEventListener("pointerup", (e) => { drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
+      c.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        const dx = e.clientX - lx, dy = e.clientY - ly;
+        const H = c.clientHeight || c.height || 1;
+        const up = Mat4.quatRotate(self.orient, [0, 1, 0]);
+        const right = Mat4.quatRotate(self.orient, [1, 0, 0]);
+        if (drag === 1) {                       // arcball rotate (free, no poles)
+          const S = (Math.PI * 1.4) / H;
+          const q = Mat4.quatMul(Mat4.quatFromAxisAngle(up, -dx * S), Mat4.quatFromAxisAngle(right, -dy * S));
+          self.orient = Mat4.quatNormalize(Mat4.quatMul(q, self.orient));
+        } else {                                // pan target in screen plane
+          const td = self.radius * Math.tan(self.fovy / 2);
+          const px = (2 * dx * td) / H, py = (2 * dy * td) / H;
+          self.target = [self.target[0] - right[0] * px + up[0] * py,
+                         self.target[1] - right[1] * px + up[1] * py,
+                         self.target[2] - right[2] * px + up[2] * py];
+        }
+        lx = e.clientX; ly = e.clientY; self.render();
+      });
+      c.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
+        self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * (e.deltaY > 0 ? 1 / 0.9 : 0.9)));
+        self.render();
+      }, { passive: false });
     }
 
     _writeUniform(cam) {
@@ -220,7 +253,6 @@
     setZScale(z) { this.zScale = +z; this.render(); }
 
     destroy() {
-      try { this.controls && this.controls.dispose(); } catch (_) {}
       try { this.ctx.unconfigure(); } catch (_) {}
       try { this.device.destroy(); } catch (_) {}
     }
