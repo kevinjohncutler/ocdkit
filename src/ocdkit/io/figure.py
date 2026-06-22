@@ -2615,7 +2615,15 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
             let _hiLoaded = false;
             function apply(data, w, h, isHires) {
               if (isHires) _hiLoaded = true; else if (_hiLoaded) return;  // disp can't clobber hi-res
-              rr.setBaseRaw(data, w, h); redraw(lastState);
+              // try/catch is LOAD-BEARING: when the disp applies synchronously the
+              // popup canvas may not be sized yet, so redraw() throws — and since
+              // both loadRaw() calls run inside _hdrBaseUpgrade (wrapped in a
+              // try/catch at the call site), an uncaught throw here ABORTS the whole
+              // upgrade before the SECOND loadRaw (the hi-res) ever runs → the base
+              // is stranded on the 4× disp while the outline is full-res (the
+              // reported bug). setBaseRaw already uploaded the texture; the popup's
+              // own redraw paints it shortly. Swallow so the hi-res load still fires.
+              try { rr.setBaseRaw(data, w, h); redraw(lastState); } catch (e) {}
             }
             function loadRaw(url, isHires, tries) {
               if (!url) return;
