@@ -57,6 +57,24 @@ fn labelColor(lab : u32) -> vec3<f32> {
   return hsv(fract(f32(lab) * 0.61803398875), 0.65, 1.0);
 }
 
+// Per-label occupancy at a voxel (1 if it belongs to `lab`), for normals.
+fn occ(vc : vec3<i32>, lab : u32, dims : vec3<i32>) -> f32 {
+  let c = clamp(vc, vec3<i32>(0), dims - vec3<i32>(1));
+  if (textureLoad(labTex, c, 0).r == lab) { return 1.0; }
+  return 0.0;
+}
+// Outward surface normal of label `lab` from the central-difference gradient of
+// its occupancy (occupancy rises inward, so the normal is -grad). Zero if flat.
+fn labelNormal(vc : vec3<i32>, lab : u32, dims : vec3<i32>) -> vec3<f32> {
+  let g = vec3<f32>(
+    occ(vc + vec3<i32>(1, 0, 0), lab, dims) - occ(vc - vec3<i32>(1, 0, 0), lab, dims),
+    occ(vc + vec3<i32>(0, 1, 0), lab, dims) - occ(vc - vec3<i32>(0, 1, 0), lab, dims),
+    occ(vc + vec3<i32>(0, 0, 1), lab, dims) - occ(vc - vec3<i32>(0, 0, 1), lab, dims));
+  let l = length(g);
+  if (l < 1e-4) { return vec3<f32>(0.0); }
+  return -g / l;
+}
+
 @fragment
 fn fs(in : VOut) -> @location(0) vec4<f32> {
   let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, (1.0 - in.uv.y) * 2.0 - 1.0);
@@ -83,7 +101,9 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   let showLabels = u.params.w;
   let iscale = u.img.x;
   let showImage = u.img.y;
+  let shadeLabels = u.img.z;
   let span = u.boxMax.xyz - u.boxMin.xyz;
+  let lightDir = normalize(vec3<f32>(0.4, 0.7, 0.6));   // fixed world light
 
   let dt = (tfar - tnear) / f32(nsteps);
   var t = tnear + dt * 0.5;
@@ -109,10 +129,15 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     imgAcc = vec4<f32>(imgAcc.rgb + vec3<f32>(s) * a * om, imgAcc.w + a * om);
 
     if (lab > 0u) {
-      let lc = labelColor(lab);
+      var lc = labelColor(lab);
+      if (shadeLabels > 0.5) {
+        let nrm = labelNormal(vc, lab, dims);
+        if (dot(nrm, nrm) > 0.25) {                      // shade only at surfaces
+          lc = lc * (0.4 + 0.6 * max(dot(nrm, lightDir), 0.0));   // ambient + diffuse
+        }
+      }
       labHit = 1.0;
-      let w = select(1.0, s, showImage > 0.5);       // pick brightest label for MIP
-      if (w > labMipW) { labMipW = w; labMipCol = lc; }
+      if (labMipW < 0.0) { labMipW = 1.0; labMipCol = lc; }   // nearest label surface (front-to-back)
       labSum = labSum + lc; labCnt = labCnt + 1.0;
       let la = clamp(labelOpacity * density, 0.0, 1.0);
       let lom = 1.0 - labAcc.w;

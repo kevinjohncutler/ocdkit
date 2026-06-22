@@ -60,6 +60,7 @@
         <h2>layers</h2>
         <label><input type="checkbox" id="showimage" checked /> image (intensity)</label>
         <label><input type="checkbox" id="showlabels" checked /> labels (on top)</label>
+        <label><input type="checkbox" id="shadelabels" checked /> shade labels (lighting)</label>
         <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="0.6" /></label></div>
         <button id="resetview" style="background:#14171b;color:#c8ccd0;border:1px solid #2a2f36;border-radius:4px;padding:5px;cursor:pointer">⌂ reset view</button>
         <h2>overlays</h2>
@@ -77,13 +78,13 @@
   </div>
 
   <!-- ?v cache-buster: bump AV to force-refresh JS/WGSL past stale immutable cache -->
-  <script>window.__AV__ = "3";</script>
-  <script src="js/volume3d.js?v=3"></script>
-  <script src="js/volume3d-view.js?v=3"></script>
-  <script src="js/mat4.js?v=3"></script>
-  <script src="js/volume3d-overlays.js?v=3"></script>
-  <script src="js/volume3d-overlays-gpu.js?v=3"></script>
-  <script src="js/volume3d-gpu.js?v=3"></script>
+  <script>window.__AV__ = "4";</script>
+  <script src="js/volume3d.js?v=4"></script>
+  <script src="js/volume3d-view.js?v=4"></script>
+  <script src="js/mat4.js?v=4"></script>
+  <script src="js/volume3d-overlays.js?v=4"></script>
+  <script src="js/volume3d-overlays-gpu.js?v=4"></script>
+  <script src="js/volume3d-gpu.js?v=4"></script>
   <script>
     (async function () {
       const canvas2d = document.getElementById("stage");
@@ -194,6 +195,7 @@
         document.getElementById("labopacity").addEventListener("input", (e) => vgpu && vgpu.setLabelOpacity(+e.target.value));
         document.getElementById("showlabels").addEventListener("change", (e) => vgpu && vgpu.setShowLabels(e.target.checked));
         document.getElementById("showimage").addEventListener("change", (e) => vgpu && vgpu.setShowImage(e.target.checked));
+        document.getElementById("shadelabels").addEventListener("change", (e) => vgpu && vgpu.setShadeLabels(e.target.checked));
         document.getElementById("resetview").addEventListener("click", () => vgpu && vgpu.resetView());
         for (const [id, name] of [["ov3-axes", "axes"], ["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {
           const el = document.getElementById(id);

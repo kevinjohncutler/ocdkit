@@ -68,8 +68,8 @@ class Harness:
         return tex.create_view()
 
     def render(self, vol_zyx, lab_zyx, mode, *, imgW, imgH, nsteps,
-               density=1.0, label_opacity=0.0, show_labels=0.0, show_image=1.0, iscale=1.0,
-               inv_vp=None, box_min=None, box_max=None):
+               density=1.0, label_opacity=0.0, show_labels=0.0, show_image=1.0,
+               shade_labels=0.0, iscale=1.0, inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
         volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
         labv = self._tex3d(lab_zyx.astype(np.uint8), wgpu.TextureFormat.r8uint, 1)
@@ -84,7 +84,7 @@ class Harness:
         u[24:28] = (*box_max, 0)                  # boxMax
         u[28:32] = (NX, NY, NZ, mode)             # dims + mode
         u[32:36] = (nsteps, density, label_opacity, show_labels)
-        u[36:40] = (iscale, show_image, 0, 0)
+        u[36:40] = (iscale, show_image, shade_labels, 0)
         ubuf = self.dev.create_buffer_with_data(
             data=u, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
 
@@ -200,6 +200,25 @@ def test_image_and_label_layer_toggles(hz):
                                    show_image=0.0, show_labels=1.0, label_opacity=1.0))
     assert np.max(np.abs(lab_only[3:7, 4:8, :3] - want)) < 3e-3
     assert lab_only[0, 0, 3] < 1e-2                               # bg transparent
+
+
+def test_label_shading_varies_over_surface(hz):
+    """shade_labels lights the label surfaces: a label sphere shows brightness
+    variation across its surface when shaded, but is a flat colour when not."""
+    N = 24
+    vol = np.zeros((N, N, N), np.float32)
+    lab = np.zeros((N, N, N), np.uint8)
+    zz, yy, xx = np.mgrid[0:N, 0:N, 0:N]
+    lab[((xx - 12) ** 2 + (yy - 12) ** 2 + (zz - 12) ** 2) < 8 ** 2] = 5
+    kw = dict(imgW=N, imgH=N, nsteps=N, show_image=0.0, show_labels=1.0, label_opacity=1.0)
+    flat = hz.render(vol, lab, 1, shade_labels=0.0, **kw)
+    shad = hz.render(vol, lab, 1, shade_labels=1.0, **kw)
+    fl = flat[..., :3].sum(-1)[flat[..., 3] > 0.5]
+    sl = shad[..., :3].sum(-1)[shad[..., 3] > 0.5]
+    assert fl.size > 30 and sl.size > 30
+    assert fl.std() < 0.02              # unshaded label = uniform colour
+    assert sl.std() > 0.05              # shaded label = varies over the surface
+    assert sl.max() <= fl.max() + 1e-2  # ambient+diffuse never brightens beyond base
 
 
 import json

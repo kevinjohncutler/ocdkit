@@ -84,6 +84,7 @@
       this.labelOpacity = 0.6;
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
+      this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
@@ -228,7 +229,7 @@
       u.set([box.max[0], box.max[1], box.max[2], 0], 24);
       u.set([this.NX, this.NY, this.NZ, this.mode], 28);
       u.set([this.nsteps, this.density, this.labelOpacity, this.showLabels], 32);
-      u.set([1.0, this.showImage, 0, 0], 36);              // iscale, showImage
+      u.set([1.0, this.showImage, this.shadeLabels, 0], 36);   // iscale, showImage, shadeLabels
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -257,6 +258,7 @@
 
     setMode(m) { this.mode = m | 0; this.render(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
+    setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.render(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
     setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
     setDensity(d) { this.density = +d; this.render(); }
