@@ -82,16 +82,17 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   let labelOpacity = u.params.z;
   let showLabels = u.params.w;
   let iscale = u.img.x;
+  let showImage = u.img.y;
   let span = u.boxMax.xyz - u.boxMin.xyz;
 
   let dt = (tfar - tnear) / f32(nsteps);
   var t = tnear + dt * 0.5;
-  var mipVal = 0.0;
-  var mipCol = vec3<f32>(0.0);
-  var sumCol = vec3<f32>(0.0);
-  var sumA = 0.0;
-  var cnt = 0.0;
-  var acc = vec4<f32>(0.0);
+
+  // Two independent layers accumulated along the ray; the label layer is
+  // composited OVER the image layer at the end (labels always on top).
+  var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
+  var labHit = 0.0; var labMipW = -1.0; var labMipCol = vec3<f32>(0.0);
+  var labSum = vec3<f32>(0.0); var labCnt = 0.0; var labAcc = vec4<f32>(0.0);
 
   for (var i = 0; i < nsteps; i = i + 1) {
     let pwld = ro + rd * t;
@@ -100,25 +101,39 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     vc = clamp(vc, vec3<i32>(0), dims - vec3<i32>(1));
     let s = textureLoad(volTex, vc, 0).r * iscale;
     let lab = textureLoad(labTex, vc, 0).r;
-    var col = vec3<f32>(s);
-    if (showLabels > 0.5 && lab > 0u) {
-      col = mix(vec3<f32>(s), labelColor(lab), labelOpacity);
-    }
-    // MIP
-    if (s > mipVal) { mipVal = s; mipCol = col; }
-    // mean
-    sumCol = sumCol + col; sumA = sumA + s; cnt = cnt + 1.0;
-    // additive (emission-absorption, premultiplied "over")
+
+    imgMip = max(imgMip, s);
+    imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
     let a = clamp(s * density, 0.0, 1.0);
-    let om = 1.0 - acc.w;
-    acc = vec4<f32>(acc.rgb + col * a * om, acc.w + a * om);
+    let om = 1.0 - imgAcc.w;
+    imgAcc = vec4<f32>(imgAcc.rgb + vec3<f32>(s) * a * om, imgAcc.w + a * om);
+
+    if (lab > 0u) {
+      let lc = labelColor(lab);
+      labHit = 1.0;
+      let w = select(1.0, s, showImage > 0.5);       // pick brightest label for MIP
+      if (w > labMipW) { labMipW = w; labMipCol = lc; }
+      labSum = labSum + lc; labCnt = labCnt + 1.0;
+      let la = clamp(labelOpacity * density, 0.0, 1.0);
+      let lom = 1.0 - labAcc.w;
+      labAcc = vec4<f32>(labAcc.rgb + lc * la * lom, labAcc.w + la * lom);
+    }
     t = t + dt;
   }
 
-  if (mode == 1) { return vec4<f32>(mipCol, clamp(mipVal, 0.0, 1.0)); }
-  if (mode == 2) {
-    let inv_cnt = 1.0 / max(cnt, 1.0);
-    return vec4<f32>(sumCol * inv_cnt, sumA * inv_cnt);
+  // each layer as premultiplied (colour*alpha, alpha)
+  var imgPC = vec3<f32>(0.0); var imgA = 0.0;
+  if (showImage > 0.5) {
+    if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = vec3<f32>(imgMip); }
+    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = vec3<f32>(m); }
+    else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
-  return acc;  // additive, premultiplied
+  var labPC = vec3<f32>(0.0); var labA = 0.0;
+  if (showLabels > 0.5 && labHit > 0.5) {
+    if (mode == 1) { labA = clamp(labelOpacity, 0.0, 1.0); labPC = labMipCol * labA; }
+    else if (mode == 2) { let lm = labSum / max(labCnt, 1.0); labA = clamp(labelOpacity, 0.0, 1.0); labPC = lm * labA; }
+    else { labPC = labAcc.rgb; labA = labAcc.w; }
+  }
+  // label OVER image (premultiplied)
+  return vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA));
 }

@@ -81,7 +81,8 @@
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
       this.density = opts.density != null ? opts.density : 1.0;
       this.labelOpacity = 0.6;
-      this.showLabels = decoded.mask ? 1.0 : 0.0;
+      this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
+      this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
@@ -153,7 +154,16 @@
         Mat4.quatFromAxisAngle([0, 1, 0], 0.6)));            // initial 3/4 view
       this.fovy = ((opts.fovy != null ? opts.fovy : 45)) * Math.PI / 180;
       this.radius = Math.hypot(this.NX, this.NY, this.NZ * this.zScale) * 1.5;
+      this._home = { orient: this.orient.slice(), radius: this.radius, target: this.target.slice() };
       this._attachInput();
+    }
+
+    /** Reset rotation / pan / zoom to the initial home view. */
+    resetView() {
+      this.orient = this._home.orient.slice();
+      this.radius = this._home.radius;
+      this.target = this._home.target.slice();
+      this.render();
     }
 
     _eye() {
@@ -217,7 +227,7 @@
       u.set([box.max[0], box.max[1], box.max[2], 0], 24);
       u.set([this.NX, this.NY, this.NZ, this.mode], 28);
       u.set([this.nsteps, this.density, this.labelOpacity, this.showLabels], 32);
-      u.set([1.0, 0, 0, 0], 36);
+      u.set([1.0, this.showImage, 0, 0], 36);              // iscale, showImage
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -245,6 +255,7 @@
     }
 
     setMode(m) { this.mode = m | 0; this.render(); }
+    setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
     setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
     setDensity(d) { this.density = +d; this.render(); }

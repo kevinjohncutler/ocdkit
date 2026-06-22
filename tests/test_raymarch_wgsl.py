@@ -68,7 +68,7 @@ class Harness:
         return tex.create_view()
 
     def render(self, vol_zyx, lab_zyx, mode, *, imgW, imgH, nsteps,
-               density=1.0, label_opacity=0.0, show_labels=0.0, iscale=1.0,
+               density=1.0, label_opacity=0.0, show_labels=0.0, show_image=1.0, iscale=1.0,
                inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
         volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
@@ -84,7 +84,7 @@ class Harness:
         u[24:28] = (*box_max, 0)                  # boxMax
         u[28:32] = (NX, NY, NZ, mode)             # dims + mode
         u[32:36] = (nsteps, density, label_opacity, show_labels)
-        u[36:40] = (iscale, 0, 0, 0)
+        u[36:40] = (iscale, show_image, 0, 0)
         ubuf = self.dev.create_buffer_with_data(
             data=u, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
 
@@ -175,6 +175,31 @@ def test_label_coloring_and_blend(hz):
     assert np.min(inside[..., 3]) > 0.99
     # outside: transparent
     assert out[0, 0, 3] < 1e-2
+
+
+def test_image_and_label_layer_toggles(hz):
+    """image-only shows grayscale (no label colour); label-only shows pure label
+    colour (no grayscale); proving the two layers are independent + composited."""
+    NZ, NY, NX = 6, 12, 12
+    vol = np.zeros((NZ, NY, NX), np.float32)
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    L = 7
+    vol[:, 3:7, 4:8] = 1.0
+    lab[:, 3:7, 4:8] = L
+    want = _label_color(L)
+
+    # image only: footprint is grayscale white, NOT the label colour
+    img = np.flipud(hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ,
+                              show_image=1.0, show_labels=0.0))
+    inside = img[3:7, 4:8]
+    assert np.allclose(inside[..., :3], 1.0, atol=3e-3)          # white/gray
+    assert np.max(np.abs(inside[..., :3].mean(0).mean(0) - want)) > 0.1  # not label colour
+
+    # label only: footprint is the label colour, no grayscale; rest transparent
+    lab_only = np.flipud(hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ,
+                                   show_image=0.0, show_labels=1.0, label_opacity=1.0))
+    assert np.max(np.abs(lab_only[3:7, 4:8, :3] - want)) < 3e-3
+    assert lab_only[0, 0, 3] < 1e-2                               # bg transparent
 
 
 import json
