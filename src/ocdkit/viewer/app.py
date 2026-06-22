@@ -123,14 +123,17 @@ class _CachedStaticFiles:
         self._app = StaticFiles(directory=directory)
 
     async def __call__(self, scope, receive, send):
+        # Only files requested with a ?v=<mtime> query are safe to cache
+        # immutably (the index template versions its refs). Un-versioned
+        # requests (e.g. the 3D volume page + its js/wgsl) must revalidate, else
+        # an edit is never picked up without a manual hard-refresh.
+        versioned = b"v=" in scope.get("query_string", b"")
         async def _send_with_cache(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
-                # Don't override an existing Cache-Control if some other layer set one.
                 if not any(k == b"cache-control" for k, _ in headers):
-                    headers.append(
-                        (b"cache-control", b"public, max-age=31536000, immutable")
-                    )
+                    cc = b"public, max-age=31536000, immutable" if versioned else b"no-cache"
+                    headers.append((b"cache-control", cc))
                 message = {**message, "headers": headers}
             await send(message)
 
