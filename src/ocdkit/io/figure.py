@@ -2613,17 +2613,23 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
             { baseHeadroom: (_popupHdrHeadroom() || 4.0) }) });
           _hdrBaseUpgrade = function (rr) {
             let _hiLoaded = false;
+            function apply(data, w, h, isHires) {
+              if (isHires) _hiLoaded = true; else if (_hiLoaded) return;  // disp can't clobber hi-res
+              rr.setBaseRaw(data, w, h); redraw(lastState);
+            }
             function loadRaw(url, isHires, tries) {
               if (!url) return;
+              // INSTANT path: the inline static-HDR controller (or a prior zoom)
+              // already parsed this tile → reuse the bytes, skip the 32 MB re-fetch.
+              const cached = self.__ocdRawTile && self.__ocdRawTile.get(url);
+              if (cached) { apply(cached.data, cached.w, cached.h, isHires); return; }
               fetch(url).then(function (resp) {
                 if (resp.status === 204) return Promise.reject('204');
                 if (!resp.ok) return Promise.reject(resp.status);
                 return resp.arrayBuffer();
               }).then(function (buf) {
-                if (isHires) _hiLoaded = true; else if (_hiLoaded) return;  // disp can't clobber hi-res
                 const hd = new Uint32Array(buf, 0, 2);
-                rr.setBaseRaw(new Uint16Array(buf, 8), hd[0], hd[1]);
-                redraw(lastState);
+                apply(new Uint16Array(buf, 8), hd[0], hd[1], isHires);
               }).catch(function (e) {
                 if (e === '204' && (tries || 0) < 120) setTimeout(function () { loadRaw(url, isHires, (tries || 0) + 1); }, 250);
               });
@@ -6085,6 +6091,14 @@ _STATIC_HDR_CONTROLLER_JS = r"""
           var hdr = new Uint32Array(buf, 0, 2);
           var w = hdr[0], h = hdr[1];
           var data = new Uint16Array(buf, 8);     // float16 payload (bit-for-bit)
+          // Share the parsed raw f16 with the LABEL ZOOM (createLabelViewer/LabelGL
+          // is a separate WebGL2 context that can't share this WebGPU texture). A
+          // tile the inline already loaded then zooms INSTANTLY — no re-fetch of the
+          // 32 MB through the (GIL-starved) in-kernel server, which is what forced
+          // "open three times to get the base". Bounded LRU (keyed by tile URL).
+          var _rc = (self.__ocdRawTile = self.__ocdRawTile || new Map());
+          _rc.set(url, { data: data, w: w, h: h });
+          if (_rc.size > 12) _rc.delete(_rc.keys().next().value);
           var levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
           var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
