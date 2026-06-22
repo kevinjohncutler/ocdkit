@@ -18,12 +18,6 @@
   const Mat4 = (typeof require !== "undefined") ? require("./mat4.js")
                                                 : (typeof window !== "undefined" ? window.Mat4 : globalThis.Mat4);
 
-  const vsub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const vadd = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-  const vscale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
-  const vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-  const vnorm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
-
   function labelUintFormat(maxLabel) {
     if (maxLabel <= 0xff) return ["r8uint", Uint8Array, 1];
     if (maxLabel <= 0xffff) return ["r16uint", Uint16Array, 2];
@@ -75,7 +69,7 @@
         try { self.overlays = await window.OverlayLayer.create(device, self.format, decoded, opts); }
         catch (e) { self.overlays = null; }
       }
-      self._attachInput();
+      await self._initCamera(opts);
       self.render();
       return self;
     }
@@ -90,13 +84,9 @@
       this.showLabels = decoded.mask ? 1.0 : 0.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
-      // Camera = three.js OrbitControls clone: target + spherical(theta azimuth,
-      // phi polar-from-+Y, radius). Left-drag rotate, right-drag pan, wheel dolly.
-      this.target = [0, 0, 0];
-      this.theta = 0.6;
-      this.phi = 1.15;
-      this.fovy = Math.PI / 4;
-      this.radius = Math.hypot(this.NX, this.NY, this.NZ * this.zScale) * 1.4;
+      // Camera + interaction are handled by real three.js OrbitControls (set up
+      // in _initCamera) — we only read its eye/target/up/fov to build the WGSL
+      // matrices. No hand-rolled orbit math.
       this.uniform = device_buf(this.device, 40 * 4);
     }
 
@@ -154,21 +144,33 @@
                diag: Math.hypot(sx, sy, sz) };
     }
 
-    _eye() {                                  // spherical -> world (OrbitControls)
-      const sp = this.radius * Math.sin(this.phi);
-      return [
-        this.target[0] + sp * Math.sin(this.theta),
-        this.target[1] + this.radius * Math.cos(this.phi),
-        this.target[2] + sp * Math.cos(this.theta),
-      ];
+    // three.js OrbitControls drives the camera; rebuild the WGSL matrices from it.
+    async _initCamera(opts) {
+      const THREE = await import("three");
+      const { OrbitControls } = await import(opts.orbitUrl || "/static/js/vendor/OrbitControls.js");
+      const diag = Math.hypot(this.NX, this.NY, this.NZ * this.zScale);
+      const aspect = (this.canvas.clientWidth || this.canvas.width) /
+                     (this.canvas.clientHeight || this.canvas.height || 1);
+      const cam = new THREE.PerspectiveCamera(45, aspect, Math.max(0.01, diag * 0.02), diag * 16);
+      const r = diag * 1.5;
+      cam.position.set(r * 0.55, r * 0.5, r * 0.7);
+      cam.up.set(0, 1, 0);
+      const controls = new OrbitControls(cam, this.canvas);
+      controls.target.set(0, 0, 0);
+      controls.enableDamping = false;
+      controls.update();
+      controls.addEventListener("change", () => this.render());
+      this.threeCam = cam; this.controls = controls;
     }
 
     _camera() {
-      const diag = Math.hypot(this.NX, this.NY, this.NZ * this.zScale);
-      const eye = this._eye();
-      const view = Mat4.lookAt(eye, this.target, [0, 1, 0]);
-      const proj = Mat4.perspective(this.fovy, this.canvas.width / Math.max(1, this.canvas.height),
-        Math.max(0.01, this.radius - diag), this.radius + diag);
+      const cam = this.threeCam, t = this.controls.target;
+      const eye = [cam.position.x, cam.position.y, cam.position.z];
+      const target = [t.x, t.y, t.z];
+      const up = [cam.up.x, cam.up.y, cam.up.z];
+      const aspect = this.canvas.width / Math.max(1, this.canvas.height);
+      const view = Mat4.lookAt(eye, target, up);
+      const proj = Mat4.perspective(cam.fov * Math.PI / 180, aspect, cam.near, cam.far);
       const viewProj = Mat4.multiply(proj, view);
       return { eye, viewProj, invViewProj: Mat4.invert(viewProj) };
     }
@@ -217,50 +219,11 @@
     setShowLabels(on) { this.showLabels = on ? 1 : 0; this.render(); }
     setZScale(z) { this.zScale = +z; this.render(); }
 
-    // Pan the target in the camera's screen plane (OrbitControls panLeft/panUp).
-    _pan(dx, dy) {
-      const H = this.canvas.clientHeight || this.canvas.height || 1;
-      const eye = this._eye();
-      const fwd = vnorm(vsub(this.target, eye));
-      const right = vnorm(vcross(fwd, [0, 1, 0]));
-      const up = vcross(right, fwd);
-      const td = this.radius * Math.tan(this.fovy / 2);     // world units per half-height
-      const px = (2 * dx * td) / H, py = (2 * dy * td) / H;
-      this.target = vadd(vadd(this.target, vscale(right, -px)), vscale(up, py));
+    destroy() {
+      try { this.controls && this.controls.dispose(); } catch (_) {}
+      try { this.ctx.unconfigure(); } catch (_) {}
+      try { this.device.destroy(); } catch (_) {}
     }
-
-    _attachInput() {
-      const c = this.canvas; const self = this;
-      let drag = 0, lx = 0, ly = 0;  // drag: 0 none, 1 rotate, 2 pan
-      c.addEventListener("contextmenu", (e) => e.preventDefault());
-      c.addEventListener("pointerdown", (e) => {
-        // left = rotate; right/middle or shift+left = pan (OrbitControls mapping)
-        drag = (e.button === 2 || e.button === 1 || e.shiftKey) ? 2 : 1;
-        lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
-      });
-      c.addEventListener("pointerup", (e) => { drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
-      c.addEventListener("pointermove", (e) => {
-        if (!drag) return;
-        const dx = e.clientX - lx, dy = e.clientY - ly;
-        const H = c.clientHeight || c.height || 1;
-        if (drag === 1) {                                    // OrbitControls rotate
-          self.theta -= (2 * Math.PI * dx) / H;
-          const EPS = 1e-4;
-          self.phi = Math.max(EPS, Math.min(Math.PI - EPS, self.phi - (2 * Math.PI * dy) / H));
-        } else {                                             // pan
-          self._pan(dx, dy);
-        }
-        lx = e.clientX; ly = e.clientY; self.render();
-      });
-      c.addEventListener("wheel", (e) => {
-        e.preventDefault();
-        const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
-        self.radius = Math.max(diag * 0.2, Math.min(diag * 8, self.radius * (e.deltaY > 0 ? 1 / 0.95 : 0.95)));
-        self.render();
-      }, { passive: false });
-    }
-
-    destroy() { try { this.ctx.unconfigure(); } catch (_) {} try { this.device.destroy(); } catch (_) {} }
   }
 
   function device_buf(device, size) {
