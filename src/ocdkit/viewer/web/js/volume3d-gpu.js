@@ -85,10 +85,11 @@
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
+      this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 0.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
-      this.uniform = device_buf(this.device, 40 * 4);
+      this.uniform = device_buf(this.device, 44 * 4);
     }
 
     _uploadTextures(decoded) {
@@ -222,7 +223,7 @@
 
     _writeUniform(cam) {
       const box = this._box();
-      const u = new Float32Array(40);
+      const u = new Float32Array(44);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([box.min[0], box.min[1], box.min[2], 0], 20);
@@ -230,6 +231,7 @@
       u.set([this.NX, this.NY, this.NZ, this.mode], 28);
       u.set([this.nsteps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, 0], 36);   // iscale, showImage, shadeLabels
+      u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -259,6 +261,10 @@
     setMode(m) { this.mode = m | 0; this.render(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.render(); }
+    setAmbient(a) { this.ambient = +a; this.render(); }
+    setSpecular(s) { this.specular = +s; this.render(); }
+    setShininess(s) { this.shininess = +s; this.render(); }
+    setHeadlight(on) { this.headlight = on ? 1 : 0; this.render(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
     setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
     setDensity(d) { this.density = +d; this.render(); }

@@ -20,7 +20,8 @@ struct U {
   boxMax      : vec4<f32>,
   dims        : vec4<f32>,   // NX, NY, NZ, mode
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
-  img         : vec4<f32>,   // intensityScale, _, _, _
+  img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, _
+  light       : vec4<f32>,   // ambient, specular, shininess, headlight
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -102,8 +103,13 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   let iscale = u.img.x;
   let showImage = u.img.y;
   let shadeLabels = u.img.z;
+  let ambient = u.light.x;
+  let specular = u.light.y;
+  let shininess = max(u.light.z, 1.0);
+  let headlight = u.light.w;
   let span = u.boxMax.xyz - u.boxMin.xyz;
-  let lightDir = normalize(vec3<f32>(0.4, 0.7, 0.6));   // fixed world light
+  // headlight follows the camera (-rd); otherwise a fixed world light
+  let lightDir = select(normalize(vec3<f32>(0.4, 0.7, 0.6)), -rd, headlight > 0.5);
 
   let dt = (tfar - tnear) / f32(nsteps);
   var t = tnear + dt * 0.5;
@@ -133,7 +139,12 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       if (shadeLabels > 0.5) {
         let nrm = labelNormal(vc, lab, dims);
         if (dot(nrm, nrm) > 0.25) {                      // shade only at surfaces
-          lc = lc * (0.4 + 0.6 * max(dot(nrm, lightDir), 0.0));   // ambient + diffuse
+          let diff = max(dot(nrm, lightDir), 0.0);
+          lc = lc * (ambient + (1.0 - ambient) * diff);  // ambient + diffuse
+          if (specular > 0.0) {                          // Blinn-Phong highlight
+            let h = normalize(lightDir - rd);            // viewDir = -rd
+            lc = lc + vec3<f32>(specular * pow(max(dot(nrm, h), 0.0), shininess));
+          }
         }
       }
       labHit = 1.0;

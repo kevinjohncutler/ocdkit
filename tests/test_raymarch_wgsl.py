@@ -69,7 +69,8 @@ class Harness:
 
     def render(self, vol_zyx, lab_zyx, mode, *, imgW, imgH, nsteps,
                density=1.0, label_opacity=0.0, show_labels=0.0, show_image=1.0,
-               shade_labels=0.0, iscale=1.0, inv_vp=None, box_min=None, box_max=None):
+               shade_labels=0.0, ambient=0.4, specular=0.0, shininess=24.0, headlight=0.0,
+               iscale=1.0, inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
         volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
         labv = self._tex3d(lab_zyx.astype(np.uint8), wgpu.TextureFormat.r8uint, 1)
@@ -77,7 +78,7 @@ class Harness:
             inv_vp = _ortho_inv_vp(NX, NY, NZ)       # axis-aligned ortho (exact)
             box_min = (0, 0, 0); box_max = (NX, NY, NZ)
 
-        u = np.zeros(40, np.float32)
+        u = np.zeros(44, np.float32)
         u[0:16] = np.asarray(inv_vp, np.float32)
         u[16:20] = (0, 0, -1000, 1)              # camPos (unused by ray reconstruction)
         u[20:24] = (*box_min, 0)                  # boxMin
@@ -85,6 +86,7 @@ class Harness:
         u[28:32] = (NX, NY, NZ, mode)             # dims + mode
         u[32:36] = (nsteps, density, label_opacity, show_labels)
         u[36:40] = (iscale, show_image, shade_labels, 0)
+        u[40:44] = (ambient, specular, shininess, headlight)
         ubuf = self.dev.create_buffer_with_data(
             data=u, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
 
@@ -219,6 +221,25 @@ def test_label_shading_varies_over_surface(hz):
     assert fl.std() < 0.02              # unshaded label = uniform colour
     assert sl.std() > 0.05              # shaded label = varies over the surface
     assert sl.max() <= fl.max() + 1e-2  # ambient+diffuse never brightens beyond base
+
+
+def test_label_specular_and_ambient_params(hz):
+    """specular adds a highlight brighter than diffuse-only; ambient sets the
+    dark-side floor (lower ambient -> darker minimum)."""
+    N = 24
+    vol = np.zeros((N, N, N), np.float32)
+    lab = np.zeros((N, N, N), np.uint8)
+    zz, yy, xx = np.mgrid[0:N, 0:N, 0:N]
+    lab[((xx - 12) ** 2 + (yy - 12) ** 2 + (zz - 12) ** 2) < 8 ** 2] = 5
+    kw = dict(imgW=N, imgH=N, nsteps=N, show_image=0.0, show_labels=1.0,
+              label_opacity=1.0, shade_labels=1.0)
+    lum = lambda im: im[..., :3].sum(-1)[im[..., 3] > 0.5]
+    diffuse = lum(hz.render(vol, lab, 1, ambient=0.4, specular=0.0, **kw))
+    spec = lum(hz.render(vol, lab, 1, ambient=0.4, specular=0.9, shininess=24.0, **kw))
+    lo_amb = lum(hz.render(vol, lab, 1, ambient=0.1, specular=0.0, **kw))
+    hi_amb = lum(hz.render(vol, lab, 1, ambient=0.9, specular=0.0, **kw))
+    assert spec.max() > diffuse.max() + 0.1     # highlight pops above diffuse
+    assert lo_amb.min() < hi_amb.min() - 0.1    # ambient controls the dark floor
 
 
 import json
