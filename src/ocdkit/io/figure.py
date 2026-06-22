@@ -3288,6 +3288,15 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           if (upgraded || fetching) return;
           fetching = true;
           const probe = new Image();
+          // crossOrigin so the browser caches a CORS-readable response. A no-cors
+          // <img> load caches an OPAQUE entry; the static-HDR controller's fetch()
+          // and LabelGL's crossOrigin='anonymous' base <img> then reuse that opaque
+          // entry and CORS-FAIL (black base) whenever the page isn't same-origin
+          // with the kernel tile server (VS Code webview, standalone viewer, etc.).
+          // The server sends access-control-allow-origin:* so anonymous is safe;
+          // same-origin/data: URLs ignore it. Raw cells never hit this (their <img>
+          // probe errors on raw bytes, so it never poisons the cache).
+          probe.crossOrigin = 'anonymous';
           probe.draggable = false;
           probe.addEventListener('load', () => {
             upgraded = true; fetching = false;
@@ -5940,16 +5949,26 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       vertex: { module: _blitMod, entryPoint: 'vs' },
       fragment: { module: _blitMod, entryPoint: 'fs', targets: [{ format: 'rgba16float' }] },
       primitive: { topology: 'triangle-list' } });
-    function _genMips(t, w, h, levels) {
+    // sRGB-OETF PNG bases (label tiles) live in an rgba8unorm texture — matching
+    // the original controller. copyExternalImageToTexture into rgba16float
+    // LINEARIZES the sRGB source, which the shader's eotf then double-darkens
+    // (= the "not HDR" label base). rgba8unorm keeps the raw OETF bytes; the
+    // shader's eotf restores linear-light. Its mips need an rgba8unorm target.
+    var _blitPipe8 = device.createRenderPipeline({ layout: 'auto',
+      vertex: { module: _blitMod, entryPoint: 'vs' },
+      fragment: { module: _blitMod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
+      primitive: { topology: 'triangle-list' } });
+    function _genMips(t, w, h, levels, blitPipe) {
+      blitPipe = blitPipe || _blitPipe;
       var enc = device.createCommandEncoder();
       for (var lvl = 1; lvl < levels; lvl++) {
         var src = t.createView({ baseMipLevel: lvl - 1, mipLevelCount: 1 });
         var dst = t.createView({ baseMipLevel: lvl, mipLevelCount: 1 });
-        var bbg = device.createBindGroup({ layout: _blitPipe.getBindGroupLayout(0), entries: [
+        var bbg = device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0), entries: [
           { binding: 0, resource: src }, { binding: 1, resource: _blitSampler } ] });
         var rp = enc.beginRenderPass({ colorAttachments: [{ view: dst,
           loadOp: 'clear', clearValue: { r:0,g:0,b:0,a:0 }, storeOp: 'store' }] });
-        rp.setPipeline(_blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
+        rp.setPipeline(blitPipe); rp.setBindGroup(0, bbg); rp.draw(3); rp.end();
       }
       device.queue.submit([enc.finish()]);
     }
@@ -6070,11 +6089,13 @@ _STATIC_HDR_CONTROLLER_JS = r"""
               { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }).then(function (bmp) {
             var w = bmp.width, h = bmp.height;
             levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
-            var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
+            // rgba8unorm (NOT rgba16float): keeps the raw sRGB-OETF bytes so the
+            // shader's eotf restores linear-light. mips via the rgba8unorm blit.
+            var tex = device.createTexture({ size: [w, h], format: 'rgba8unorm', mipLevelCount: levels,
               usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
             device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
             try { bmp.close(); } catch (e) {}
-            if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
+            if (_blitPipe8 && levels > 1) { try { _genMips(tex, w, h, levels, _blitPipe8); } catch (e) {} }
             return { tex: tex, w: w, h: h, linear: 0 };
           });
         });
