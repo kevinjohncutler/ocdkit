@@ -59,9 +59,18 @@ main viewer app (the `/` page driven by `app.js`).
   per-slice overlays + painting) ~3–5 d, OR embed `volume3d-view.js` ~1–2 d.
 - **D — Polish** (~2–3 d): persist camera/slice/render settings in viewer state;
   volume-aware file navigator (next/prev volume); status/HUD.
-- **E — Later**: in-app 3D segmentation (fix the `ops.divergence` 3D batch-axis bug
-  that breaks `affinity_seg` in 3D — affinity.py:179 → ocdkit/array/ops.py:43),
-  cross-slice painting, saving 3D masks.
+- **E — Later**: cross-slice painting, saving 3D masks.
+
+## Native 3D segmentation — FIXED (not divergence)
+3D `affinity_seg` crashed for two reasons, both in `omnipose/core/masks.py` (not
+`divergence`, whose batched-torch contract is correct and shared with `loss.py`):
+1. `_get_affinity_torch` is batched-design (`(B,D,*spatial)` → `(S,B,*DIMS)`, with a
+   downstream `.squeeze()` that drops B), but `masks.py` called it with **unbatched**
+   inputs. Fix: add `[None]` (B=1) at the call site.
+2. `flow_error` (flow-QC) called `masks_to_flows_batch` without `dim`, defaulting to
+   `dim=2` on 3D data. Fix: pass `dim=maski.ndim`.
+Verified end-to-end on synthetic + the real spacetime crop (2D + 3D). These edits
+live in the WIP `masks.py` (uncommitted), to be committed with the core refactor.
 
 ## Risks
 - app.js is 11k lines — embedding must keep the 2D path byte-identical; 3D is an
