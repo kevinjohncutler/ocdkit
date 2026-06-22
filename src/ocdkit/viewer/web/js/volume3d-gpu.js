@@ -46,7 +46,8 @@
         ctx.configure({ device, format: self.format, alphaMode: "premultiplied" });
       }
 
-      const wgsl = await (await fetch(opts.shaderUrl || "js/raymarch.wgsl")).text();
+      const _v = (typeof window !== "undefined" && window.__AV__) ? ("?v=" + window.__AV__) : "";
+      const wgsl = await (await fetch((opts.shaderUrl || "js/raymarch.wgsl") + _v)).text();
       const mod = device.createShaderModule({ code: wgsl });
       self.bgl = device.createBindGroupLayout({
         entries: [

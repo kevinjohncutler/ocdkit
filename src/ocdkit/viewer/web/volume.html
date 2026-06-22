@@ -76,12 +76,14 @@
     <canvas id="stage3d" class="stage hidden" width="640" height="640"></canvas>
   </div>
 
-  <script src="js/volume3d.js"></script>
-  <script src="js/volume3d-view.js"></script>
-  <script src="js/mat4.js"></script>
-  <script src="js/volume3d-overlays.js"></script>
-  <script src="js/volume3d-overlays-gpu.js"></script>
-  <script src="js/volume3d-gpu.js"></script>
+  <!-- ?v cache-buster: bump AV to force-refresh JS/WGSL past stale immutable cache -->
+  <script>window.__AV__ = "3";</script>
+  <script src="js/volume3d.js?v=3"></script>
+  <script src="js/volume3d-view.js?v=3"></script>
+  <script src="js/mat4.js?v=3"></script>
+  <script src="js/volume3d-overlays.js?v=3"></script>
+  <script src="js/volume3d-overlays-gpu.js?v=3"></script>
+  <script src="js/volume3d-gpu.js?v=3"></script>
   <script>
     (async function () {
       const canvas2d = document.getElementById("stage");

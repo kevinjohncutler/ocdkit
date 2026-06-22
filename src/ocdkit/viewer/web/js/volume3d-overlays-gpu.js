@@ -16,7 +16,8 @@
   class OverlayLayer {
     static async create(device, format, decoded, opts = {}) {
       if (!VO) return null;
-      const wgsl = await (await fetch(opts.shaderUrl || "js/overlay.wgsl")).text();
+      const _v = (typeof window !== "undefined" && window.__AV__) ? ("?v=" + window.__AV__) : "";
+      const wgsl = await (await fetch((opts.shaderUrl || "js/overlay.wgsl") + _v)).text();
       const mod = device.createShaderModule({ code: wgsl });
       const bgl = device.createBindGroupLayout({
         entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }],
