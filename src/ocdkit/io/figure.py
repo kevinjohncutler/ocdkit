@@ -3321,7 +3321,19 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // remote pages: resolve the baked-loopback hi-res URL to the Jupyter proxy
       // (so the hover-prefetch / auto-upgrade swap works off-machine too)
       if (hiresHref && window.__ocdResolveTileUrl) hiresHref = window.__ocdResolveTileUrl(hiresHref);
-      if (hiresHref) {
+      // RAW / data-hdr cells are rendered by the static-HDR controller (a canvas),
+      // not the inline <image>, and the label zoom now pulls the base via
+      // setBaseRaw — so NOTHING reads the swapped <image> href. Worse, a raw
+      // octet-stream tile can't be loaded by an <img> probe at all, so this
+      // prefetch would error and retry ~50×, hammering the (GIL-starved) in-kernel
+      // tile server with 50× redundant FULL-SIZE (32 MB) fetches per tile — the
+      // reproduced cause of the server cutting responses mid-stream
+      // (ERR_INCOMPLETE_CHUNKED_ENCODING → figures stuck on the 4× disp). The
+      // controller owns the upgrade + cache for these; only prefetch plain tiles.
+      const _ctrlOwned = !!(tile.getAttribute('data-raw-disp-href')
+                            || (tile.querySelector && (tile.querySelector('image[data-hdr="1"]')
+                                || tile.querySelector('canvas[data-label-tile]'))));
+      if (hiresHref && !_ctrlOwned) {
         const autoUpgrade = (tile.getAttribute('data-auto-upgrade') === '1');
         let upgraded = false, fetching = false;
         const prefetch = (attempt) => {
