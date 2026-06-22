@@ -5223,20 +5223,30 @@ _LABEL_CONTROLLER_JS = r"""
     var cfg = self.LabelGL.decodeAttrs(cv);  // shared decode (also used by popup)
     cv.__labelCfg = cfg;                      // popup reuses this config
     var w = cfg.w, h = cfg.h;
-    cv.width = w; cv.height = h;              // native label resolution
     var gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
     if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
     // HDR: float16 extended-range backbuffer so a >1.0 outline/highlight color
-    // (outline_hdr / highlight boost) emits TRUE HDR instead of clamping to
-    // SDR white. Needs EXT_color_buffer_float; allocate AFTER cv.width/height
-    // (set above) since setting them would reset it. SDR 8-bit fallback.
-    if (gl.drawingBufferStorage) {
-      try {
-        gl.getExtension('EXT_color_buffer_float');
-        gl.drawingBufferColorSpace = 'display-p3';
-        gl.drawingBufferStorage(gl.RGBA16F, w, h);
-      } catch (e) {}
+    // emits TRUE HDR instead of clamping to SDR white. Needs EXT_color_buffer_float.
+    var _hdrBuf = !!gl.drawingBufferStorage;
+    if (_hdrBuf) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
+    // Render at DISPLAY resolution (capped at the native matrix), NOT the full
+    // 2000² matrix. The shader detects the outline at the canvas's own pixels, so a
+    // display-res canvas makes ``dFdx`` = 1 DISPLAY pixel → the contour stays crisp
+    // and gap-free on a small tile (it was a 1-matrix-px line that the CSS downscale
+    // then speckled — the whole reason the outline only looked right in the zoom).
+    // Bonus: ~10x smaller backbuffer per tile (eases the WebGL-context budget). The
+    // RGBA16F HDR store must be (re)allocated AFTER cv.width/height (they reset it).
+    function sizeCanvas() {
+      var dpr = window.devicePixelRatio || 1;
+      var rect = cv.getBoundingClientRect();
+      var dw = Math.min(w, Math.max(1, Math.round((rect.width || w) * dpr)));
+      var dh = Math.min(h, Math.max(1, Math.round((rect.height || h) * dpr)));
+      if (cv.width !== dw || cv.height !== dh) {
+        cv.width = dw; cv.height = dh;
+        if (_hdrBuf) { try { gl.drawingBufferStorage(gl.RGBA16F, dw, dh); } catch (e) {} }
+      }
     }
+    sizeCanvas();
     // Streamed matrices (large tiles ship the label/instance arrays as
     // tileserve attachments, not inline base64, to keep the SVG small): fetch
     // them before building. Inline tiles resolve synchronously (no-op).
@@ -5245,7 +5255,8 @@ _LABEL_CONTROLLER_JS = r"""
     try { r = self.LabelGL.buildRenderer(gl, cfg, function () { render(); }); }
     catch (e) { console.warn('LabelGL:', e); return; }
     function render() {
-      gl.viewport(0, 0, w, h);
+      sizeCanvas();                              // track display size (responsive / dpr)
+      gl.viewport(0, 0, cv.width, cv.height);
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       r.draw(self.LabelGL.ortho());
     }

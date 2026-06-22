@@ -307,15 +307,13 @@ def image_grid(
                     # >1 emits HDR-bright on an extended-range canvas; clamps
                     # to a brighter edge on SDR. Set 1.0 to disable.
                     'outline_hdr': float(it.get('outline_hdr', 1.8)),
-                    # Uniform contour color (matplotlib color spec or hex).
-                    # An outline-only overlay reads best as a single bright
-                    # color — a per-cell sinebow washes out over an image —
-                    # so ``style='outline'`` defaults to red. Other styles
-                    # keep per-cell palette outlines (None). Pass any color
-                    # (e.g. 'cyan', '#00ff88', (1,0,0)) to override.
-                    'outline_color': it.get(
-                        'outline_color',
-                        'red' if it.get('style', 'both') == 'outline' else None),
+                    # Uniform contour color (matplotlib color spec or hex), or
+                    # None = per-cell palette color. None is the DEFAULT for every
+                    # style (incl. ``style='outline'``): the perimeter inherits each
+                    # cell's own color so two TOUCHING cells show distinct-coloured
+                    # boundaries instead of merging into one red line. Pass a color
+                    # (e.g. 'red', 'cyan', '#00ff88', (1,0,0)) to force a uniform contour.
+                    'outline_color': it.get('outline_color', None),
                     # Whether a base image rides BEHIND the (transparent) GPU
                     # label canvas as a normal raster tile (see below).
                     'has_base': it.get('image') is not None,
