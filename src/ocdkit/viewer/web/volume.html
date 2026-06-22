@@ -61,11 +61,10 @@
         <label><input type="checkbox" id="showimage" checked /> image (intensity)</label>
         <label><input type="checkbox" id="showlabels" checked /> labels (on top)</label>
         <label><input type="checkbox" id="shadelabels" checked /> shade labels (lighting)</label>
+        <label><input type="checkbox" id="headlight" checked /> headlight (follows camera)</label>
         <div class="row"><label>ambient <input type="range" id="ambient" min="0" max="1" step="0.05" value="0.4" /></label></div>
         <div class="row"><label>specular <input type="range" id="specular" min="0" max="1" step="0.05" value="0" /></label></div>
-        <div class="row"><label>shininess <input type="range" id="shininess" min="1" max="128" step="1" value="24" /></label></div>
-        <label><input type="checkbox" id="headlight" /> headlight (follows camera)</label>
-        <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="0.6" /></label></div>
+        <div class="row"><label>label opacity <input type="range" id="labopacity" min="0" max="1" step="0.05" value="1" /></label></div>
         <button id="resetview" style="background:#14171b;color:#c8ccd0;border:1px solid #2a2f36;border-radius:4px;padding:5px;cursor:pointer">⌂ reset view</button>
         <h2>overlays</h2>
         <label><input type="checkbox" id="ov3-axes" checked /> axes (X=red Y=green Z=blue)</label>
@@ -82,13 +81,13 @@
   </div>
 
   <!-- ?v cache-buster: bump AV to force-refresh JS/WGSL past stale immutable cache -->
-  <script>window.__AV__ = "5";</script>
-  <script src="js/volume3d.js?v=5"></script>
-  <script src="js/volume3d-view.js?v=5"></script>
-  <script src="js/mat4.js?v=5"></script>
-  <script src="js/volume3d-overlays.js?v=5"></script>
-  <script src="js/volume3d-overlays-gpu.js?v=5"></script>
-  <script src="js/volume3d-gpu.js?v=5"></script>
+  <script>window.__AV__ = "6";</script>
+  <script src="js/volume3d.js?v=6"></script>
+  <script src="js/volume3d-view.js?v=6"></script>
+  <script src="js/mat4.js?v=6"></script>
+  <script src="js/volume3d-overlays.js?v=6"></script>
+  <script src="js/volume3d-overlays-gpu.js?v=6"></script>
+  <script src="js/volume3d-gpu.js?v=6"></script>
   <script>
     (async function () {
       const canvas2d = document.getElementById("stage");
@@ -202,7 +201,6 @@
         document.getElementById("shadelabels").addEventListener("change", (e) => vgpu && vgpu.setShadeLabels(e.target.checked));
         document.getElementById("ambient").addEventListener("input", (e) => vgpu && vgpu.setAmbient(+e.target.value));
         document.getElementById("specular").addEventListener("input", (e) => vgpu && vgpu.setSpecular(+e.target.value));
-        document.getElementById("shininess").addEventListener("input", (e) => vgpu && vgpu.setShininess(+e.target.value));
         document.getElementById("headlight").addEventListener("change", (e) => vgpu && vgpu.setHeadlight(e.target.checked));
         document.getElementById("resetview").addEventListener("click", () => vgpu && vgpu.resetView());
         for (const [id, name] of [["ov3-axes", "axes"], ["ov3-trajectories", "trajectories"], ["ov3-points", "points"], ["ov3-flow", "flow"], ["ov3-affinity", "affinity"]]) {

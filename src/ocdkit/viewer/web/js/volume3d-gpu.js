@@ -81,11 +81,11 @@
       this.decoded = decoded;
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
       this.density = opts.density != null ? opts.density : 1.0;
-      this.labelOpacity = 0.6;
+      this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
-      this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 0.0;
+      this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
