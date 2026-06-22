@@ -2631,7 +2631,11 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
                 const hd = new Uint32Array(buf, 0, 2);
                 apply(new Uint16Array(buf, 8), hd[0], hd[1], isHires);
               }).catch(function (e) {
-                if (e === '204' && (tries || 0) < 120) setTimeout(function () { loadRaw(url, isHires, (tries || 0) + 1); }, 250);
+                // Retry on 204 AND transient transport failures (incomplete chunked
+                // / Failed to fetch from the GIL-starved server during heavy compute);
+                // only a real 4xx is fatal. Outlasts a long Run-All.
+                var fatal = (typeof e === 'number' && e >= 400 && e < 500);
+                if (!fatal && (tries || 0) < 600) setTimeout(function () { loadRaw(url, isHires, (tries || 0) + 1); }, Math.min(250 + (tries || 0) * 30, 2000));
               });
             }
             loadRaw(_rsv(rawDisp), false, 0);    // instant decimated first paint
@@ -6117,7 +6121,14 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       return _decode(c._hiresUrl).then(function (e) {
         _texCache.set(key, e); c._hiresDone = true; _bindTex(c, e, true);
       }).catch(function (err) {
-        if (err === '204' && (tries || 0) < 400) setTimeout(function () { _showHires(c, (tries || 0) + 1); }, 200);
+        // Retry on 204 (not-ready yet) AND transient TRANSPORT failures. Under
+        // heavy kernel compute the GIL-starved in-kernel server / jupyter proxy
+        // cuts the response mid-stream (ERR_INCOMPLETE_CHUNKED_ENCODING → a
+        // TypeError here, NOT a 204); the old 204-only check made the tile give up
+        // and strand low-res. Only a real 4xx is fatal. Generous budget + backoff
+        // so it outlasts a long Run-All.
+        var fatal = (typeof err === 'number' && err >= 400 && err < 500);
+        if (!fatal && (tries || 0) < 600) setTimeout(function () { _showHires(c, (tries || 0) + 1); }, Math.min(200 + (tries || 0) * 30, 2000));
         // else: give up (no raw hi-res) — loadTex restores the native <image>
       });
     }
@@ -6140,8 +6151,13 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'));
       _showHires(c).catch(function () {});
       if (disp) {
-        _decode(_resolve(disp)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
-          .catch(function () {});
+        (function loadDisp(tries) {
+          _decode(_resolve(disp)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
+            .catch(function (err) {   // retry transient transport failures (see _showHires)
+              var fatal = (typeof err === 'number' && err >= 400 && err < 500);
+              if (!fatal && !c._hiresDone && (tries || 0) < 400) setTimeout(function () { loadDisp((tries || 0) + 1); }, Math.min(200 + (tries || 0) * 30, 2000));
+            });
+        })(0);
       }
     }
 
