@@ -567,8 +567,19 @@ def image_grid(
         from ..tileserve.server import ensure_server, register_pending, attach
         _tsattach = attach
 
-        def _hires_source(it, fmt, is_hdr=False):
+        def _hires_source(it, fmt, is_hdr=False, is_label_base=False):
             if fmt == 'png' and is_hdr:
+                if is_label_base:
+                    # A label tile's HDR base (e.g. a max projection under the
+                    # outlines) is ALSO drawn by the label ZOOM (createLabelViewer),
+                    # whose base layer loads an <image> URL and CANNOT consume raw
+                    # f16 — so a raw base strands the zoom on the low-res thumb.
+                    # Keep this base a PNG: the hover-prefetch's <img> swaps the
+                    # <image> href to the hi-res (the zoom then loads it, exactly as
+                    # before the raw switch), and the static-HDR controller's
+                    # dual-format _decode renders the same PNG inline. Standalone
+                    # data-hdr cells stay raw (the win is unaffected).
+                    return _LazyHdrHires(it)
                 # data-hdr cell — unified SCENE or raw float ARRAY. Ship the linear
                 # float as RAW float16 straight to the GPU (no image codec): the
                 # static-HDR controller does writeTexture into rgba16float and the
@@ -627,7 +638,8 @@ def image_grid(
             except Exception:
                 pass   # encode/attach failed → controllers keep the thumb
         for i, it in enumerate(items):
-            src = _hires_source(it, cell_fmts[i], cell_hdr[i])
+            src = _hires_source(it, cell_fmts[i], cell_hdr[i],
+                                label_tiles[i] is not None)
             if src is None:
                 hires_urls.append(None)
                 raw_disp_urls.append(None)

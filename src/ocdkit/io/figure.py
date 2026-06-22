@@ -5886,8 +5886,11 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     + "fn eotf(c: f32) -> f32 { if (c <= 0.04045) { return c/12.92; } return pow((c+0.055)/1.055, 2.4); }\n"
     + "fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*x; } return 1.055*pow(x,1.0/2.4)-0.055; }\n"
     + "@fragment fn fs(in: VO) -> @location(0) vec4f {\n"
-    + "  // raw-f16 texture is ALREADY linear-light (no eotf): just boost + oetf.\n"
-    + "  let lin = textureSample(t, sm, in.uv).rgb * u.p.x;\n"
+    + "  let s = textureSample(t, sm, in.uv).rgb;\n"
+    + "  // u.p.y != 0 -> raw f16 tile, ALREADY linear-light (skip eotf). Else an\n"
+    + "  // sRGB-OETF PNG (a label-tile HDR base kept as an image for the label zoom)\n"
+    + "  // -> linearize first. Then boost (u.p.x) + re-encode.\n"
+    + "  let lin = select(vec3f(eotf(s.r), eotf(s.g), eotf(s.b)), s, u.p.y != 0.0) * u.p.x;\n"
     + "  return vec4f(oetf(lin.r), oetf(lin.g), oetf(lin.b), 1.0); }\n";
 
   function detectHeadroom() {
@@ -5982,7 +5985,8 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       // Content headroom (c.hr) when known — matches the native-uhdr glow; the
       // global N (detected/4.0) is only a fallback. SDR toggle forces 1.0.
       var _Nc = _sdr ? 1.0 : (c.hr || N);
-      device.queue.writeBuffer(c.ubuf, 0, new Float32Array([_Nc, 0, 0, 0]));
+      // p.y = isLinear: 1 for a raw-f16 (linear) tile, 0 for an sRGB-OETF PNG base.
+      device.queue.writeBuffer(c.ubuf, 0, new Float32Array([_Nc, (c._isLinear == null ? 1 : c._isLinear), 0, 0]));
       var enc = device.createCommandEncoder();
       var pass = enc.beginRenderPass({ colorAttachments: [{
         view: c.ctx.getCurrentTexture().createView(),
@@ -6014,6 +6018,7 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     }
     function _bindTex(c, e, isHires) {   // atomically swap a decoded {tex,w} into the cell + redraw
       c._texW = e.w;
+      c._isLinear = (e.linear == null ? 1 : e.linear);   // raw f16 = linear; PNG base = sRGB-OETF
       c.bg = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [
         { binding: 0, resource: e.tex.createView() },
         { binding: 1, resource: sampler },
@@ -6032,26 +6037,46 @@ _STATIC_HDR_CONTROLLER_JS = r"""
     // the browser's area-mean/Lanczos downscale). RENDER_ATTACHMENT is REQUIRED by
     // copyExternalImageToTexture (it blits internally) — without it the upload
     // fails and the tile is blank. Returns {tex,w,h}.
-    function _decode(url, resize) {   // resize ignored — raw f16 is full-res + mips
+    function _decode(url, resize) {   // resize ignored — full-res + mips
       return fetch(url).then(function (r) {
         // 204 = the tile is still resolving (attached off the critical path) —
         // signal the caller to retry rather than reading an empty body.
         if (r.status === 204) return Promise.reject('204');
         if (!r.ok) return Promise.reject(r.status);
-        return r.arrayBuffer();
+        var ct = (r.headers.get('Content-Type') || '');
+        return r.arrayBuffer().then(function (buf) { return { buf: buf, ct: ct }; });
       })
-        .then(function (buf) {
-          // _RawF16Source bytes: struct('<II', w, h) header + w*h*4 float16 RGBA,
-          // LINEAR. No image decode — write the raw bits straight into the texture.
-          var hdr = new Uint32Array(buf, 0, 2);
-          var w = hdr[0], h = hdr[1];
-          var data = new Uint16Array(buf, 8);     // float16 payload (bit-for-bit)
-          var levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
-          var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
-            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-          device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
-          if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
-          return { tex: tex, w: w, h: h };
+        .then(function (o) {
+          var levels;
+          if (o.ct.indexOf('octet-stream') >= 0) {
+            // _RawF16Source bytes: struct('<II', w, h) header + w*h*4 float16 RGBA,
+            // LINEAR. No image decode — write the raw bits straight into the texture.
+            var hdr = new Uint32Array(o.buf, 0, 2);
+            var w = hdr[0], h = hdr[1];
+            var data = new Uint16Array(o.buf, 8);     // float16 payload (bit-for-bit)
+            levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
+            var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
+              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+            device.queue.writeTexture({ texture: tex }, data, { bytesPerRow: w * 8, rowsPerImage: h }, [w, h]);
+            if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
+            return { tex: tex, w: w, h: h, linear: 1 };
+          }
+          // sRGB-OETF PNG — a label tile's HDR base, kept as an image so the label
+          // ZOOM (createLabelViewer) can load it. Decode and copy into the SAME
+          // rgba16float texture (8-bit OETF values stored as f16, NO color
+          // conversion); the shader's isLinear=0 path applies eotf. Sharing the
+          // format lets the one pipeline + mip path serve both tile kinds.
+          return createImageBitmap(new Blob([o.buf]),
+              { premultiplyAlpha: 'none', colorSpaceConversion: 'none' }).then(function (bmp) {
+            var w = bmp.width, h = bmp.height;
+            levels = Math.max(1, Math.floor(Math.log2(Math.max(w, h))) + 1);
+            var tex = device.createTexture({ size: [w, h], format: 'rgba16float', mipLevelCount: levels,
+              usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+            device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
+            try { bmp.close(); } catch (e) {}
+            if (_blitPipe && levels > 1) { try { _genMips(tex, w, h, levels); } catch (e) {} }
+            return { tex: tex, w: w, h: h, linear: 0 };
+          });
         });
     }
     // Show the hi-res at the current display density; instant from cache, else
@@ -6082,9 +6107,12 @@ _STATIC_HDR_CONTROLLER_JS = r"""
       c._hiresUrl = _resolve(hi);
       // REMEMBERED: this raw tile already uploaded → bind instantly, no re-fetch.
       if (_texCache.has(c._hiresUrl)) { _bindTex(c, _texCache.get(c._hiresUrl), true); c._hiresDone = true; return; }
-      // Progressive: decimated raw disp FIRST (cheap, instant) if present, then the
-      // full-res raw upgrades when it lands (guarded so it can't overwrite the hi-res).
-      var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'));
+      // Progressive first paint: the decimated raw disp (standalone data-hdr cells)
+      // if present, else the inline PNG thumb (label-tile PNG bases have no raw
+      // disp) — _decode handles either by Content-Type. Then the full-res hi-res
+      // upgrades when it lands (guarded so it can't overwrite the hi-res).
+      var disp = c.im.getAttribute('data-raw-disp-href') || (g && g.getAttribute('data-raw-disp-href'))
+               || c.im.getAttribute('data-thumb-href') || (g && g.getAttribute('data-thumb-href'));
       _showHires(c).catch(function () {});
       if (disp) {
         _decode(_resolve(disp)).then(function (e) { if (!c._hiresDone) _bindTex(c, e); })
