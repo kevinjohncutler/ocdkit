@@ -185,10 +185,14 @@ void main() {
           maskColor = u_highlightColor;
           alpha = max(alpha, u_highlightAlpha);
         } else {
-          // Fill segmentation: emphasize the cell's OWN (ncolor) color —
-          // brightened (HDR-bright on an extended-range canvas), nearly
-          // opaque so it pops while still reading as that cell's color.
-          maskColor = maskColor * u_highlightBoost + 0.12;
+          // Highlighted fill: the WHOLE cell — interior AND its perimeter pixels —
+          // gets the SAME brightened cell color at the same alpha, so a hovered cell
+          // reads as ONE uniform fill with its edges matching the inside. Recompute
+          // the cell color FRESH (NOT reuse maskColor, which on an outline pixel
+          // already carries the outline HDR boost + hue-shifting +0.12, which made
+          // the rim brighter and off-hue versus the interior).
+          vec3 _hc = (u_usePalette > 0.5) ? paletteColor(label) : hashColor(label);
+          maskColor = _hc * u_highlightBoost + 0.12;
           alpha = max(alpha, 0.9);
         }
       }
