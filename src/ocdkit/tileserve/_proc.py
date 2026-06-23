@@ -20,6 +20,9 @@ import sys
 import threading
 import time
 
+import numpy as np
+from multiprocessing import shared_memory as _shm
+
 _HDR = struct.Struct(">Q")   # 8-byte big-endian length prefix
 
 
@@ -47,6 +50,57 @@ def _recv(sock):
     if body is None:
         return None
     return pickle.loads(body)
+
+
+# ── large-array transfer via shared memory (zero-copy) ───────────────────────
+# Arrays >= _SHM_THRESHOLD ride a POSIX shared-memory block instead of being
+# pickled into the control stream: the kernel writes the array to shm + sends a
+# tiny _ShmRef; the child maps it, COPIES the array out (synchronously, before it
+# replies), then the kernel frees the block. Small arrays still pickle inline.
+_SHM_THRESHOLD = 1 << 16   # 64 KiB
+
+
+class _ShmRef:
+    """Picklable placeholder standing in for a numpy array carried via shm."""
+    __slots__ = ("name", "shape", "dtype")
+
+    def __init__(self, name, shape, dtype):
+        self.name = name; self.shape = shape; self.dtype = dtype
+
+
+def _externalize(obj, shms):
+    """Replace large ndarrays in obj with _ShmRef (recording the shm to free later)."""
+    if isinstance(obj, np.ndarray) and obj.nbytes >= _SHM_THRESHOLD:
+        a = np.ascontiguousarray(obj)
+        blk = _shm.SharedMemory(create=True, size=a.nbytes)
+        np.ndarray(a.shape, a.dtype, buffer=blk.buf)[:] = a
+        shms.append(blk)
+        return _ShmRef(blk.name, a.shape, a.dtype.str)
+    if isinstance(obj, tuple):
+        return tuple(_externalize(x, shms) for x in obj)
+    if isinstance(obj, list):
+        return [_externalize(x, shms) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _externalize(v, shms) for k, v in obj.items()}
+    return obj
+
+
+def _internalize(obj):
+    """Reconstruct ndarrays from _ShmRef (copy out so it survives the kernel's free)."""
+    if isinstance(obj, _ShmRef):
+        blk = _shm.SharedMemory(name=obj.name, track=False)   # 3.13: kernel owns the unlink
+        try:
+            arr = np.ndarray(obj.shape, np.dtype(obj.dtype), buffer=blk.buf).copy()
+        finally:
+            blk.close()
+        return arr
+    if isinstance(obj, tuple):
+        return tuple(_internalize(x) for x in obj)
+    if isinstance(obj, list):
+        return [_internalize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _internalize(v) for k, v in obj.items()}
+    return obj
 
 
 # ── child process ────────────────────────────────────────────────────────────
@@ -94,6 +148,7 @@ def serve_child(control_path: str, port: int, ext_modules):
             fn = S._DISPATCH.get(op)
             if fn is None:
                 raise KeyError(f"unknown command {op!r}")
+            args = _internalize(args); kwargs = _internalize(kwargs)
             _send(conn, ("ok", fn(*args, **kwargs)))
         except Exception as e:                       # noqa: BLE001
             import traceback
@@ -113,9 +168,19 @@ class ProcClient:
         self._sock.connect(control_path)
 
     def call(self, op, args=(), kwargs=None):
-        with self._lock:
-            _send(self._sock, (op, tuple(args), dict(kwargs or {})))
-            reply = _recv(self._sock)
+        shms = []
+        ext_args = _externalize(tuple(args), shms)
+        ext_kwargs = _externalize(dict(kwargs or {}), shms)
+        try:
+            with self._lock:
+                _send(self._sock, (op, ext_args, ext_kwargs))
+                reply = _recv(self._sock)
+        finally:
+            for _blk in shms:        # child copied during dispatch -> safe to free now
+                try:
+                    _blk.close(); _blk.unlink()
+                except Exception:
+                    pass
         if reply is None:
             raise RuntimeError("tileserve child closed the control connection")
         status, payload = reply
@@ -168,5 +233,10 @@ def spawn(port: int, ext_modules, control_dir=None) -> "ProcClient":
 
 
 if __name__ == "__main__":
+    # Run via the PACKAGE module (not __main__) so pickled class identities —
+    # notably _ShmRef carried in the control stream — match the kernel's
+    # ocdkit.tileserve._proc.* paths (otherwise isinstance checks in _internalize
+    # fail and shm arrays pass through unreconstructed).
+    from ocdkit.tileserve import _proc as _m
     _exts = sys.argv[3].split(",") if len(sys.argv) > 3 and sys.argv[3] else []
-    serve_child(sys.argv[1], int(sys.argv[2]), _exts)
+    _m.serve_child(sys.argv[1], int(sys.argv[2]), _exts)
