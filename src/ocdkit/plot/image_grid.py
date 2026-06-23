@@ -302,11 +302,14 @@ def image_grid(
                     'opacity': float(it.get('opacity', 0.6)),
                     'style': it.get('style', 'both'),
                     'outlines': bool(it.get('outlines', True)),
-                    # Boundary brightness — defaults to the hover-highlight
-                    # boost (1.8) so outlines match the bright hover-fill.
-                    # >1 emits HDR-bright on an extended-range canvas; clamps
-                    # to a brighter edge on SDR. Set 1.0 to disable.
-                    'outline_hdr': float(it.get('outline_hdr', 1.8)),
+                    # Boundary brightness boost. >1 makes the per-cell outline
+                    # EMIT HDR (>1.0) on the float16 extended-range label canvas, so
+                    # the contour glows like the HDR base instead of reading flat /
+                    # SDR. Default 4.0 (clearly HDR; the base content is ~8x, so this
+                    # glows without overpowering it). Tune via ``outline_hdr=`` — e.g.
+                    # ~8 to match the base, 1.0 for plain SDR. On an SDR display (or
+                    # the figure's SDR toggle) it clamps to a brighter edge.
+                    'outline_hdr': float(it.get('outline_hdr', 4.0)),
                     # Uniform contour color (matplotlib color spec or hex), or
                     # None = per-cell palette color. None is the DEFAULT for every
                     # style (incl. ``style='outline'``): the perimeter inherits each
