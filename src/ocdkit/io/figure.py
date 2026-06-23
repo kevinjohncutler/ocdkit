@@ -5208,6 +5208,32 @@ _LABEL_CONTROLLER_JS = r"""
     for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
     return u;
   }
+  // Global WebGL2 context budget: Chrome caps live contexts at ~16. The per-tile
+  // IntersectionObserver releases off-screen tiles, but JupyterLab DELAYS observer
+  // callbacks during scroll / Run-All (_delayCallbackInScrollingNotebook), so mounts
+  // outrun unmounts and the live count spikes past the cap (→ "Too many active
+  // WebGL contexts. Oldest context will be lost."). This pool caps it SYNCHRONOUSLY:
+  // before a tile builds a context, if we're at the cap, evict an off-screen tile
+  // chosen by LIVE geometry (getBoundingClientRect — current even while the observer
+  // is throttled). Shared by the label + colormap controllers (idempotent).
+  var POOL = self.__ocdGLPool || (self.__ocdGLPool = (function () {
+    var cap = 12, live = [];
+    function off(cv) {
+      var r = cv.getBoundingClientRect(), vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+      return r.bottom < -120 || r.top > vh + 120 || r.right < -120 || r.left > vw + 120;
+    }
+    return {
+      acquire: function (e) {
+        if (live.length >= cap) {
+          for (var i = 0; i < live.length; i++) {
+            if (off(live[i].cv)) { var v = live.splice(i, 1)[0]; try { v.release(); } catch (x) {} break; }
+          }
+        }
+        live.push(e);
+      },
+      release: function (e) { var i = live.indexOf(e); if (i >= 0) live.splice(i, 1); }
+    };
+  })());
   var tiles = wrapper.querySelectorAll('canvas[data-label-tile]');
   tiles.forEach(function (cv0) {
     if (cv0.__labelWired) return;
@@ -5225,7 +5251,7 @@ _LABEL_CONTROLLER_JS = r"""
     // unreliable), so the next mount() builds a new context on the clone. The
     // decoded cfg + cv.__labelCfg (popup reuse) survive release; the streamed-
     // matrix re-fetch on remount is cache-cheap.
-    var gl = null, r = null, _hdrBuf = false, mounted = false, cur = 0, _tip = null, io = null;
+    var gl = null, r = null, _hdrBuf = false, mounted = false, cur = 0, _tip = null, io = null, poolEntry = null;
     function sizeCanvas() {
       if (!gl) return;
       var dpr = window.devicePixelRatio || 1;
@@ -5276,6 +5302,8 @@ _LABEL_CONTROLLER_JS = r"""
       if (_tip) _tip.style.display = 'none';
     }
     function build() {
+      poolEntry = { cv: cv, release: unmount };   // may synchronously evict an off-screen tile
+      POOL.acquire(poolEntry);
       gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
       if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
       // float16 extended-range backbuffer so a >1.0 outline/highlight emits TRUE HDR.
@@ -5307,6 +5335,7 @@ _LABEL_CONTROLLER_JS = r"""
     function unmount() {
       if (!mounted) return;
       mounted = false;
+      if (poolEntry) { POOL.release(poolEntry); poolEntry = null; }
       var _gl = gl; gl = null; r = null; cv.__labelRenderer = null;
       try { var ext = _gl && _gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) {}
       // swap in a FRESH clone (loseContext'd canvas can't re-getContext); carry the
@@ -5380,6 +5409,27 @@ _COLORMAP_CONTROLLER_JS = r"""
     }
     return out;
   }
+  // Shared WebGL2 context budget (see the label controller for the rationale):
+  // caps live contexts synchronously, evicting an off-screen tile by live geometry
+  // when JupyterLab throttles the IntersectionObserver during scroll / Run-All.
+  var POOL = self.__ocdGLPool || (self.__ocdGLPool = (function () {
+    var cap = 12, live = [];
+    function off(cv) {
+      var r = cv.getBoundingClientRect(), vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+      return r.bottom < -120 || r.top > vh + 120 || r.right < -120 || r.left > vw + 120;
+    }
+    return {
+      acquire: function (e) {
+        if (live.length >= cap) {
+          for (var i = 0; i < live.length; i++) {
+            if (off(live[i].cv)) { var v = live.splice(i, 1)[0]; try { v.release(); } catch (x) {} break; }
+          }
+        }
+        live.push(e);
+      },
+      release: function (e) { var i = live.indexOf(e); if (i >= 0) live.splice(i, 1); }
+    };
+  })());
   wrapper.querySelectorAll('canvas[data-colormap-tile]').forEach(function (cv0) {
     if (cv0.__cmapWired) return;
     cv0.__cmapWired = true;
@@ -5393,8 +5443,10 @@ _COLORMAP_CONTROLLER_JS = r"""
     // blank-canvas flash); HDR tiles keep WebGPU. See colormap_tile_canvas(hdr=…).
     var isSdr = cv.getAttribute('data-cmap-sdr') === '1';
     var cmapOpts = isSdr ? { forceWebgl: true } : {};
-    var mounted = false, r = null, io = null, hires = null;   // hires survives swaps
+    var mounted = false, r = null, io = null, hires = null, poolEntry = null;   // hires survives swaps
     function build() {
+      poolEntry = { cv: cv, release: unmount };   // may synchronously evict an off-screen tile
+      POOL.acquire(poolEntry);
       self.ColormapImage.createColormapRenderer(cv, cmapOpts).then(function (rr) {
         if (!mounted) { if (rr.destroy) rr.destroy(); return; }   // released mid-create
         r = rr; cv.__cmapRenderer = rr;
@@ -5425,6 +5477,7 @@ _COLORMAP_CONTROLLER_JS = r"""
     function unmount() {
       if (!mounted) return;
       mounted = false;
+      if (poolEntry) { POOL.release(poolEntry); poolEntry = null; }
       var rr = r; r = null;
       if (rr && rr.destroy) { try { rr.destroy(); } catch (e) {} }   // free GL + loseContext
       // A loseContext'd canvas can't re-acquire a context (and restoreContext is
