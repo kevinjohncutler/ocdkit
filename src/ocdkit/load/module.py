@@ -12,9 +12,67 @@ without an explicit import.
 """
 
 from types import ModuleType
+import ast
 import importlib
+import os
 import pkgutil
 import sys
+
+
+def _scan_export_map(pkg) -> dict:
+    """Map ``public_name -> submodule_name`` for a package, by **AST-parsing**
+    each submodule file (no import).
+
+    Lets the lazy ``__getattr__`` import only the *one* submodule that defines a
+    requested name, instead of import-scanning every submodule to find it (which
+    defeats laziness — a single ``from pkg import helper`` would drag in the
+    whole package, e.g. wgpu/datashader behind a key-slice helper).
+
+    Names come from a literal ``__all__`` when present, else top-level
+    ``def``/``class``/assignment names. Re-exported (imported) names without an
+    ``__all__`` aren't visible to the AST and fall through to the runtime scan,
+    so correctness is preserved. Submodules are visited in sorted order; the
+    first to claim a name wins (deterministic).
+    """
+    paths = list(getattr(pkg, "__path__", []) or [])
+    name_map: dict = {}
+    if not paths:
+        return name_map
+    base = paths[0]
+    for info in sorted(pkgutil.iter_modules([base]), key=lambda i: i.name):
+        sub = info.name
+        modfile = os.path.join(base, sub, "__init__.py") if info.ispkg \
+            else os.path.join(base, sub + ".py")
+        try:
+            with open(modfile, "r", encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), modfile)
+        except (OSError, SyntaxError):
+            continue
+        explicit = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+                try:
+                    explicit = [n for n in ast.literal_eval(node.value) if isinstance(n, str)]
+                except (ValueError, TypeError, SyntaxError):
+                    explicit = None
+        if explicit is not None:
+            names = explicit
+        else:
+            # Include private (``_``-prefixed) top-level names too: the runtime
+            # scan fallback resolves them (it doesn't filter on ``_``), so the
+            # map must cover them or such lookups regress to scan-import-all.
+            names = []
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    names.append(node.name)
+                elif isinstance(node, ast.Assign):
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            names.append(t.id)
+        for n in names:
+            name_map.setdefault(n, sub)
+    return name_map
 
 
 def enable_submodules(
@@ -114,7 +172,14 @@ def enable_submodules(
 
     pkg.__all__ = sorted(submods | promoted)
 
+    # Built lazily on first attribute miss (keeps bare ``import pkg`` instant);
+    # AST-derived public_name -> submodule map, used to import ONLY the owning
+    # submodule instead of scan-importing all of them.
+    name_map: dict = {}
+    map_built = False
+
     def _getattr(name: str):
+        nonlocal map_built
         # Direct sub-module access: load that one only and cache.
         if name in submods:
             mod = importlib.import_module(f"{pkg_name}.{name}")
@@ -129,16 +194,31 @@ def enable_submodules(
                 return same_named
             setattr(pkg, name, mod)
             return mod
-        # Fallback: scan sub-modules for the attribute. Catches private
-        # names and module-typed attrs (e.g. stdlib ``platform``) that
-        # the eager pass skips. Sub-modules are already loaded under
-        # ``expose=True``, so this scan is just dict lookups.
-        #
-        # Respects each submodule's ``__all__`` when defined — same
-        # contract as the eager-promotion pass.  A submodule that
-        # imports a name internally (e.g. ``from matplotlib.figure
-        # import Figure``) but omits it from ``__all__`` will NOT
-        # leak through the fallback.
+
+        # Fast path: import ONLY the submodule the AST map says defines this
+        # name. This is what makes lazy mode actually lazy — without it the scan
+        # below imports every submodule (dragging in heavy deps) to find one
+        # function. Respects the submodule's runtime ``__all__`` too.
+        if not map_built:
+            name_map.update(_scan_export_map(pkg))
+            map_built = True
+        owner = name_map.get(name)
+        if owner is not None:
+            try:
+                mod = importlib.import_module(f"{pkg_name}.{owner}")
+            except ImportError:
+                mod = None
+            if mod is not None and not (hasattr(mod, "__all__") and name not in mod.__all__) \
+                    and hasattr(mod, name):
+                attr = getattr(mod, name)
+                setattr(pkg, name, attr)
+                return attr
+
+        # Fallback scan: catches names the AST map can't see — re-exported
+        # (imported) names without an ``__all__``, or runtime-defined attrs.
+        # Respects each submodule's ``__all__`` when defined (same contract as
+        # the eager-promotion pass): a name imported internally but omitted from
+        # ``__all__`` will NOT leak through.
         for sub in submods:
             try:
                 mod = importlib.import_module(f"{pkg_name}.{sub}")

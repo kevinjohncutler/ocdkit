@@ -21,6 +21,7 @@ _IMAGE_GRID_PASSTHROUGH = frozenset({
     'target_tile_px', 'gap_px', 'margin_px', 'dx', 'lpos',
     'facecolor', 'raster_format', 'sdr_white_nits', 'ncol',
     'popup_viewer', 'link_axes', 'roi', 'link_axes_debug',
+    'auto_upgrade',
 })
 
 
@@ -280,12 +281,13 @@ def _imshow_svg(imgs, *, figsize, titles, title_size, textcolor,
         fontsize=svg_fontsize,
         fontcolor=_to_css_color(textcolor),
         dpi=effective_dpi,
-        # Single-image imshow: trigger the hi-res upgrade on load
-        # instead of waiting for hover, since the user always wants
-        # the full-res view of an explicitly-shown image.  For wider
-        # grids (multi-image) the caller can opt in via image_grid
-        # directly.
-        auto_upgrade=(n_panels == 1),
+        # Upgrade to full-res on load for EVERY imshow panel, not just the
+        # single-image case: imshow is an explicit "show me these images", so
+        # the caller wants the real pixels, and the hi-res encode now runs on a
+        # background thread with a polling upgrade probe — so enabling it costs
+        # the build nothing (first paint shows the thumb instantly, each panel
+        # swaps to full-res once its bytes land).
+        auto_upgrade=True,
     )
     if titles is not None:
         ig_kwargs['plot_labels'] = (

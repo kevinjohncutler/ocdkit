@@ -101,11 +101,32 @@
         var dx = x1 - x0, dy = y1 - y0, len = Math.sqrt(dx * dx + dy * dy);
         if (len < 1e-3) continue;
         var ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
-        var sx0 = x0 - ux * hw, sy0 = y0 - uy * hw, sx1 = x1 + ux * hw, sy1 = y1 + uy * hw;
+        // Round caps belong ONLY at a polyline's true ends. Extend the quad along
+        // the axis (so the SDF's ta<0 / ta>len region renders a round cap) only at
+        // the FIRST vertex of the first segment and the LAST vertex of the last
+        // segment; interior segment ends are BUTT (ta in [0,len]) so the caps of
+        // adjacent segments don't protrude past the shared vertex — that
+        // protrusion is what made joins look like elbows. (Each dash is its own
+        // ``pl`` here, so dashes still get caps at both their ends.)
+        var ta0 = (i === 0) ? -hw : 0.0;
+        var ta1 = (i + 2 === pl.length) ? len + hw : len;
+        var sx0 = x0 + ux * ta0, sy0 = y0 + uy * ta0;
+        var sx1 = x0 + ux * ta1, sy1 = y0 + uy * ta1;
         var ax = sx0 + nx * hw, ay = sy0 + ny * hw, bx = sx0 - nx * hw, by = sy0 - ny * hw;
         var cx = sx1 + nx * hw, cy = sy1 + ny * hw, dx2 = sx1 - nx * hw, dy2 = sy1 - ny * hw;
-        p(ax, ay, hw, -hw, len); p(bx, by, -hw, -hw, len); p(cx, cy, hw, len + hw, len);
-        p(bx, by, -hw, -hw, len); p(dx2, dy2, -hw, len + hw, len); p(cx, cy, hw, len + hw, len);
+        p(ax, ay, hw, ta0, len); p(bx, by, -hw, ta0, len); p(cx, cy, hw, ta1, len);
+        p(bx, by, -hw, ta0, len); p(dx2, dy2, -hw, ta1, len); p(cx, cy, hw, ta1, len);
+      }
+      // Round JOIN at each interior vertex: a disc of radius hw centred on the
+      // shared point. With L=0 the shader's ``dt = max(-ta, ta-0, 0) = |ta|`` so
+      // ``dist = sqrt(ta^2 + vp^2)`` = radial distance → a disc. This fills the
+      // butt-segment join smoothly (no outer-corner notch) WITHOUT a cap
+      // protruding past the vertex along either segment — so joins read as clean
+      // round joins, and true caps appear only at the polyline's lone ends.
+      for (var j = 1; j + 1 < pl.length; j++) {
+        var vx = pl[j][0], vy = pl[j][1];
+        p(vx - hw, vy - hw, -hw, -hw, 0); p(vx + hw, vy - hw, hw, -hw, 0); p(vx - hw, vy + hw, -hw, hw, 0);
+        p(vx + hw, vy - hw, hw, -hw, 0); p(vx + hw, vy + hw, hw, hw, 0); p(vx - hw, vy + hw, -hw, hw, 0);
       }
     }
     return new Float32Array(v);

@@ -231,6 +231,16 @@
     return _devicePromise;
   }
 
+  // Pre-warm the ONE shared device at module load so the first GPU tile/image
+  // doesn't pay cold adapter+device init on its paint path (which shows as a
+  // blank canvas for a beat). Now that every ocdkit WebGPU path awaits THIS
+  // singleton (colormap tiles, HDR images, linked layers), warming it here is
+  // contention-free — there is no second concurrent requestDevice to serialise
+  // against. Fire-and-forget; overlaps with the rest of page/script parse.
+  try {
+    if (typeof navigator !== 'undefined' && navigator.gpu) getDevice().catch(function () {});
+  } catch (e) { /* no WebGPU → WebGL2 fallback, nothing to warm */ }
+
   // Draws the image as a quad in image-pixel space, transformed by a 3x3 matrix
   // (image-px → clip) — the SAME convention the viewer's vertex shader uses, so
   // a host can feed its pan/zoom matrix straight in. m0/m1/m2 are the columns

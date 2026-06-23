@@ -62,3 +62,34 @@ def setup(*, registry=None, target_tile_px=None):
     # applies the theme.
     from . import defaults
     defaults.setup()
+
+    # Pre-warm the tileserve server in the background. The first interactive
+    # figure (or rich ``_repr_html_``) otherwise pays the ~0.7s FastAPI+uvicorn
+    # import and socket startup on its own critical path, because ``register()``
+    # → ``ensure_server()`` blocks until the port accepts connections. ``setup()``
+    # is an explicit "I'm about to plot" signal and runs early (the notebook's
+    # import cell), so kicking the import+startup onto a daemon thread here means
+    # the server is up by the time the first display happens — the later
+    # ``ensure_server()`` call then returns instantly (it is idempotent).
+    # Daemon thread → never blocks ``setup()``. Disable with
+    # ``OCDKIT_TILESERVE_PREWARM=0``. Only inside an interactive kernel, where
+    # displays actually happen (a headless render-to-file script needs no server).
+    import os
+    if os.environ.get("OCDKIT_TILESERVE_PREWARM", "1") != "0":
+        try:
+            from IPython import get_ipython
+            in_kernel = get_ipython() is not None
+        except Exception:
+            in_kernel = False
+        if in_kernel:
+            import threading
+
+            def _prewarm_tileserve():
+                try:
+                    from ..tileserve.server import ensure_server
+                    ensure_server()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_prewarm_tileserve, daemon=True,
+                             name="ocdkit-tileserve-prewarm").start()
