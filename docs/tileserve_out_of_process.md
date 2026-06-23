@@ -49,6 +49,35 @@ coupling entirely.
   complete (serving is off-GIL regardless); optimize imports in 1.5. ← recommended
   for the first cut, since it fixes the symptom without import surgery.
 
+## Phase 0 findings — host extensions + the RPC surface (also done)
+4. **The child needs host route extensions.** `make_app()` carries the generic
+   routes (`/info /tile /attach /grid /view /viewgl`), but hosts mount more via
+   `register_extension(fn)` — e.g. hostpkg's `serve/tiles.py:140`
+   `register_extension(_hostpkg_routes)` adds `/spectra/{sid}/{row}`. The child must
+   register the SAME extensions, so the spawn handshake passes the kernel's list of
+   extension-registering module names (e.g. `['hostpkg.serve.tiles']`); the child
+   imports them before `make_app()`. (Per Option C this also pulls the host's
+   weight — acceptable for the first cut.)
+5. **The RPC/command surface spans BOTH packages — and all of it is snapshot-safe.**
+   The route handlers read from module-global stores populated at register time:
+   `_hostpkg_routes`'s `/spectra` serves from `_SPECTRA` (filled by
+   `register_spectra`), with **no live Scene access at request time** (verified;
+   its docstring notes all domain overlays ride the generic `/attach`). So the
+   data-population functions that must become RPC-to-child are:
+   - ocdkit: `register / register_pending / fill / register_lazy / register_array /
+     attach / drop`
+   - hostpkg (`serve/tiles.py`): `register_spectra / set_spectra_axes /
+     set_panel_axes / set_spectra_data / set_outline / set_cellinfo /
+     set_cell_contours`
+   Generalize as a **command registry**: each package registers its population
+   functions as "child commands"; the kernel-side proxies route them over the
+   control socket; the child applies them to its own stores. `register_lazy`
+   producers still run in the kernel (they need live objects); only their RESULT
+   is pushed.
+
+   Implication: **Phase 1 touches both ocdkit and hostpkg.** It's a well-scoped but
+   substantial cross-package refactor of the data-population path, not a drop-in.
+
 ## Target architecture
 A lightweight **child process** runs the same FastAPI app and binds the same
 ports. **Nothing client-side changes** — `embed.py`, `jupyter_ext.py`, the proxy,
