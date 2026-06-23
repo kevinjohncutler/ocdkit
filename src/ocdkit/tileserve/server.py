@@ -280,6 +280,37 @@ def drop(sid: str):
         _SOURCES.pop(sid, None)
 
 
+def set_info_extra(sid: str, key: str, value):
+    """Set one ``info_extra`` field on a source (merged into /info). A host uses
+    this instead of ``get_source(sid).info_extra[key] = value`` so it works in OOP
+    mode, where the source lives in the child."""
+    if _OOP_CLIENT is not None:
+        return _OOP_CLIENT.call('set_info_extra', (sid, key, value))
+    src = _SOURCES.get(sid)
+    if src is not None:
+        src.info_extra[key] = value
+
+
+def get_info_extra(sid: str) -> dict:
+    """Return a COPY of a source's ``info_extra`` (empty if unknown). Use instead of
+    reading ``get_source(sid).info_extra`` so it works in OOP mode."""
+    if _OOP_CLIENT is not None:
+        return _OOP_CLIENT.call('get_info_extra', (sid,))
+    src = _SOURCES.get(sid)
+    return dict(src.info_extra) if src is not None else {}
+
+
+def is_oop() -> bool:
+    """True when the server runs out-of-process — a host's own population fns should
+    then route through :func:`oop_call` instead of mutating kernel state."""
+    return _OOP_CLIENT is not None
+
+
+def oop_call(name: str, args=(), kwargs=None):
+    """Route a registered command (see :func:`_register_dispatch`) to the OOP child."""
+    return _OOP_CLIENT.call(name, args, kwargs)
+
+
 # Command dispatch map for the out-of-process server (``tileserve/_proc.py``):
 # command name -> in-process implementation, used by the OOP child's control loop
 # to apply pushed commands to its own stores. ocdkit registers its own population
@@ -294,7 +325,8 @@ def _register_dispatch(fn):
     return fn
 
 
-for _f in (register, register_pending, fill, register_array, attach, drop):
+for _f in (register, register_pending, fill, register_array, attach, drop,
+          set_info_extra, get_info_extra):
     _DISPATCH[_f.__name__] = _f
 
 
