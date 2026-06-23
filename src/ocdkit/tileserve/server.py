@@ -130,6 +130,31 @@ _LOCK = threading.Lock()
 _LAZY: dict = {}          # (sid, label) -> producer() -> (arr, meta)
 _LAZY_STARTED: dict = {}  # (sid, label) -> True once compute kicked off
 
+# ── out-of-process mode (flag-gated; default None = in-process) ──────────────
+# With OCDKIT_TILESERVE_OOP set, ensure_server() spawns a child process
+# (tileserve/_proc.py) running the FastAPI app off the kernel's GIL and sets
+# _OOP_CLIENT; the population fns below then RPC the child instead of mutating
+# the kernel's _SOURCES. _OOP_KNOWN tracks sids the kernel registered so a
+# kernel-side existence check (get_source(sid) is None) still works.
+_OOP_CLIENT = None
+_OOP_KNOWN: set = set()
+
+
+class _OOPSourceProxy:
+    """Truthy stand-in get_source() returns in OOP mode for a known sid (the real
+    source lives in the child). Existence checks pass; ATTRIBUTE access raises on
+    purpose until Phase 1b adds RPC accessors (hosts that read/mutate a source
+    kernel-side must be ported)."""
+    __slots__ = ("sid",)
+
+    def __init__(self, sid):
+        self.sid = sid
+
+    def __getattr__(self, k):
+        raise RuntimeError(
+            f"get_source({self.sid!r}).{k}: kernel-side source attribute access is "
+            "not supported in OOP mode yet (needs Phase 1b RPC accessors)")
+
 
 def register(width: int, height: int, layers: dict[str, np.ndarray],
              n_levels: int = 5, single_level=None) -> str:
@@ -138,6 +163,11 @@ def register(width: int, height: int, layers: dict[str, np.ndarray],
     ``single_level`` is an optional collection of labels stored WITHOUT a
     pyramid (one full-res level) — e.g. label masks that need no coarse levels.
     """
+    if _OOP_CLIENT is not None:
+        sid = _OOP_CLIENT.call('register', (width, height, layers),
+                               {'n_levels': n_levels, 'single_level': single_level})
+        _OOP_KNOWN.add(sid)
+        return sid
     src = TileSource(width, height, n_levels=n_levels)
     src._single |= set(single_level or ())      # mark before add_layer (sets level count)
     for label, arr in layers.items():
@@ -159,6 +189,11 @@ def register_pending(width: int, height: int, labels, n_levels: int = 5,
     pyramid (one full-res level) — /info reports a single level for them, so the
     viewer never requests a coarse tile that doesn't exist.
     """
+    if _OOP_CLIENT is not None:
+        sid = _OOP_CLIENT.call('register_pending', (width, height, labels),
+                               {'n_levels': n_levels, 'grid': grid, 'single_level': single_level})
+        _OOP_KNOWN.add(sid)
+        return sid
     src = TileSource(width, height, n_levels=n_levels)
     _single = set(single_level or ())
     for label in labels:
@@ -172,6 +207,8 @@ def register_pending(width: int, height: int, labels, n_levels: int = 5,
 
 def fill(sid: str, label: str, arr: np.ndarray, meta: dict | None = None):
     """Attach a projected layer to a pending source (background thread)."""
+    if _OOP_CLIENT is not None:
+        return _OOP_CLIENT.call('fill', (sid, label, arr), {'meta': meta})
     src = _SOURCES.get(sid)
     if src is not None and arr is not None:
         src.add_layer(label, arr, meta)
@@ -180,6 +217,9 @@ def fill(sid: str, label: str, arr: np.ndarray, meta: dict | None = None):
 def register_lazy(sid: str, label: str, producer):
     """Register a deferred producer for ``label``; ``producer()`` returns
     ``(arr, meta)`` and runs on the FIRST request for that tile."""
+    if _OOP_CLIENT is not None:
+        arr, meta = producer()          # eager: the producer needs live kernel objects
+        return fill(sid, label, arr, meta)
     _LAZY[(sid, label)] = producer
 
 
@@ -218,16 +258,24 @@ def register_array(arr: np.ndarray, *, meta: dict | None = None,
 def attach(sid: str, name: str, blob: bytes, headers: dict | None = None,
            media: str = "application/octet-stream"):
     """Attach an opaque named blob to a source, served by ``/attach/{sid}/{name}``."""
+    if _OOP_CLIENT is not None:
+        return _OOP_CLIENT.call('attach', (sid, name, blob), {'headers': headers, 'media': media})
     src = _SOURCES.get(sid)
     if src is not None:
         src.attach(name, blob, headers, media)
 
 
 def get_source(sid: str) -> "TileSource | None":
+    if _OOP_CLIENT is not None:
+        return _OOPSourceProxy(sid) if sid in _OOP_KNOWN else None
     return _SOURCES.get(sid)
 
 
 def drop(sid: str):
+    if _OOP_CLIENT is not None:
+        _OOP_KNOWN.discard(sid)
+        _OOP_CLIENT.call('drop', (sid,))
+        return
     with _LOCK:
         _SOURCES.pop(sid, None)
 
@@ -504,11 +552,18 @@ def ensure_server() -> str:
     actually accepts connections (a cold first uvicorn import can take seconds,
     and clients fetch immediately), so the first fetch never hits a dead socket.
     """
-    global _SERVER
+    global _SERVER, _OOP_CLIENT
     with _SERVER_LOCK:
         if _SERVER is not None:
             return _SERVER["url"]
         import os
+        if os.environ.get("OCDKIT_TILESERVE_OOP"):
+            from . import _proc
+            _port = _pick_port()
+            _exts = sorted({getattr(fn, "__module__", "") for fn in _EXTENSIONS} - {""})
+            _OOP_CLIENT = _proc.spawn(_port, _exts)
+            _SERVER = {"oop": _OOP_CLIENT, "url": _OOP_CLIENT.url}
+            return _OOP_CLIENT.url
         import sys
         import time
         import socket
@@ -563,14 +618,22 @@ def reset_server():
     """Tear down the running server so the NEXT call starts fresh with current
     code (the daemon thread does not hot-reload). Drops all sources + host
     state via the registered reset hooks."""
-    global _SERVER
+    global _SERVER, _OOP_CLIENT
     with _SERVER_LOCK:
         srv, _SERVER = _SERVER, None
     if srv is not None:
-        try:
-            srv["server"].should_exit = True
-        except Exception:
-            pass
+        if srv.get("oop") is not None:
+            try:
+                srv["oop"].close()
+            except Exception:
+                pass
+            _OOP_CLIENT = None
+        else:
+            try:
+                srv["server"].should_exit = True
+            except Exception:
+                pass
+    _OOP_KNOWN.clear()
     with _LOCK:
         _SOURCES.clear()
         _LAZY.clear()
