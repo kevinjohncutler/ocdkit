@@ -73,6 +73,12 @@ uniform float u_highlightBoost;    // fill-tile hover: cell-color brightness mul
 uniform float u_outlineHdrBoost;   // >1 → boundary pixels emit HDR-bright
 uniform vec3  u_outlineColor;      // uniform contour color (e.g. red)
 uniform float u_useOutlineColor;   // >0.5 → override per-cell color on edges
+uniform float u_baseHeadroom;      // >1 → lift the GPU base via EOTF×headroom×OETF (HDR glow)
+uniform float u_baseLinear;        // >0.5 → base texture is RAW linear-light f16 (skip EOTF)
+
+float _eotf(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float _oetf(float c) { float x = max(c, 0.0); return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055; }
+vec3 _baseHdr(vec3 c) { return vec3(_oetf(_eotf(c.r) * u_baseHeadroom), _oetf(_eotf(c.g) * u_baseHeadroom), _oetf(_eotf(c.b) * u_baseHeadroom)); }
 
 vec3 sinebow(float t) {
   float angle = 6.28318530718 * fract(t);
@@ -90,7 +96,11 @@ vec3 paletteColor(float label) {
   float idx = mod(label, size);
   return texture(u_paletteSampler, vec2((idx + 0.5) / size, 0.5)).rgb;
 }
-
+// Instance id at a uv (BA channels of the packed mask) — for screen-space outlines.
+float _instAt(vec2 uv) {
+  vec4 p = texture(u_maskSampler, uv);
+  return floor(p.b * 255.0 + 0.5) + floor(p.a * 255.0 + 0.5) * 256.0;
+}
 void main() {
   vec2 baseCoord = vec2(v_texCoord.x, 1.0 - v_texCoord.y);
   // When a GPU base image is set we composite over it and emit opaque. When
@@ -104,6 +114,14 @@ void main() {
   float outA = hasBase ? 1.0 : 0.0;
   if (hasBase) {
     color = texture(u_baseSampler, baseCoord).rgb;
+    if (u_baseLinear > 0.5) {
+      // RAW linear-light f16 base (setBaseRaw): boost (default 1 = no-op) then
+      // OETF for display. Same math as the inline static-HDR controller's raw path.
+      color = vec3(_oetf(color.r * u_baseHeadroom), _oetf(color.g * u_baseHeadroom), _oetf(color.b * u_baseHeadroom));
+    } else if (u_baseHeadroom > 1.0001) {
+      // sRGB-OETF PNG base: lift to HDR so it glows (u_baseHeadroom 1 = no-op).
+      color = _baseHdr(color);
+    }
   }
   if (u_maskVisible > 0.5 && u_maskOpacity > 0.0) {
     vec4 packed = texture(u_maskSampler, v_texCoord);
@@ -113,7 +131,28 @@ void main() {
       float alpha = clamp(u_maskOpacity, 0.0, 1.0);
       float outline = 0.0;
       if (u_outlinesVisible > 0.5) {
-        outline = texture(u_outlineSampler, v_texCoord).r > 0.5 ? 1.0 : 0.0;
+        // Boundary detected in the shader by comparing this pixel's instance id
+        // against its 4 neighbours, offset by  max(1 IMAGE pixel, 1 DISPLAY pixel)
+        // in uv. So the contour width is:
+        //   • zoomed IN  → 1 image-grid pixel (tracks the image's own pixels), and
+        //   • zoomed OUT → clamped to ≥1 display pixel, so a minified matrix never
+        //     gaps/speckles (unlike point-sampling a baked 1-matrix-px R8 mask).
+        // Requires the canvas to render at DISPLAY resolution (dFdx = 1 display px);
+        // the inline label controller sizes it so. Instance ids are exact integer
+        // floats, so != is safe; also removes the O(w*h) CPU outline scan + R8 upload.
+        vec2 scrPx = vec2(abs(dFdx(v_texCoord.x)), abs(dFdy(v_texCoord.y)));
+        vec2 imgPx = 1.0 / vec2(textureSize(u_maskSampler, 0));
+        vec2 d = max(scrPx, imgPx);
+        // 8-connectivity (orthogonal + DIAGONAL neighbours). 4-neighbour detection
+        // leaves a 1px gap at every corner where the boundary turns — the corner
+        // pixel's 4 orthogonal neighbours are all same-instance and only a diagonal
+        // differs — so the perimeter breaks at each turn. The 4 diagonal samples
+        // fill those corners. (Straight edges are already caught orthogonally, so
+        // this doesn't thicken them.)
+        if (_instAt(v_texCoord + vec2(d.x, 0.0)) != inst || _instAt(v_texCoord - vec2(d.x, 0.0)) != inst
+         || _instAt(v_texCoord + vec2(0.0, d.y)) != inst || _instAt(v_texCoord - vec2(0.0, d.y)) != inst
+         || _instAt(v_texCoord + d) != inst || _instAt(v_texCoord - d) != inst
+         || _instAt(v_texCoord + vec2(d.x, -d.y)) != inst || _instAt(v_texCoord + vec2(-d.x, d.y)) != inst) outline = 1.0;
       }
       if (u_maskStyle > 1.5) {
         alpha = alpha * outline;
@@ -215,6 +254,7 @@ void main() {
         imageVisible: 0, colorOffset: 0, highlightLabel: 0,
         highlightColor: [1, 0, 0], highlightAlpha: 0.5, highlightBoost: 1.8,
         outlineHdrBoost: 1.0, outlineColor: [1, 0, 0], useOutlineColor: 0,
+        baseHeadroom: 1.0, baseLinear: 0,
       };
       const prog = link(gl, VERT, FRAG);
       if (!prog) throw new Error('LabelGLRenderer: program creation failed');
@@ -225,7 +265,7 @@ void main() {
         'maskOpacity', 'maskVisible', 'outlinesVisible', 'maskStyle', 'imageVisible',
         'colorOffset', 'paletteSize', 'usePalette', 'highlightLabel',
         'highlightColor', 'highlightAlpha', 'highlightBoost',
-        'outlineHdrBoost', 'outlineColor', 'useOutlineColor',
+        'outlineHdrBoost', 'outlineColor', 'useOutlineColor', 'baseHeadroom', 'baseLinear',
       ].forEach((n) => { this.u[n] = gl.getUniformLocation(prog, 'u_' + n); });
 
       // unit quad in image-pixel coords + texcoords (matches app.js)
@@ -247,7 +287,10 @@ void main() {
       this.maskTex = this._mkTex(gl.NEAREST);
       this.outlineTex = this._mkTex(gl.NEAREST);
       this.paletteTex = this._mkTex(gl.NEAREST);
-      this.baseTex = this._mkTex(gl.LINEAR);
+      // NEAREST, not LINEAR: the base (e.g. a max projection under the labels)
+      // must show real pixels on zoom — matching the RGB raster tile's
+      // image-rendering:pixelated — instead of bilinearly smoothing.
+      this.baseTex = this._mkTex(gl.NEAREST);
       this._emptyBase();
     }
 
@@ -293,8 +336,10 @@ void main() {
       gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
       gl.bindTexture(gl.TEXTURE_2D, null);
-      this._computeOutline();
-      this._uploadOutlineFull();
+      // Outlines are now detected per DISPLAY pixel in the fragment shader from the
+      // mask's instance ids (see _instAt), so the O(w*h) boundary scan + R8 upload
+      // are no longer needed — skipping them is the per-tile speedup. (_computeOutline
+      // / _uploadOutlineFull / uploadOutlineRegion remain as a dormant API.)
     }
 
     // boundary = any 4-neighbour has a different instance id (mirror
@@ -322,7 +367,14 @@ void main() {
       const buf = new Uint8Array(this.w * this.h);
       for (let i = 0; i < buf.length; i += 1) buf[i] = this.outlineState[i] ? 255 : 0;
       gl.bindTexture(gl.TEXTURE_2D, this.outlineTex);
+      // R8 = 1 byte/pixel, but the default UNPACK_ALIGNMENT is 4 — so a row
+      // whose width isn't a multiple of 4 (e.g. a 1997-px seg) is read with the
+      // wrong stride → the boundary texture shears/corrupts and the outline
+      // disappears. (RGBA8 textures are always 4-aligned, so only this R8 one
+      // needs it.) Set alignment 1 for the tight upload, then restore.
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.w, this.h, 0, gl.RED, gl.UNSIGNED_BYTE, buf);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
     // dirty-region upload (mirror app.js uploadOutlineRegion) — for edited masks
@@ -337,8 +389,10 @@ void main() {
         for (let c = 0; c < rect.width; c += 1) buf[off++] = this.outlineState[base + c] ? 255 : 0;
       }
       gl.bindTexture(gl.TEXTURE_2D, this.outlineTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);   // R8 tight rows (see _uploadOutlineFull)
       gl.texSubImage2D(gl.TEXTURE_2D, 0, rect.x, rect.y, rect.width, rect.height,
         gl.RED, gl.UNSIGNED_BYTE, buf);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
 
@@ -357,10 +411,32 @@ void main() {
       const gl = this.gl;
       if (!src) { this.uniformsState.imageVisible = 0; return; }
       this.uniformsState.imageVisible = 1;
+      this.uniformsState.baseLinear = 0;   // sRGB-OETF image source
       gl.bindTexture(gl.TEXTURE_2D, this.baseTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    // RAW linear-light f16 base (no image codec): ``data`` = top-down RGBA float16
+    // (Uint16Array, the _RawF16Source payload), w×h. Uploaded as RGBA16F so the
+    // base carries full HDR precision and skips the PNG encode/decode entirely —
+    // the same texture the inline static-HDR controller uses. UNPACK_FLIP_Y is
+    // ignored for an ArrayBufferView, so flip rows on the CPU to match setBase's
+    // orientation (the shader's baseCoord = (x, 1-y) assumes a flipped upload).
+    setBaseRaw(data, w, h) {
+      const gl = this.gl;
+      if (!data) { this.uniformsState.imageVisible = 0; return; }
+      this.uniformsState.imageVisible = 1;
+      this.uniformsState.baseLinear = 1;   // linear-light → shader skips EOTF
+      const rowU16 = w * 4;
+      const flipped = new Uint16Array(data.length);
+      for (let y = 0; y < h; y++) {
+        flipped.set(data.subarray(y * rowU16, (y + 1) * rowU16), (h - 1 - y) * rowU16);
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.baseTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, flipped);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
 
@@ -381,7 +457,7 @@ void main() {
       gl.uniformMatrix3fv(U.matrix, false, matrix);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.baseTex); gl.uniform1i(U.baseSampler, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.maskTex); gl.uniform1i(U.maskSampler, 1);
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.outlineTex); gl.uniform1i(U.outlineSampler, 2);
+      // (TEXTURE2 / u_outlineSampler retired — outlines are shader-computed from the mask)
       gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.paletteTex); gl.uniform1i(U.paletteSampler, 3);
       gl.uniform1f(U.maskOpacity, st.maskOpacity);
       gl.uniform1f(U.maskVisible, st.maskVisible);
@@ -397,6 +473,8 @@ void main() {
       gl.uniform1f(U.highlightAlpha, st.highlightAlpha == null ? 0.5 : st.highlightAlpha);
       gl.uniform1f(U.highlightBoost, st.highlightBoost == null ? 1.8 : st.highlightBoost);
       gl.uniform1f(U.outlineHdrBoost, st.outlineHdrBoost);
+      gl.uniform1f(U.baseHeadroom, st.baseHeadroom == null ? 1.0 : st.baseHeadroom);
+      gl.uniform1f(U.baseLinear, st.baseLinear == null ? 0 : st.baseLinear);
       const oc = st.outlineColor || [1, 0, 0];
       gl.uniform3f(U.outlineColor, oc[0], oc[1], oc[2]);
       gl.uniform1f(U.useOutlineColor, st.useOutlineColor);
@@ -429,12 +507,18 @@ void main() {
   }
 
   // Decode a ``<canvas data-label-tile>``'s attributes into a plain config.
+  // The big label/instance matrices come EITHER inline (``data-labels`` base64,
+  // small tiles) OR streamed (``data-labels-src`` URL → raw uint16 LE bytes,
+  // large tiles — keeps multi-MB matrices out of the SVG document). When
+  // streamed, ``labels``/``instances`` are null here; call ``fetchMatrices``
+  // (returns a Promise) before building the renderer.
   function decodeAttrs(el) {
     const w = +el.getAttribute('data-w'), h = +el.getAttribute('data-h');
     // data-labels = COLOR/group ids (palette lookup). data-instances =
     // INSTANCE ids for hover/picking; absent when color == instance (no
     // ncolor relabel), in which case the color ids double as instances.
-    const labels = new Uint16Array(_b64bytes(el.getAttribute('data-labels')).buffer);
+    const lblB64 = el.getAttribute('data-labels');
+    const labels = lblB64 ? new Uint16Array(_b64bytes(lblB64).buffer) : null;
     const instAttr = el.getAttribute('data-instances');
     const instances = instAttr
       ? new Uint16Array(_b64bytes(instAttr).buffer) : labels;
@@ -447,6 +531,8 @@ void main() {
     const oc = (ocAttr && ocAttr !== 'none') ? _hexColor(ocAttr) : null;
     return {
       w, h, labels, instances, palette,
+      labelsSrc: el.getAttribute('data-labels-src') || null,
+      instancesSrc: el.getAttribute('data-instances-src') || null,
       baseSrc: el.getAttribute('data-base') || null,
       uniforms: {
         maskOpacity: parseFloat(el.getAttribute('data-opacity') || '0.6'),
@@ -458,6 +544,47 @@ void main() {
         highlightLabel: 0,
       },
     };
+  }
+
+  // Ensure cfg.labels / cfg.instances are populated. If they were streamed
+  // (cfg.labelsSrc set, labels null), fetch the raw uint16 LE bytes (resolving
+  // the URL through the remote-tile proxy) and mutate cfg in place; otherwise
+  // resolve immediately. Returns a Promise<cfg>. Idempotent — a second call
+  // (e.g. the popup viewer after the inline controller already fetched) is a
+  // no-op because cfg.labels is now set.
+  function fetchMatrices(cfg) {
+    if (cfg.labels || !cfg.labelsSrc) return Promise.resolve(cfg);
+    function resolve(u) {
+      try { return (self.__ocdResolveTileUrl ? self.__ocdResolveTileUrl(u) : u); }
+      catch (e) { return u; }
+    }
+    function grab(u, tries) {
+      return fetch(resolve(u)).then(function (r) {
+        if (r.status === 204) return Promise.reject('204');   // attached off-thread; not ready
+        if (!r.ok) return Promise.reject(r.status);
+        return r.arrayBuffer();
+      }).then(function (b) { return new Uint16Array(b); })
+        .catch(function (e) {
+          // Retry on 204 AND transient TRANSPORT failures: under heavy kernel
+          // compute the GIL-starved in-kernel server / jupyter proxy cuts the
+          // response mid-stream (ERR_INCOMPLETE_CHUNKED_ENCODING → TypeError),
+          // which would otherwise leave the seg matrix empty (no labels/outlines).
+          // Only a real 4xx is fatal. Generous budget + backoff to outlast Run-All.
+          var fatal = (typeof e === 'number' && e >= 400 && e < 500);
+          if (!fatal && (tries || 0) < 600) {
+            return new Promise(function (res) { setTimeout(res, Math.min(250 + (tries || 0) * 30, 2000)); })
+              .then(function () { return grab(u, (tries || 0) + 1); });
+          }
+          throw e;
+        });
+    }
+    var jobs = [grab(cfg.labelsSrc)];
+    jobs.push(cfg.instancesSrc ? grab(cfg.instancesSrc) : Promise.resolve(null));
+    return Promise.all(jobs).then(function (res) {
+      cfg.labels = res[0];
+      cfg.instances = res[1] || res[0];
+      return cfg;
+    });
   }
 
   // '#rrggbb' → [r,g,b] floats in [0,1]; null on parse failure.
@@ -473,7 +600,20 @@ void main() {
   // it arrives so the caller can repaint.
   function buildRenderer(gl, cfg, onRender) {
     const r = new LabelGLRenderer(gl);
-    r.setLabels(cfg.labels, cfg.w, cfg.h, cfg.instances);
+    if (cfg.labels) {
+      r.setLabels(cfg.labels, cfg.w, cfg.h, cfg.instances);
+    } else if (cfg.labelsSrc) {
+      // Streamed matrix (large tiles ship the labels as a tileserve attachment,
+      // not inline base64). The figure-shell controller is FROZEN at import, so
+      // a running kernel can hold a stale copy that never fetches; do it HERE
+      // (label_gl.js is re-read each render) so the matrix loads + the outline
+      // draws regardless of controller version — no kernel restart. The canvas
+      // is transparent until the bytes arrive, then onRender repaints.
+      fetchMatrices(cfg).then(function () {
+        r.setLabels(cfg.labels, cfg.w, cfg.h, cfg.instances);
+        if (onRender) onRender();
+      }).catch(function (e) { console.warn('LabelGL matrix fetch failed:', e); });
+    }
     r.setPalette(cfg.palette);
     r.setUniforms(cfg.uniforms);
     if (cfg.baseSrc) {
@@ -524,6 +664,6 @@ void main() {
 
   return {
     LabelGLRenderer, ortho, orthoTile, VERT, FRAG,
-    decodeAttrs, buildRenderer, mat3ForFit, imagePointFromCss,
+    decodeAttrs, fetchMatrices, buildRenderer, mat3ForFit, imagePointFromCss,
   };
 }));
