@@ -2568,6 +2568,12 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         'position:absolute; inset:0; width:100%; height:100%;'
       + ' image-rendering:pixelated; pointer-events:none;';
       parent.appendChild(canvas);
+      // Unified WebGL2 context budget (the SAME pool the inline tiles use): reserve a
+      // slot for this popup's context — acquiring evicts an off-screen tile if we're at
+      // the cap, so opening a zoom never crosses Chrome's ~16-context limit.
+      var POOL = self.__ocdGLPool || (self.__ocdGLPool = __OCD_GL_POOL_IIFE__);
+      var _poolEntry = { cv: canvas, release: function () {} };   // on-screen -> never evicted
+      POOL.acquire(_poolEntry);
       const gl = canvas.getContext('webgl2',
         { alpha: true, premultipliedAlpha: false });
       if (!gl) { if (canvas.parentElement) canvas.parentElement.removeChild(canvas); return null; }
@@ -2786,6 +2792,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         if (baseImg && baseImg.parentElement) baseImg.parentElement.removeChild(baseImg);
         baseImg = null;
         try { const ext = gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (_) {}
+        try { POOL.release(_poolEntry); } catch (e) {}
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
       }
       function clearActive() {}  // one tile per popup session
@@ -5201,6 +5208,26 @@ def _load_label_gl_js():
 # shared LabelGLRenderer (palette fill + outlines), with hover-highlight.
 # One WebGL2 context per canvas (fine for the handful of label tiles a grid
 # carries; a shared context is a future optimization).
+_GL_POOL_IIFE = r'''(function () {
+    var cap = 12, live = [];
+    function off(cv) {
+      var r = cv.getBoundingClientRect(), vh = window.innerHeight || 0, vw = window.innerWidth || 0;
+      return r.bottom < -120 || r.top > vh + 120 || r.right < -120 || r.left > vw + 120;
+    }
+    return {
+      acquire: function (e) {
+        if (live.length >= cap) {
+          for (var i = 0; i < live.length; i++) {
+            if (off(live[i].cv)) { var v = live.splice(i, 1)[0]; try { v.release(); } catch (x) {} break; }
+          }
+        }
+        live.push(e);
+      },
+      release: function (e) { var i = live.indexOf(e); if (i >= 0) live.splice(i, 1); }
+    };
+  })()'''
+
+
 _LABEL_CONTROLLER_JS = r"""
 (function () {
   if (!self.LabelGL) return;
@@ -5219,24 +5246,7 @@ _LABEL_CONTROLLER_JS = r"""
   // before a tile builds a context, if we're at the cap, evict an off-screen tile
   // chosen by LIVE geometry (getBoundingClientRect — current even while the observer
   // is throttled). Shared by the label + colormap controllers (idempotent).
-  var POOL = self.__ocdGLPool || (self.__ocdGLPool = (function () {
-    var cap = 12, live = [];
-    function off(cv) {
-      var r = cv.getBoundingClientRect(), vh = window.innerHeight || 0, vw = window.innerWidth || 0;
-      return r.bottom < -120 || r.top > vh + 120 || r.right < -120 || r.left > vw + 120;
-    }
-    return {
-      acquire: function (e) {
-        if (live.length >= cap) {
-          for (var i = 0; i < live.length; i++) {
-            if (off(live[i].cv)) { var v = live.splice(i, 1)[0]; try { v.release(); } catch (x) {} break; }
-          }
-        }
-        live.push(e);
-      },
-      release: function (e) { var i = live.indexOf(e); if (i >= 0) live.splice(i, 1); }
-    };
-  })());
+  var POOL = self.__ocdGLPool || (self.__ocdGLPool = __OCD_GL_POOL_IIFE__);
   var tiles = wrapper.querySelectorAll('canvas[data-label-tile]');
   tiles.forEach(function (cv0) {
     if (cv0.__labelWired) return;
@@ -5415,24 +5425,7 @@ _COLORMAP_CONTROLLER_JS = r"""
   // Shared WebGL2 context budget (see the label controller for the rationale):
   // caps live contexts synchronously, evicting an off-screen tile by live geometry
   // when JupyterLab throttles the IntersectionObserver during scroll / Run-All.
-  var POOL = self.__ocdGLPool || (self.__ocdGLPool = (function () {
-    var cap = 12, live = [];
-    function off(cv) {
-      var r = cv.getBoundingClientRect(), vh = window.innerHeight || 0, vw = window.innerWidth || 0;
-      return r.bottom < -120 || r.top > vh + 120 || r.right < -120 || r.left > vw + 120;
-    }
-    return {
-      acquire: function (e) {
-        if (live.length >= cap) {
-          for (var i = 0; i < live.length; i++) {
-            if (off(live[i].cv)) { var v = live.splice(i, 1)[0]; try { v.release(); } catch (x) {} break; }
-          }
-        }
-        live.push(e);
-      },
-      release: function (e) { var i = live.indexOf(e); if (i >= 0) live.splice(i, 1); }
-    };
-  })());
+  var POOL = self.__ocdGLPool || (self.__ocdGLPool = __OCD_GL_POOL_IIFE__);
   wrapper.querySelectorAll('canvas[data-colormap-tile]').forEach(function (cv0) {
     if (cv0.__cmapWired) return;
     cv0.__cmapWired = true;
@@ -6483,6 +6476,9 @@ def interactive_shell(content_html: str, *,
     # click-to-expand hi-res (data-hires-href, e.g. tileserve /attach).
     if 'data-tile-src' in content_html or 'data-hires-href' in content_html:
         js = _TILE_BASE_RESOLVER_JS + "\n" + js
+    # One source of truth for the shared WebGL2 context-budget IIFE — inject it into
+    # every site that uses it (label + colormap controllers AND the zoom popup).
+    js = js.replace("__OCD_GL_POOL_IIFE__", _GL_POOL_IIFE)
     actions = ''
     if save_button or copy_button or hdr_button:
         buttons = []
