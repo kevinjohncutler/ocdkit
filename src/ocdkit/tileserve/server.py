@@ -232,6 +232,24 @@ def drop(sid: str):
         _SOURCES.pop(sid, None)
 
 
+# Command dispatch map for the out-of-process server (``tileserve/_proc.py``):
+# command name -> in-process implementation, used by the OOP child's control loop
+# to apply pushed commands to its own stores. ocdkit registers its own population
+# fns here; host packages add theirs via ``_register_dispatch`` (e.g. a host app's
+# spectra registration). UNUSED by the default in-process path.
+_DISPATCH: dict = {}
+
+
+def _register_dispatch(fn):
+    """Expose ``fn`` to the OOP child's control loop under its name (``fn.__name__``)."""
+    _DISPATCH[fn.__name__] = fn
+    return fn
+
+
+for _f in (register, register_pending, fill, register_array, attach, drop):
+    _DISPATCH[_f.__name__] = _f
+
+
 def _encode_level(lh: int, lw: int, arr: np.ndarray, fmt: str):
     """Encode a level array to bytes + media type for the wire.
 
