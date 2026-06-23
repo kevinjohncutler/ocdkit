@@ -70,11 +70,19 @@ def embed_viewer(sid, base, url, full_h, *, background="transparent", wref=WREF)
         "on the Jupyter server (jupyter server extension enable ocdkit.tileserve.jupyter_ext), "
         "then RESTART the Jupyter server. probe '+jb+'ocdkit-tiles/'+port+'/ failed ('+(code||'network')+')';"
         "f.parentNode.replaceChild(d,f);}"
-        "(function tryNext(i,last){"
-        "if(i>=bases.length){if(local){f.src=directUrl;}else{fail(last);}return;}"
+        # Local browser → load the kernel loopback directly. REMOTE browser → ONLY
+        # ever load through the Jupyter proxy; NEVER premount the 127.0.0.1 URL (there
+        # it's the viewer's OWN machine → "127.0.0.1 refused to connect"). Retry the
+        # probe chain a few times: the in-kernel tile server can be briefly GIL-starved
+        # during Run-All, and one failed probe must not strand the figure on an error.
+        "if(local){f.src=directUrl;}else{"
+        "(function tryNext(i,last,attempt){"
+        "if(i>=bases.length){"
+        "if((attempt||0)<6){setTimeout(function(){tryNext(0,last,(attempt||0)+1);},500);return;}"
+        "fail(last);return;}"
         "fetch(bases[i]+'/info/'+sid,{credentials:'same-origin'})"
-        ".then(function(r){if(r.ok){f.src=bases[i]+pathabs;}else{tryNext(i+1,r.status);}})"
-        ".catch(function(){tryNext(i+1,0);});})(0,0);"
+        ".then(function(r){if(r.ok){f.src=bases[i]+pathabs;}else{tryNext(i+1,r.status,attempt);}})"
+        ".catch(function(){tryNext(i+1,0,attempt);});})(0,0,0);}"
         # Spectra tooltip portal: the viewer iframe clips its own #sgtip at the
         # frame box, so it postMessages the hover (local coords + html) and WE draw
         # it on our document.body — offset by the iframe's position — so it escapes
@@ -95,7 +103,7 @@ def embed_viewer(sid, base, url, full_h, *, background="transparent", wref=WREF)
     )
     return HTML(
         f'<div style="line-height:0">'
-        f'<iframe id="{_iid}" src="{url}" scrolling="no" frameborder="0" allowtransparency="true" '
+        f'<iframe id="{_iid}" src="about:blank" scrolling="no" frameborder="0" allowtransparency="true" '
         f'allow="webgpu; clipboard-write" '
         f'style="display:block;border:0;width:100%;height:auto;color-scheme:dark;'
         f'background:{_bg};aspect-ratio:{wref:.0f} / {full_h:.1f};"></iframe></div>'
