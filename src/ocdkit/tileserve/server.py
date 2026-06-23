@@ -18,7 +18,7 @@ import uuid
 
 import numpy as np
 
-from ..plot.pyramid import image_pyramid, pyramid_dims
+from ._pyramid import image_pyramid, pyramid_dims
 
 
 # ─────────────────────────────── source ─────────────────────────────────
