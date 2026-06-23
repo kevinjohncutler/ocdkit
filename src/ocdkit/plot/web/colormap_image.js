@@ -146,7 +146,18 @@
       gl.bindVertexArray(null);
     }
 
-    destroy() { const gl = this.gl; if (this.imgTex) gl.deleteTexture(this.imgTex); if (this.lutTex) gl.deleteTexture(this.lutTex); if (this.prog) gl.deleteProgram(this.prog); }
+    destroy() {
+      const gl = this.gl;
+      if (this._ro) { try { this._ro.disconnect(); } catch (e) {} this._ro = null; }
+      if (this._raf) { try { cancelAnimationFrame(this._raf); } catch (e) {} this._raf = 0; }
+      if (this.imgTex) gl.deleteTexture(this.imgTex);
+      if (this.lutTex) gl.deleteTexture(this.lutTex);
+      if (this.prog) gl.deleteProgram(this.prog);
+      // Release the CONTEXT itself (not just its GL resources) — Chrome caps live
+      // WebGL2 contexts at ~16; the colormap-tile controller releases off-screen
+      // tiles so a long notebook doesn't blow the cap and blank older figures.
+      try { const ext = gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) {}
+    }
   }
 
   // Dispatcher: WebGPU (HDR) when available, else WebGL2 (SDR). Probes the GPU

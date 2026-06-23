@@ -5209,28 +5209,31 @@ _LABEL_CONTROLLER_JS = r"""
     return u;
   }
   var tiles = wrapper.querySelectorAll('canvas[data-label-tile]');
-  tiles.forEach(function (cv) {
-    if (cv.__labelWired) return;
-    cv.__labelWired = true;
-    var cfg = self.LabelGL.decodeAttrs(cv);  // shared decode (also used by popup)
-    cv.__labelCfg = cfg;                      // popup reuses this config
+  tiles.forEach(function (cv0) {
+    if (cv0.__labelWired) return;
+    cv0.__labelWired = true;
+    var cv = cv0;                              // CURRENT canvas (swapped on release)
+    var cfg = self.LabelGL.decodeAttrs(cv0);   // shared decode (also used by popup)
     var w = cfg.w, h = cfg.h;
-    var gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
-    if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
-    // HDR: float16 extended-range backbuffer so a >1.0 outline/highlight color
-    // emits TRUE HDR instead of clamping to SDR white. Needs EXT_color_buffer_float.
-    var _hdrBuf = !!gl.drawingBufferStorage;
-    if (_hdrBuf) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
-    // Render at DISPLAY resolution (capped at the native matrix), NOT the full
-    // 2000² matrix. The shader detects the outline at the canvas's own pixels, so a
-    // display-res canvas makes ``dFdx`` = 1 DISPLAY pixel → the contour stays crisp
-    // and gap-free on a small tile (it was a 1-matrix-px line that the CSS downscale
-    // then speckled — the whole reason the outline only looked right in the zoom).
-    // Bonus: ~10x smaller backbuffer per tile (eases the WebGL-context budget). The
-    // RGBA16F HDR store must be (re)allocated AFTER cv.width/height (they reset it).
+    var _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
+    // Lazy WebGL2 context: a label tile holds a context only while it's (near-)
+    // visible. Chrome caps live WebGL2 contexts at ~16; a notebook with many
+    // seg/colormap tiles blows past that and the browser silently drops the OLDEST
+    // context, blanking earlier figures. mount() builds on intersect; unmount()
+    // releases (loseContext) when scrolled far off and swaps in a FRESH canvas — a
+    // loseContext'd canvas can't re-acquire a context (restoreContext is
+    // unreliable), so the next mount() builds a new context on the clone. The
+    // decoded cfg + cv.__labelCfg (popup reuse) survive release; the streamed-
+    // matrix re-fetch on remount is cache-cheap.
+    var gl = null, r = null, _hdrBuf = false, mounted = false, cur = 0, _tip = null, io = null;
     function sizeCanvas() {
+      if (!gl) return;
       var dpr = window.devicePixelRatio || 1;
       var rect = cv.getBoundingClientRect();
+      // DISPLAY resolution (capped at native): the shader detects the outline at the
+      // canvas's own pixels, so dFdx = 1 display px -> crisp, gap-free contour on a
+      // small tile (a 1-matrix-px line speckles on CSS downscale); also ~10x smaller
+      // backbuffer. RGBA16F HDR store re-allocated AFTER cv.width/height (they reset it).
       var dw = Math.min(w, Math.max(1, Math.round((rect.width || w) * dpr)));
       var dh = Math.min(h, Math.max(1, Math.round((rect.height || h) * dpr)));
       if (cv.width !== dw || cv.height !== dh) {
@@ -5238,76 +5241,89 @@ _LABEL_CONTROLLER_JS = r"""
         if (_hdrBuf) { try { gl.drawingBufferStorage(gl.RGBA16F, dw, dh); } catch (e) {} }
       }
     }
-    sizeCanvas();
-    // Streamed matrices (large tiles ship the label/instance arrays as
-    // tileserve attachments, not inline base64, to keep the SVG small): fetch
-    // them before building. Inline tiles resolve synchronously (no-op).
-    self.LabelGL.fetchMatrices(cfg).then(function () {
-    var r;
-    try { r = self.LabelGL.buildRenderer(gl, cfg, function () { render(); }); }
-    catch (e) { console.warn('LabelGL:', e); return; }
     function render() {
-      sizeCanvas();                              // track display size (responsive / dpr)
+      if (!r) return;
+      sizeCanvas();
       gl.viewport(0, 0, cv.width, cv.height);
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       r.draw(self.LabelGL.ortho());
     }
-    // (outline width is now shader-computed from dFdx/textureSize — no LOD uniform.)
-    render();
-    cv.__labelRender = render;
-    cv.__labelRenderer = r;
-    try {
-      var _ro = new ResizeObserver(function () { render(); });
-      _ro.observe(cv);
-    } catch (e) {}
-    // HDR toggle response: in SDR mode drop the boosts to 1.0 so the outline /
-    // hover emit at SDR white (≤1.0) instead of HDR-bright; in HDR mode use
-    // the configured boosts. Exposed for the shell's HDR button; applied now
-    // for the figure's initial state.
-    var _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
-    cv.__labelSetSdr = function (sdr) {
-      r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
-                      highlightBoost: sdr ? 1.0 : 1.8 });
-      render();
-    };
-    cv.__labelSetSdr(wrapper.classList.contains('ocd-sdr-mode'));
-    // hover-highlight + label-id tooltip (mirror the viewer's labelAt)
-    var tip = null;
     function ensureTip() {
-      if (!tip) {
-        tip = document.createElement('div');
-        tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
+      if (!_tip) {
+        _tip = document.createElement('div');
+        _tip.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;'
           + 'background:rgba(20,20,22,0.4);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);'
           + 'color:#eee;font:11px system-ui,sans-serif;padding:4px 8px;border-radius:6px;'
           + 'box-shadow:0 2px 8px rgba(0,0,0,0.3);display:none;';
-        document.body.appendChild(tip);
+        document.body.appendChild(_tip);
       }
-      return tip;
+      return _tip;
     }
-    var cur = 0;
-    cv.addEventListener('pointermove', function (e) {
+    function onMove(e) {
+      if (!r) return;
       var rect = cv.getBoundingClientRect();
       var px = Math.floor((e.clientX - rect.left) / rect.width * w);
       var py = Math.floor((e.clientY - rect.top) / rect.height * h);
       var id = r.labelAt(px, py);
-      if (id !== cur) {
-        cur = id;
-        r.setUniforms({ highlightLabel: id });
-        render();
-      }
+      if (id !== cur) { cur = id; r.setUniforms({ highlightLabel: id }); render(); }
       var t = ensureTip();
-      if (id > 0) {
-        t.textContent = 'label ' + id;
-        t.style.display = 'block';
-        t.style.left = (e.clientX + 12) + 'px';
-        t.style.top = (e.clientY + 12) + 'px';
-      } else { t.style.display = 'none'; }
-    });
-    cv.addEventListener('pointerleave', function () {
-      cur = 0; r.setUniforms({ highlightLabel: 0 }); render();
-      if (tip) tip.style.display = 'none';
-    });
-    }).catch(function (e) { console.warn('LabelGL fetch/build failed:', e); });
+      if (id > 0) { t.textContent = 'label ' + id; t.style.display = 'block';
+        t.style.left = (e.clientX + 12) + 'px'; t.style.top = (e.clientY + 12) + 'px'; }
+      else { t.style.display = 'none'; }
+    }
+    function onLeave() {
+      cur = 0; if (r) { r.setUniforms({ highlightLabel: 0 }); render(); }
+      if (_tip) _tip.style.display = 'none';
+    }
+    function build() {
+      gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
+      if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
+      // float16 extended-range backbuffer so a >1.0 outline/highlight emits TRUE HDR.
+      _hdrBuf = !!gl.drawingBufferStorage;
+      if (_hdrBuf) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
+      sizeCanvas();
+      cv.__labelCfg = cfg;
+      cv.__labelRender = render;
+      // HDR/SDR toggle (shell button): SDR drops boosts to 1.0; HDR uses configured.
+      cv.__labelSetSdr = function (sdr) {
+        if (!r) return;
+        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr, highlightBoost: sdr ? 1.0 : 1.8 });
+        render();
+      };
+      cv.addEventListener('pointermove', onMove);
+      cv.addEventListener('pointerleave', onLeave);
+      try { new ResizeObserver(function () { render(); }).observe(cv); } catch (e) {}
+      self.LabelGL.fetchMatrices(cfg).then(function () {
+        if (!mounted || !gl) return;                   // released while fetching
+        try { r = self.LabelGL.buildRenderer(gl, cfg, render); }
+        catch (e) { console.warn('LabelGL:', e); return; }
+        cv.__labelRenderer = r;
+        if (cur) r.setUniforms({ highlightLabel: cur });   // restore hover on remount
+        cv.__labelSetSdr(wrapper.classList.contains('ocd-sdr-mode'));
+        render();
+      }).catch(function (e) { console.warn('LabelGL fetch/build failed:', e); });
+    }
+    function mount() { if (mounted) return; mounted = true; build(); }
+    function unmount() {
+      if (!mounted) return;
+      mounted = false;
+      var _gl = gl; gl = null; r = null; cv.__labelRenderer = null;
+      try { var ext = _gl && _gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) {}
+      // swap in a FRESH clone (loseContext'd canvas can't re-getContext); carry the
+      // popup config + re-point the observer so the next mount() builds anew.
+      var fresh = cv.cloneNode(false);
+      fresh.__labelCfg = cfg;
+      if (cv.parentNode) cv.parentNode.replaceChild(fresh, cv);
+      if (io) { try { io.unobserve(cv); } catch (e) {} }
+      cv = fresh;
+      if (io) io.observe(cv);
+    }
+    if (typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(function (ents) {
+        ents.forEach(function (en) { if (en.isIntersecting) mount(); else unmount(); });
+      }, { rootMargin: '800px' });
+      io.observe(cv);
+    } else { mount(); }
   });
 })();
 """.strip()
@@ -5364,9 +5380,10 @@ _COLORMAP_CONTROLLER_JS = r"""
     }
     return out;
   }
-  wrapper.querySelectorAll('canvas[data-colormap-tile]').forEach(function (cv) {
-    if (cv.__cmapWired) return;
-    cv.__cmapWired = true;
+  wrapper.querySelectorAll('canvas[data-colormap-tile]').forEach(function (cv0) {
+    if (cv0.__cmapWired) return;
+    cv0.__cmapWired = true;
+    var cv = cv0;                          // CURRENT canvas (swapped on release)
     var w = +cv.getAttribute('data-w'), h = +cv.getAttribute('data-h');
     var cmap = cv.getAttribute('data-cmap') || 'magma';
     var lo = parseFloat(cv.getAttribute('data-lo') || '0');
@@ -5374,32 +5391,68 @@ _COLORMAP_CONTROLLER_JS = r"""
     var scalar = f16to32(new Uint16Array(b64bytes(cv.getAttribute('data-scalar')).buffer));
     // SDR tiles use the synchronous WebGL2 path (no cold WebGPU device init → no
     // blank-canvas flash); HDR tiles keep WebGPU. See colormap_tile_canvas(hdr=…).
-    var cmapOpts = cv.getAttribute('data-cmap-sdr') === '1' ? { forceWebgl: true } : {};
-    self.ColormapImage.createColormapRenderer(cv, cmapOpts).then(function (r) {
-      r.setColormap(cmap);
-      r.setRange(lo, hi);
-      r.setImage(scalar, w, h);   // thumb first → instant low-res paint
-      cv.__cmapRenderer = r;
-      // Auto-upgrade the inline face to FULL resolution as soon as it renders:
-      // fetch the streamed raw f16 scalar and re-upload. The tile is served with
-      // an ``immutable`` cache header, so the bytes are HTTP-cached — a later
-      // click-to-zoom popup reuses them (no second fetch). Opt out with
-      // ``data-hires-auto="0"`` (the cache still spares the zoom a refetch).
-      var hsrc = cv.getAttribute('data-hires-scalar');
-      var hw = +cv.getAttribute('data-hires-w'), hh = +cv.getAttribute('data-hires-h');
-      if (hsrc && hw && hh && cv.getAttribute('data-hires-auto') !== '0') {
-        fetch(hsrc).then(function (resp) { return resp.ok ? resp.arrayBuffer() : null; })
-          .then(function (buf) {
-            if (buf && cv.__cmapRenderer) {
-              var hi32 = f16to32(new Uint16Array(buf));
-              r.setImage(hi32, hw, hh);
-              // Stash the decoded full-res scalar on the canvas so the click-to-zoom
-              // popup reuses it directly (no thumb flash, no second fetch/decode).
-              cv.__hiresScalar = { data: hi32, w: hw, h: hh };
-            }
-          }).catch(function (e) { console.warn('ColormapImage hi-res:', e); });
-      }
-    }).catch(function (e) { console.warn('ColormapImage:', e); });
+    var isSdr = cv.getAttribute('data-cmap-sdr') === '1';
+    var cmapOpts = isSdr ? { forceWebgl: true } : {};
+    var mounted = false, r = null, io = null, hires = null;   // hires survives swaps
+    function build() {
+      self.ColormapImage.createColormapRenderer(cv, cmapOpts).then(function (rr) {
+        if (!mounted) { if (rr.destroy) rr.destroy(); return; }   // released mid-create
+        r = rr; cv.__cmapRenderer = rr;
+        rr.setColormap(cmap); rr.setRange(lo, hi);
+        // Full-res scalar from a prior mount? re-upload directly (no thumb flash /
+        // re-fetch); else paint the thumb then auto-upgrade.
+        if (hires) { rr.setImage(hires.data, hires.w, hires.h); return; }
+        rr.setImage(scalar, w, h);   // thumb first → instant low-res paint
+        // Auto-upgrade the inline face to FULL resolution: fetch the streamed raw
+        // f16 scalar and re-upload. Served ``immutable`` so the bytes are HTTP-
+        // cached — a click-to-zoom popup (or a remount) reuses them. Opt out with
+        // ``data-hires-auto="0"`` (the cache still spares the zoom a refetch).
+        var hsrc = cv.getAttribute('data-hires-scalar');
+        var hw = +cv.getAttribute('data-hires-w'), hh = +cv.getAttribute('data-hires-h');
+        if (hsrc && hw && hh && cv.getAttribute('data-hires-auto') !== '0') {
+          fetch(hsrc).then(function (resp) { return resp.ok ? resp.arrayBuffer() : null; })
+            .then(function (buf) {
+              if (buf && cv.__cmapRenderer === rr) {
+                var hi32 = f16to32(new Uint16Array(buf));
+                rr.setImage(hi32, hw, hh);
+                hires = { data: hi32, w: hw, h: hh }; cv.__hiresScalar = hires;
+              }
+            }).catch(function (e) { console.warn('ColormapImage hi-res:', e); });
+        }
+      }).catch(function (e) { console.warn('ColormapImage:', e); });
+    }
+    function mount() { if (mounted) return; mounted = true; build(); }
+    function unmount() {
+      if (!mounted) return;
+      mounted = false;
+      var rr = r; r = null;
+      if (rr && rr.destroy) { try { rr.destroy(); } catch (e) {} }   // free GL + loseContext
+      // A loseContext'd canvas can't re-acquire a context (and restoreContext is
+      // unreliable), so swap in a FRESH clone (attrs copied) and re-point the
+      // observer — the next mount() builds a brand-new context on it. The cached
+      // full-res scalar rides in `hires` (mirrored to the clone for the popup).
+      var fresh = cv.cloneNode(false);
+      cv.__cmapRenderer = null;
+      if (hires) fresh.__hiresScalar = hires;
+      if (cv.parentNode) cv.parentNode.replaceChild(fresh, cv);
+      if (io) { try { io.unobserve(cv); } catch (e) {} }
+      cv = fresh;
+      if (io) io.observe(cv);
+    }
+    // Lazy contexts (WebGL2 SDR tiles only): hold a context just while (near-)
+    // visible so a long notebook never exceeds Chrome's ~16-context cap (the
+    // browser would otherwise drop the OLDEST and blank earlier figures). The
+    // decoded scalar + cached full-res survive release; WebGL2 re-init is cheap
+    // and flash-free. HDR/WebGPU tiles share ONE device (no per-tile WebGL2
+    // context, and a cold re-init flashes) → mount once, eagerly (no swap).
+    if (isSdr && typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(function (ents) {
+        ents.forEach(function (en) { if (en.isIntersecting) mount(); else unmount(); });
+      }, { rootMargin: '800px' });
+      io.observe(cv);
+    } else {
+      mount();
+    }
   });
 })();
 """.strip()
