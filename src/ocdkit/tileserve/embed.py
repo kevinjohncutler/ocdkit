@@ -74,7 +74,24 @@ def embed_viewer(sid, base, url, full_h, *, background="transparent", wref=WREF)
         "if(i>=bases.length){if(local){f.src=directUrl;}else{fail(last);}return;}"
         "fetch(bases[i]+'/info/'+sid,{credentials:'same-origin'})"
         ".then(function(r){if(r.ok){f.src=bases[i]+pathabs;}else{tryNext(i+1,r.status);}})"
-        ".catch(function(){tryNext(i+1,0);});})(0,0);})();</script>"
+        ".catch(function(){tryNext(i+1,0);});})(0,0);"
+        # Spectra tooltip portal: the viewer iframe clips its own #sgtip at the
+        # frame box, so it postMessages the hover (local coords + html) and WE draw
+        # it on our document.body — offset by the iframe's position — so it escapes
+        # the frame and overlays the whole notebook. One shared portal div; each
+        # iframe's listener filters to its own contentWindow.
+        "window.addEventListener('message',function(ev){"
+        "if(ev.source!==f.contentWindow)return;"
+        "var d=ev.data&&ev.data.__ocdSgTip;if(!d)return;"
+        "var t=document.getElementById('ocd-sgtip-portal');"
+        "if(!t){t=document.createElement('div');t.id='ocd-sgtip-portal';"
+        "t.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;display:none;background:rgba(20,20,22,0.55);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);color:#eee;font:11px/1.35 system-ui,sans-serif;padding:4px 8px;border-radius:6px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.4)';"
+        "document.body.appendChild(t);}"
+        "if(d.hide){t.style.display='none';return;}"
+        "var r=f.getBoundingClientRect();t.innerHTML=d.html;t.style.display='block';"
+        "t.style.left=(r.left+d.x+14)+'px';t.style.top=(r.top+d.y+14)+'px';"
+        "});"
+        "})();</script>"
     )
     return HTML(
         f'<div style="line-height:0">'

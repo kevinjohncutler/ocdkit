@@ -1785,13 +1785,26 @@ function drawSpectra(){
     .then(ok=>{ if(ok===false) console.warn('SpectraGL: WebGPU unavailable (iframe needs allow="webgpu")'); })
     .catch(e=>console.warn('spectra render:', e));
 }
+// Tooltip emitter: in an iframe the local #sgtip is clipped by the frame box, so
+// when embedded we postMessage the hover to the parent, which draws it on its OWN
+// document.body — escaping the frame to overlay the whole notebook. A top-level
+// viewer (opened directly) keeps the local #sgtip. Parent side: embed_viewer.
+const _sgEmbedded = !!(window.parent && window.parent !== window);
+function sgTipShow(html, cx, cy){
+  if(_sgEmbedded){ try{ window.parent.postMessage({__ocdSgTip:{html:html, x:cx, y:cy}}, '*'); }catch(e){} return; }
+  const t=document.getElementById('sgtip'); if(!t) return;
+  t.innerHTML=html; t.style.display='block'; t.style.left=(cx+14)+'px'; t.style.top=(cy+14)+'px';
+}
+function sgTipHide(){
+  if(_sgEmbedded){ try{ window.parent.postMessage({__ocdSgTip:{hide:true}}, '*'); }catch(e){} return; }
+  const t=document.getElementById('sgtip'); if(t) t.style.display='none';
+}
 // Live-selectable: hover the density to highlight the nearest cell's spectrum on
 // the 2D overlay + show its id/label. Pointer events land on #specovl (it's above
 // the density; the SVG axes overlay above it is pointer-events:none). The grid
 // canvas is in the grid region only, so this never steals pan/zoom events.
 (function(){
-  const ov=document.getElementById('specovl'), cv=document.getElementById('speccv'),
-        tip=document.getElementById('sgtip');
+  const ov=document.getElementById('specovl'), cv=document.getElementById('speccv');
   if(!ov || !cv) return;
   ov.addEventListener('pointermove', e=>{
     const st=cv.__sgState; if(!st || !PANEL) return;
@@ -1801,16 +1814,15 @@ function drawSpectra(){
     const cfg=_specCfg;
     if(line>=0 && cfg && cfg.cellIds){
       const lab=(cfg.cellLabels && cfg.cellLabels[line]) || '';
-      tip.innerHTML='Cell '+cfg.cellIds[line]+(lab?'<br>'+lab:'');
-      tip.style.display='block'; tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px';
+      sgTipShow('Cell '+cfg.cellIds[line]+(lab?'<br>'+lab:''), e.clientX, e.clientY);
       refSetTemp(refTokens(lab));   // light up this cell's matching reference overlays
       const _cid=cfg.cellIds[line];
       if(_snap) snapToCell(_cid);              // snap (toggle): zoom grid to this cell
       highlightCellInGrid(_cid);               // ALWAYS: white cell outline on every tile
-    } else { tip.style.display='none'; refClearTemp(); clearCellHighlight(); }
+    } else { sgTipHide(); refClearTemp(); clearCellHighlight(); }
   });
   ov.addEventListener('pointerleave', ()=>{ try{ PANEL.clearHighlight(ov); }catch(_){}
-    if(tip) tip.style.display='none'; refClearTemp(); clearCellHighlight(); });
+    sgTipHide(); refClearTemp(); clearCellHighlight(); });
 })();
 // ── Cell info: per-cell bboxes + downsampled id map (snap-to-cell + reverse
 // spectrum highlight). Loaded once (204-retries while the seg processes).
@@ -1924,7 +1936,7 @@ function strokeSpectrumById(id){
 function clearCellSpectrum(){
   const ov=document.getElementById('specovl');
   if(ov && PANEL){ try{ PANEL.clearHighlight(ov); }catch(e){} }
-  const tip=document.getElementById('sgtip'); if(tip) tip.style.display='none';
+  sgTipHide();
   refClearTemp(); clearCellHighlight();
 }
 // Grid-cell hover → look up the cell id under the cursor (downsampled id map at
@@ -1939,10 +1951,8 @@ function hoverCellSpectrum(cell, e){
   const id=_idMap[my*_idW+mx];
   if(!(id>0)){ clearCellSpectrum(); return; }
   const line=PANEL.highlightById(document.getElementById('speccv'),document.getElementById('specovl'),id,'rgba(255,80,80,0.95)');
-  const tip=document.getElementById('sgtip');
   const lab=(line>=0 && _specCfg && _specCfg.cellLabels && _specCfg.cellLabels[line])||'';
-  if(tip){ tip.innerHTML='Cell '+id+(lab?'<br>'+lab:'');
-    tip.style.display='block'; tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+14)+'px'; }
+  sgTipShow('Cell '+id+(lab?'<br>'+lab:''), e.clientX, e.clientY);
   refSetTemp(refTokens(lab));
   highlightCellInGrid(id);   // also outline the hovered cell (with or without snap)
 }
