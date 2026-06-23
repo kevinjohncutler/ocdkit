@@ -593,9 +593,16 @@ def ensure_server() -> str:
             from . import _proc
             _port = _pick_port()
             _exts = sorted({getattr(fn, "__module__", "") for fn in _EXTENSIONS} - {""})
-            _OOP_CLIENT = _proc.spawn(_port, _exts)
-            _SERVER = {"oop": _OOP_CLIENT, "url": _OOP_CLIENT.url}
-            return _OOP_CLIENT.url
+            try:
+                _OOP_CLIENT = _proc.spawn(_port, _exts)
+                _SERVER = {"oop": _OOP_CLIENT, "url": _OOP_CLIENT.url}
+                return _OOP_CLIENT.url
+            except Exception as _e:                  # child won't start → don't break figures
+                import warnings
+                warnings.warn(
+                    f"tileserve out-of-process child failed to start ({_e!r}); "
+                    "falling back to the in-process server", RuntimeWarning)
+                _OOP_CLIENT = None                   # population fns route in-process again
         import sys
         import time
         import socket
