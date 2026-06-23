@@ -3378,12 +3378,15 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
             // the thumb on failure (server unreachable / can't decode JXL).
             fetching = false;
             const n = (attempt || 0);
-            // Retry for ~25s (was 5s), backing off to 750ms. On a CELL RE-RUN the
-            // in-kernel tile server is GIL-starved by the kernel re-executing, so the
-            // hi-res attach can take well over 5s; the old 20×250ms gave up too early
-            // and stranded the tile on the low-res disp thumb (= the no-upgrade / seam
-            // on the 2nd run). image-rendering:auto keeps that wait seam-free meanwhile.
-            if (n < 50) setTimeout(() => prefetch(n + 1), Math.min(250 + n * 25, 750));
+            // Retry for ~4min, backing off to 4s. During a big RUN-ALL the in-kernel
+            // tile server is GIL-starved by the kernel executing, so the hi-res attach
+            // can be unreachable for the WHOLE run; the old ~25s window gave up mid-run
+            // and stranded the tile on the low-res thumb permanently (it never retried
+            // even after the kernel idled). The long, widely-spaced backoff rides out
+            // the run with little added load (a fast retry storm only worsens the
+            // contention) and upgrades as soon as the kernel idles. image-rendering:auto
+            // keeps the wait seam-free meanwhile. (Root fix = out-of-process server.)
+            if (n < 90) setTimeout(() => prefetch(n + 1), Math.min(300 + n * 60, 4000));
             else console.warn('SvgFigure hi-res upgrade gave up for', hiresHref);
           });
           // First attempt: BARE url (exactly the original working behavior — so
