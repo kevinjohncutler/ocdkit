@@ -49,36 +49,6 @@ def _srgb_oetf(x):
     return np.where(x <= 0.0031308, 12.92 * x, 1.055 * np.power(np.clip(x, 0, None), 1 / 2.4) - 0.055)
 
 
-class _LazyHdrHires:
-    """Deferred hi-res source for a data-hdr cell — a raw float ARRAY or a unified
-    SCENE. The full-res sRGB-OETF + PNG encode (and, for a scene, the linear-P3
-    resolve) runs in ``get_bytes()`` — called on the background hi-res-attach
-    daemon thread — NOT at grid-build time. So a data-hdr grid builds at ~native
-    speed (only the small inline thumb is encoded eagerly) and every cell streams
-    its hi-res the same cheap way (was: a sync ~60ms full-res OETF per array cell,
-    ~7ms per scene thumb). For a scene, ``cell_hdr`` was set only when it already
-    resolved to linear, so the decode here is known-good."""
-    content_type = 'image/png'
-
-    def __init__(self, it):
-        import threading
-        self._it = it
-        self._bytes = None
-        self._lock = threading.Lock()
-
-    def get_bytes(self):
-        with self._lock:
-            if self._bytes is None:
-                from ..io.figure_server import resolve_linear_p3, ArraySource
-                it = self._it
-                lin = (it if isinstance(it, np.ndarray)
-                       else resolve_linear_p3(it, target_px=None))
-                self._bytes = ArraySource(
-                    _srgb_oetf(np.clip(np.asarray(lin, np.float32), 0.0, 1.0)),
-                    fmt='png').get_bytes()
-        return self._bytes
-
-
 class _RawF16Source:
     """Raw float16 RGBA tile for DIRECT GPU upload — NO image codec at all. The
     static-HDR controller fetches these bytes and does ``device.queue.writeTexture``
@@ -635,7 +605,7 @@ def image_grid(
                 hires_urls.append(None)
                 raw_disp_urls.append(None)
                 continue
-            if isinstance(src, (ArraySource, _LazyHdrHires, _RawF16Source)):
+            if isinstance(src, (ArraySource, _RawF16Source)):
                 _n_encode_hires += 1   # in-memory encode (vs zero-cost PathSource file)
             _name = f'hires{i}'
             hires_urls.append(f'{_tbase}/attach/{_tsid}/{_name}')

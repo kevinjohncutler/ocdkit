@@ -55,7 +55,6 @@ out vec4 outColor;
 
 uniform sampler2D u_baseSampler;
 uniform sampler2D u_maskSampler;
-uniform sampler2D u_outlineSampler;
 uniform sampler2D u_paletteSampler;
 
 uniform float u_maskOpacity;
@@ -250,7 +249,6 @@ void main() {
       this.gl = gl;
       this.w = 0; this.h = 0;
       this.labels = null;            // Int32Array CPU copy for labelAt()
-      this.outlineState = null;      // Uint8Array boundary flags
       this.paletteSize = 256;
       this.usePalette = 0;
       this.uniformsState = {
@@ -265,7 +263,7 @@ void main() {
       this.prog = prog;
       this.u = {};
       [
-        'matrix', 'baseSampler', 'maskSampler', 'outlineSampler', 'paletteSampler',
+        'matrix', 'baseSampler', 'maskSampler', 'paletteSampler',
         'maskOpacity', 'maskVisible', 'outlinesVisible', 'maskStyle', 'imageVisible',
         'colorOffset', 'paletteSize', 'usePalette', 'highlightLabel',
         'highlightColor', 'highlightAlpha', 'highlightBoost',
@@ -289,7 +287,6 @@ void main() {
       this.posBuffer = pos;
 
       this.maskTex = this._mkTex(gl.NEAREST);
-      this.outlineTex = this._mkTex(gl.NEAREST);
       this.paletteTex = this._mkTex(gl.NEAREST);
       // NEAREST, not LINEAR: the base (e.g. a max projection under the labels)
       // must show real pixels on zoom — matching the RGB raster tile's
@@ -340,64 +337,8 @@ void main() {
       gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
       gl.bindTexture(gl.TEXTURE_2D, null);
-      // Outlines are now detected per DISPLAY pixel in the fragment shader from the
-      // mask's instance ids (see _instAt), so the O(w*h) boundary scan + R8 upload
-      // are no longer needed — skipping them is the per-tile speedup. (_computeOutline
-      // / _uploadOutlineFull / uploadOutlineRegion remain as a dormant API.)
-    }
-
-    // boundary = any 4-neighbour has a different instance id (mirror
-    // app.js outlineState — uses INSTANCE ids, see this.labels above)
-    _computeOutline() {
-      const { w, h, labels } = this;
-      const o = new Uint8Array(w * h);
-      for (let y = 0; y < h; y += 1) {
-        for (let x = 0; x < w; x += 1) {
-          const i = y * w + x;
-          const v = labels[i];
-          if (v === 0) continue;
-          let edge = (x === 0) || (y === 0) || (x === w - 1) || (y === h - 1);
-          if (!edge) {
-            edge = labels[i - 1] !== v || labels[i + 1] !== v ||
-                   labels[i - w] !== v || labels[i + w] !== v;
-          }
-          if (edge) o[i] = 1;
-        }
-      }
-      this.outlineState = o;
-    }
-    _uploadOutlineFull() {
-      const gl = this.gl;
-      const buf = new Uint8Array(this.w * this.h);
-      for (let i = 0; i < buf.length; i += 1) buf[i] = this.outlineState[i] ? 255 : 0;
-      gl.bindTexture(gl.TEXTURE_2D, this.outlineTex);
-      // R8 = 1 byte/pixel, but the default UNPACK_ALIGNMENT is 4 — so a row
-      // whose width isn't a multiple of 4 (e.g. a 1997-px seg) is read with the
-      // wrong stride → the boundary texture shears/corrupts and the outline
-      // disappears. (RGBA8 textures are always 4-aligned, so only this R8 one
-      // needs it.) Set alignment 1 for the tight upload, then restore.
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.w, this.h, 0, gl.RED, gl.UNSIGNED_BYTE, buf);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-      gl.bindTexture(gl.TEXTURE_2D, null);
-    }
-    // dirty-region upload (mirror app.js uploadOutlineRegion) — for edited masks
-    uploadOutlineRegion(rect) {
-      const gl = this.gl, { w } = this;
-      const area = rect.width * rect.height;
-      if (area <= 0) return;
-      const buf = new Uint8Array(area);
-      let off = 0;
-      for (let r = 0; r < rect.height; r += 1) {
-        const base = (rect.y + r) * w + rect.x;
-        for (let c = 0; c < rect.width; c += 1) buf[off++] = this.outlineState[base + c] ? 255 : 0;
-      }
-      gl.bindTexture(gl.TEXTURE_2D, this.outlineTex);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);   // R8 tight rows (see _uploadOutlineFull)
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, rect.x, rect.y, rect.width, rect.height,
-        gl.RED, gl.UNSIGNED_BYTE, buf);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      // Outlines are detected per DISPLAY pixel in the fragment shader from the
+      // mask's instance ids (see _instAt) — no CPU boundary scan / R8 texture.
     }
 
     // rgba: Uint8Array length n*4 (palette[0]=bg). null → procedural sinebow.

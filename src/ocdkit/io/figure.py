@@ -2719,16 +2719,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         syncSize();
         gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
         gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
-        // Screen-px outline at the CURRENT zoom: the image spans
-        // imgW*fit*scale device px on screen; u_outlineLod = log2(matrix /
-        // that) keeps the boundary ~1 screen px (and goes to 0 = crisp as you
-        // zoom in). Mirrors the inline controller's updateOutlineLod.
-        var _fit = Math.min(_cssW / imgW, _cssH / imgH);
-        var _dispW = Math.max(1, imgW * _fit * ((s && s.s) || 1) * _dpr);
-        var _ratio = imgW / _dispW;
-        var _lod = _ratio > 1.001 ? Math.log(_ratio) / Math.LN2 : 0.0;
-        var _thr = _lod > 0.001 ? Math.max(0.06, Math.min(0.5, 0.55 / Math.pow(2, _lod))) : 0.5;
-        r.setUniforms({ outlineLod: _lod, outlineThresh: _thr });
+        // (outline width is computed in the shader now from dFdx/textureSize — no
+        // outlineLod/outlineThresh uniforms needed.)
         r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));
         // Track the SDR base <img> to the SAME fit+pan+zoom the shader uses
         // (mat3ForFit's geometry), so the browser-composited HDR base stays
@@ -5260,28 +5252,12 @@ _LABEL_CONTROLLER_JS = r"""
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
       r.draw(self.LabelGL.ortho());
     }
-    // Screen-px outline: the GPU outline is 1 matrix-texel wide, which goes
-    // sub-pixel (invisible) when a large matrix (e.g. 2048 seg) is drawn small.
-    // Set u_outlineLod = log2(matrixTexels / deviceDisplayPx) so the shader
-    // samples a coarser mip and the boundary stays ~1 screen px; floor the
-    // threshold to keep the averaged edge solid. Recompute on resize. LOD 0
-    // (matrix == display) keeps small tiles bit-crisp (the original behavior).
-    function updateOutlineLod() {
-      var rect = cv.getBoundingClientRect();
-      var dpr = window.devicePixelRatio || 1;
-      var dispW = Math.max(1, rect.width * dpr);
-      var ratio = w / dispW;
-      var lod = ratio > 1.001 ? Math.log(ratio) / Math.LN2 : 0.0;
-      var thresh = lod > 0.001 ? Math.max(0.06, Math.min(0.5, 0.55 / Math.pow(2, lod))) : 0.5;
-      r.setUniforms({ outlineLod: lod, outlineThresh: thresh });
-    }
-    updateOutlineLod();
+    // (outline width is now shader-computed from dFdx/textureSize — no LOD uniform.)
     render();
     cv.__labelRender = render;
     cv.__labelRenderer = r;
-    cv.__labelUpdateLod = updateOutlineLod;
     try {
-      var _ro = new ResizeObserver(function () { updateOutlineLod(); render(); });
+      var _ro = new ResizeObserver(function () { render(); });
       _ro.observe(cv);
     } catch (e) {}
     // HDR toggle response: in SDR mode drop the boosts to 1.0 so the outline /
