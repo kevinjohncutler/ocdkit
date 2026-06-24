@@ -55,7 +55,12 @@ fn hsv(h : f32, s : f32, v : f32) -> vec3<f32> {
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
-  return hsv(fract(f32(lab) * 0.61803398875), 0.65, 1.0);
+  // sinebow(fract(lab·φ)) — matches the 2D ncolor palette (volume-mode.js) so the
+  // same ncolor group renders identically in 2D slices and the 3D volume.
+  let a = 6.28318530718 * fract(f32(lab) * 0.61803398875);
+  return vec3<f32>(sin(a) * 0.5 + 0.5,
+                   sin(a + 2.09439510239) * 0.5 + 0.5,
+                   sin(a + 4.18879020479) * 0.5 + 0.5);
 }
 
 // Per-label occupancy at a voxel (1 if it belongs to `lab`), for normals.

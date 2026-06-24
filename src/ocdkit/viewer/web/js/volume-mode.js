@@ -33,23 +33,23 @@
     panel.hidden = false;
     sliceBar.hidden = false;
 
-    // golden-ratio HSV palette matching the 3D shader's labelColor (group g →
-    // hsv(fract(g·φ), 0.65, 1)), so 2D ncolor groups and the 3D volume render
-    // with identical colors. Re-asserted after every mask set because app.js's
-    // async initialize()/state-restore can otherwise reset the palette.
+    // sinebow palette (vibrant; matches app.js's default colormap) — group g →
+    // sinebow((g-1)/32). The 3D shader uses the identical formula on the same
+    // group values, so 2D slices and the 3D volume render with the same colors.
+    // Re-asserted after every mask set because app.js's async initialize()/
+    // state-restore can otherwise reset the palette.
     const ncPalette = (function () {
-      function hsvRgb(h, s, v) {
-        const i = Math.floor(h * 6), f = h * 6 - i;
-        const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
-        const m = ((i % 6) + 6) % 6;
-        let r, g, b;
-        if (m === 0) { r = v; g = t; b = p; } else if (m === 1) { r = q; g = v; b = p; }
-        else if (m === 2) { r = p; g = v; b = t; } else if (m === 3) { r = p; g = q; b = v; }
-        else if (m === 4) { r = t; g = p; b = v; } else { r = v; g = p; b = q; }
-        return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+      function sinebow(t) {
+        const a = 2 * Math.PI * (t - Math.floor(t));
+        return [
+          Math.round((Math.sin(a) * 0.5 + 0.5) * 255),
+          Math.round((Math.sin(a + 2 * Math.PI / 3) * 0.5 + 0.5) * 255),
+          Math.round((Math.sin(a + 4 * Math.PI / 3) * 0.5 + 0.5) * 255),
+        ];
       }
+      // golden-ratio spread into sinebow so groups are well-separated for any count
       const PHI = 0.61803398875, pal = [];
-      for (let i = 0; i < 32; i++) pal.push(hsvRgb(((i + 1) * PHI) % 1, 0.65, 1.0));
+      for (let i = 0; i < 32; i++) pal.push(sinebow(((i + 1) * PHI) % 1));
       return pal;
     })();
     function applyNColorPalette() {
