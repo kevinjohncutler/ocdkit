@@ -54,14 +54,21 @@
     return [+m[1] / 255, +m[2] / 255, +m[3] / 255, m[4] != null ? +m[4] : 1];
   }
   // [r,g,b(,a)] in 0..1 sRGB -> [r,g,b,a] linear Display-P3, lifted by `boost`.
-  function _rgb01ToP3(c, boost) {
+  // ``sdr`` truthy → bring >1 back to SDR by NORMALIZING to the brightest channel
+  // (keeps hue + full SDR brightness, no bloom) — the SAME rule the label shaders
+  // apply via u_sdr. This is the one shared "to-SDR" semantics for every boosted
+  // overlay (reference lines, hover line, top-axis labels): keep the HDR boost,
+  // and let the SDR flag normalize, rather than dropping the boost (which dimmed).
+  function _rgb01ToP3(c, boost, sdr) {
     var r = _srgbToLin(c[0]), g = _srgbToLin(c[1]), b = _srgbToLin(c[2]), M = _M_SRGB_P3;
-    return [(M[0] * r + M[1] * g + M[2] * b) * boost,
-            (M[3] * r + M[4] * g + M[5] * b) * boost,
-            (M[6] * r + M[7] * g + M[8] * b) * boost, c.length > 3 ? c[3] : 1];
+    var o0 = (M[0] * r + M[1] * g + M[2] * b) * boost,
+        o1 = (M[3] * r + M[4] * g + M[5] * b) * boost,
+        o2 = (M[6] * r + M[7] * g + M[8] * b) * boost;
+    if (sdr) { var m = Math.max(o0, o1, o2); if (m > 1.0) { o0 /= m; o1 /= m; o2 /= m; } }
+    return [o0, o1, o2, c.length > 3 ? c[3] : 1];
   }
   // CSS rgba() string -> [r,g,b,a] linear Display-P3, lifted by `boost` (1 = SDR).
-  function _colorToP3(str, boost) { return _rgb01ToP3(_parseRGBA(str), boost); }
+  function _colorToP3(str, boost, sdr) { return _rgb01ToP3(_parseRGBA(str), boost, sdr); }
 
   // Split a device-px polyline into "on" sub-polylines per dash = [onPx, offPx]
   // (walking by arc length). null/0 → the polyline unchanged. Lets the GPU refs
@@ -986,7 +993,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
         var dl = _dashPolyline(pl, rf.dash || null);
         for (var d = 0; d < dl.length; d++) allsegs.push(dl[d]);
       }
-      batches.push({ verts: _segsToQuads(allsegs, W, H, hw), color: _rgb01ToP3(rf.color || [0.7, 0.7, 0.7], boost), halfW: hw });
+      batches.push({ verts: _segsToQuads(allsegs, W, H, hw), color: _rgb01ToP3(rf.color || [0.7, 0.7, 0.7], boost, cfg.sdr), halfW: hw });
     }
     overlayCv.__refBatches = batches;
     _renderOverlayGpu(overlayCv, W, H);
@@ -1000,7 +1007,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
       if (!_gpu || !_gpu.hlPipe) return;   // GPU not ready: skip (don't taint the canvas with a 2D context)
       var boost = (cfg.lineBoost != null) ? cfg.lineBoost
                 : ((cfg.lut && cfg.lut === cfg.lutHdr) ? HL_HDR_BOOST : 1.0);   // no lift when toggled to SDR
-      overlayCv.__hoverBatch = { verts: _segsToQuads(segs, W, H, lw / 2), color: _colorToP3(color || 'rgba(255,64,64,0.95)', boost), halfW: lw / 2 };
+      overlayCv.__hoverBatch = { verts: _segsToQuads(segs, W, H, lw / 2), color: _colorToP3(color || 'rgba(255,64,64,0.95)', boost, cfg.sdr), halfW: lw / 2 };
       _renderOverlayGpu(overlayCv, W, H);
       return;
     }
@@ -1056,7 +1063,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
   // glow into the headroom EXACTLY like the reference lines — same _rgb01ToP3 lift
   // (× boost) + OETF + dispPipe the density uses, so a label is pixel-matched to
   // its line. ``boost`` 1 = SDR (hue-exact). ``srcCv`` and ``hdrCv`` must share dims.
-  function renderHdrLabels(hdrCv, srcCv, boost) {
+  function renderHdrLabels(hdrCv, srcCv, boost, sdr) {
     var g = _gpu;
     if (!g || !g.dispPipe || typeof Float16Array === 'undefined') return false;
     var device = g.device, W = srcCv.width | 0, H = srcCv.height | 0;
@@ -1070,7 +1077,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
       for (var i = 0; i < W * H; i++) {
         var a = px[i * 4 + 3] / 255;
         if (a > 0) {
-          var lp = _rgb01ToP3([px[i * 4] / 255, px[i * 4 + 1] / 255, px[i * 4 + 2] / 255], boost);
+          var lp = _rgb01ToP3([px[i * 4] / 255, px[i * 4 + 1] / 255, px[i * 4 + 2] / 255], boost, sdr);
           fc[i * 4] = lp[0]; fc[i * 4 + 1] = lp[1]; fc[i * 4 + 2] = lp[2];
         }
         fc[i * 4 + 3] = a;

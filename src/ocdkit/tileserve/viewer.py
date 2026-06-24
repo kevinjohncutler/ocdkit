@@ -1718,7 +1718,10 @@ function _refGpuOn(){ return !!(_specCfg && _specCfg.hdr && PANEL && PANEL.setRe
 // Reference/hover LINE gain = the "HDR gain" slider value (_HDRGAIN, 1 = SDR, up
 // = glow), forced to 1 when the HDR toggle is off so SDR is a true scalar-1
 // (hue-exact: equal multiply on all channels preserves chromaticity).
-function _lineBoost(){ return _sdrMode ? 1.0 : Math.max(1, _HDRGAIN); }
+// Always the HDR gain — SDR no longer DROPS the boost (that dimmed); instead the
+// shared SDR normalize (_rgb01ToP3's `sdr` arg, driven by _sdrMode) brings >1 back
+// to SDR keeping the hue, matching the label-overlay u_sdr rule.
+function _lineBoost(){ return Math.max(1, _HDRGAIN); }
 function _refApply(ro){
   const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refGpuOn();
   (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
@@ -1727,7 +1730,7 @@ function _refApply(ro){
 function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
-  if(_specCfg) _specCfg.lineBoost=_lineBoost();   // gain follows the slider / SDR toggle
+  if(_specCfg){ _specCfg.lineBoost=_lineBoost(); _specCfg.sdr=_sdrMode; }   // gain + shared SDR-normalize flag
   if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} try{ _syncHdrLabels(); }catch(_){} return; }
   const dpr=self.devicePixelRatio||1, refs=[];
   Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
@@ -1767,7 +1770,7 @@ function _syncHdrLabels(){
     ctx.fillStyle=_refColors[a.ro]||'#bbb';
     ctx.fillText(a.el.textContent||'', cx, cy);
   }
-  const ok=PANEL.renderHdrLabels(hdr, _hdrLabSrc, _lineBoost());   // empty act → clears the canvas
+  const ok=PANEL.renderHdrLabels(hdr, _hdrLabSrc, _lineBoost(), _sdrMode);   // shared SDR normalize; empty act → clears
   for(const a of act) a.el.style.fillOpacity = ok ? '0' : '1';     // glow shows ⇒ hide flat SVG
 }
 function _refApplyAll(){ const seen={};
