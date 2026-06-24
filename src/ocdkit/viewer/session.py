@@ -607,15 +607,8 @@ class SessionManager:
 
     def fill_cell(self, state: SessionState, z: int, axis: int, y: int, x: int,
                   group: int = -1, target_label: int = 0, erase: bool = False) -> int:
-        """Whole-cell 3D op from one click on any slice/axis. Acts on the entire
-        connected label under the cursor:
-
-        - ``erase`` → delete the cell (all its voxels across the volume).
-        - ``target_label > 0`` → merge the cell into that label (identity merge;
-          works even for non-touching cells, e.g. after the picker captures one).
-        - else ``group >= 0`` → recolour the cell to that colour, merging it into an
-          adjacent same-colour cell if one touches it (colour-merge, like the brush)."""
-        from scipy import ndimage
+        """Whole-cell 3D op from a 2D-slice click: resolve the label under the
+        cursor, then act on its whole 3D extent (see :meth:`fill_label`)."""
         mv = state.current_mask_volume
         if mv is None:
             return 0
@@ -624,13 +617,27 @@ class SessionManager:
         if not (0 <= int(y) < H and 0 <= int(x) < W):
             return 0
         L = int(plane[int(y), int(x)])
-        if L == 0:
-            return 0                                   # clicked background → nothing to fill
+        return self.fill_label(state, L, group=group, target_label=target_label, erase=erase)
+
+    def fill_label(self, state: SessionState, label: int, group: int = -1,
+                   target_label: int = 0, erase: bool = False) -> int:
+        """Whole-cell 3D op on label ``label`` (its entire extent across the volume):
+
+        - ``erase`` → delete the cell.
+        - ``target_label > 0`` → merge into that label (identity merge; non-touching OK).
+        - else ``group >= 0`` → recolour, colour-merging into a touching same-colour cell."""
+        from scipy import ndimage
+        mv = state.current_mask_volume
+        L = int(label)
+        if mv is None or L <= 0:
+            return 0
+        cell = mv == L
+        if not cell.any():
+            return 0
         self.ensure_ncolor(state)
         lg = state.label_group if state.label_group is not None else {}
         before_mv = mv.copy()
         before_lg = dict(lg)
-        cell = mv == L
         if erase:
             target = 0
         elif int(target_label) > 0 and int(target_label) != L:
@@ -659,6 +666,49 @@ class SessionManager:
         self._record_edit(state, before_mv, before_lg)
         self.schedule_autosave(state)
         return target
+
+    def pick_ray(self, state: SessionState, ro, rd, box_min, box_max):
+        """3D pick: march a world-space ray (from the camera) exactly as the render
+        shader does (n = (p - boxMin)/span, sample mv[z,y,x]) and return the first
+        labelled voxel hit → ``(label, group, [x, y, z])`` (or 0s for a miss). The
+        identical coordinate math means the picked cell is the one drawn under the
+        cursor."""
+        mv = state.current_mask_volume
+        if mv is None:
+            return 0, 0, None
+        NZ, NY, NX = mv.shape
+        dims = np.array([NX, NY, NZ], dtype=np.float64)
+        ro = np.asarray(ro, dtype=np.float64)
+        rd = np.asarray(rd, dtype=np.float64)
+        n = np.linalg.norm(rd)
+        if n == 0:
+            return 0, 0, None
+        rd = rd / n
+        bmin = np.asarray(box_min, dtype=np.float64)
+        bmax = np.asarray(box_max, dtype=np.float64)
+        span = bmax - bmin
+        inv = 1.0 / np.where(rd == 0, 1e-9, rd)
+        t1 = (bmin - ro) * inv
+        t2 = (bmax - ro) * inv
+        tnear = max(0.0, float(np.max(np.minimum(t1, t2))))
+        tfar = float(np.min(np.maximum(t1, t2)))
+        if tnear > tfar:
+            return 0, 0, None
+        nsteps = int(max(64, 2 * max(NX, NY, NZ)))
+        dt = (tfar - tnear) / nsteps
+        self.ensure_ncolor(state)
+        lg = state.label_group or {}
+        t = tnear + dt * 0.5
+        for _ in range(nsteps):
+            p = ro + rd * t
+            nrm = (p - bmin) / span
+            vc = np.floor(nrm * dims).astype(int)
+            vc = np.clip(vc, 0, dims.astype(int) - 1)
+            lab = int(mv[vc[2], vc[1], vc[0]])         # vc = (x, y, z) → mv[z, y, x]
+            if lab > 0:
+                return lab, int(lg.get(lab, 0)), [int(vc[0]), int(vc[1]), int(vc[2])]
+            t += dt
+        return 0, 0, None
 
     # ----- undo / redo (server is the single source of truth) -------------
 

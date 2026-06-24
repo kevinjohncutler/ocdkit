@@ -218,6 +218,42 @@
         }).catch(() => {});
       return true;
     };
+
+    // ----- 3D-view picker / fill: click the cell under the cursor on the render --
+    // The 3D canvas computes a world pick-ray; the server marches the label volume
+    // (same math as the shader) to find the hit cell, then we pick or fill it.
+    window.__viewerVolume3DPick = async function (ray, toolMode) {
+      if (!cfg.isVolume || !hasMask || !ray) return;
+      try {
+        const pr = await fetch("/api/pick_ray/" + encodeURIComponent(cfg.sessionId),
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ray) });
+        if (!pr.ok) return;
+        const hit = await pr.json();
+        const label = hit.label | 0;
+        if (!label) return;                               // clicked empty space
+        if (toolMode === "picker") {
+          pickedLabel = label;
+          if (hit.group > 0 && window.__viewerSetCurrentColor) window.__viewerSetCurrentColor(hit.group);
+          return;
+        }
+        // fill: erase → delete; picked cell → identity-merge; else current colour
+        const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive());
+        const group = (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 0) | 0;
+        const q = erasing ? "&erase=1"
+                : (pickedLabel ? "&target=" + pickedLabel : "&group=" + group);
+        const fr = await fetch("/api/fill_label/" + encodeURIComponent(cfg.sessionId) +
+                               "?label=" + label + q, { method: "POST" });
+        if (!fr.ok) return;
+        const j = await fr.json();
+        srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
+        await fetchNColorMap();
+        if (mode === "2d") await updateMaskSlice(slice);
+        mask3dStale = true;
+        if (mode === "3d") await setMode("3d");           // rebuild the 3D render with the edit
+        if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
+      } catch (e) { /* transient */ }
+    };
+
     function setBrushDim(d) {
       brushDim = d | 0;
       if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>

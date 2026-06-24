@@ -185,11 +185,37 @@
       return { eye, viewProj, invViewProj: Mat4.invert(viewProj) };
     }
 
+    /** World-space pick ray for a canvas pixel — same math as the render shader
+     *  (WebGPU depth near=0/far=1, column-major invViewProj), so a pick matches
+     *  exactly what's drawn. Returns {ro, rd, boxMin, boxMax} for the server. */
+    pickRayWorld(px, py) {
+      const cam = this._camera(), box = this._box();
+      const W = this.canvas.clientWidth || this.canvas.width;
+      const H = this.canvas.clientHeight || this.canvas.height;
+      const ndcX = 2 * px / W - 1, ndcY = 1 - 2 * py / H;
+      const un = (z) => {
+        const v = Mat4.transformVec4(cam.invViewProj, [ndcX, ndcY, z, 1]);
+        return [v[0] / v[3], v[1] / v[3], v[2] / v[3]];
+      };
+      const ro = un(0.0), pf = un(1.0);
+      return { ro, rd: [pf[0] - ro[0], pf[1] - ro[1], pf[2] - ro[2]], boxMin: box.min, boxMax: box.max };
+    }
+
     _attachInput() {
       const c = this.canvas, self = this;
       let drag = 0, lx = 0, ly = 0;   // 0 none, 1 rotate, 2 pan
       c.addEventListener("contextmenu", (e) => e.preventDefault());
       c.addEventListener("pointerdown", (e) => {
+        // picker / fill tool: click the cell under the cursor (ray-pick) instead
+        // of rotating. Left button only; other buttons still rotate/pan.
+        if (e.button === 0 && !e.shiftKey && typeof window.__viewerActiveTool === "function") {
+          const t = window.__viewerActiveTool();      // 'picker' | 'fill' | 'erase' act on the cell
+          if ((t === "picker" || t === "fill" || t === "erase") && typeof window.__viewerVolume3DPick === "function") {
+            const r = c.getBoundingClientRect();
+            window.__viewerVolume3DPick(self.pickRayWorld(e.clientX - r.left, e.clientY - r.top), t);
+            return;                                  // consume — no drag
+          }
+        }
         drag = (e.button === 2 || e.button === 1 || e.shiftKey) ? 2 : 1;
         lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
       });

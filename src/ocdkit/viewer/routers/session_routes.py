@@ -362,6 +362,34 @@ def api_fill_cell(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
+@router.post("/pick_ray/{session_id}")
+async def api_pick_ray(session_id: str, request: Request) -> dict:
+    """3D pick: ray-march the label volume (body: ro, rd, boxMin, boxMax) and
+    return the first labelled cell hit under the cursor."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    body = await request.json()
+    lab, grp, vc = SESSION_MANAGER.pick_ray(
+        state, body.get("ro"), body.get("rd"), body.get("boxMin"), body.get("boxMax"))
+    return {"label": lab, "group": grp, "voxel": vc}
+
+
+@router.post("/fill_label/{session_id}")
+def api_fill_label(session_id: str, label: int = 0, group: int = -1,
+                   target: int = 0, erase: int = 0) -> dict:
+    """Whole-cell op on a given label (used by the 3D picker/fill): erase deletes,
+    target>0 identity-merges, else group recolours/colour-merges."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    lab = SESSION_MANAGER.fill_label(state, label, group=group, target_label=target, erase=bool(erase))
+    return {"ok": True, "label": lab,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
 @router.post("/save_mask/{session_id}")
 def api_save_mask(session_id: str) -> dict:
     """Force an immediate save of the edited mask to its *_edited sibling (the
