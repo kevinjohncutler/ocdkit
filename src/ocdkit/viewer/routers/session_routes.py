@@ -288,9 +288,10 @@ def api_ncolor_map(session_id: str) -> dict:
 
 @router.post("/paint_sphere/{session_id}")
 async def api_paint_sphere(session_id: str, request: Request, z: int = 0, axis: int = 0,
-                           label: int = 1, radius: int = 0, new: int = 0) -> dict:
-    """Brush stroke → volume. radius 0 = current slice, R = ball across slices.
-    ``new=1`` allocates a fresh label (a new cell). Returns the label written."""
+                           group: int = 1, radius: int = 0) -> dict:
+    """Brush stroke → volume, in ncolor colour space. ``group`` is the selected
+    colour; the stroke merges into adjacent same-colour cells (group 0 erases).
+    radius 0 = current slice, R = a true ball. Returns the affected label."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
@@ -303,7 +304,7 @@ async def api_paint_sphere(session_id: str, request: Request, z: int = 0, axis: 
     data = await request.body()
     try:
         footprint = _np.frombuffer(data, dtype=_np.uint8).reshape(sshape).astype(bool)
-        written = SESSION_MANAGER.paint_sphere(state, z, axis, label, radius, footprint, new=bool(new))
+        written = SESSION_MANAGER.paint_sphere(state, z, axis, group, radius, footprint)
     except ValueError as exc:
         raise BadRequest("paint_failed", detail=str(exc)) from exc
     return {"ok": True, "label": written}

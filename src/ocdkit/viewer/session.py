@@ -462,12 +462,18 @@ class SessionManager:
         out[flat_l[nz]] = g.reshape(-1)[nz]   # ncolor is per-label, so last-wins is fine
         return out.tolist()
 
-    def paint_sphere(self, state: SessionState, z: int, axis: int, label: int,
-                     radius: int, footprint: np.ndarray, new: bool = False) -> int:
-        """Extrude a 2D stroke ``footprint`` (bool, slice-shaped) into a ball:
-        paint ``label`` on slices ``z±k`` eroded by k. ``new=True`` allocates a
-        fresh label (max+1) so each stroke is a distinct new cell. Returns the
-        label written."""
+    def paint_sphere(self, state: SessionState, z: int, axis: int, group: int,
+                     radius: int, footprint: np.ndarray) -> int:
+        """Paint a stroke in ncolor COLOR space. The footprint is painted with
+        ncolor ``group`` (the selected colour) and MERGED into adjacent cells of
+        the same group (extending them) — "merge by visible colour". An isolated
+        stroke becomes a region of that *same* colour (never auto-recoloured).
+        ``group == 0`` erases.
+
+        When ``radius > 0`` the stroke is extruded into a TRUE Euclidean ball
+        (cross-section radius ``sqrt(R²-k²)`` at slice offset k), not the diamond
+        the old iterative cityblock erosion produced. Returns the affected label.
+        """
         vol = state.current_volume
         if vol is None:
             raise ValueError("no volume loaded")
@@ -478,24 +484,72 @@ class SessionManager:
         if mv is None:
             mv = np.zeros(vol.shape, np.uint32)
             state.current_mask_volume = mv
-        if new:
-            label = int(mv.max()) + 1
-        if int(label) > int(np.iinfo(mv.dtype).max):
-            mv = state.current_mask_volume = mv.astype(np.uint32)
+        self.ensure_ncolor(state)
+        lg = state.label_group if state.label_group is not None else {}
         radius = max(0, int(radius))
+        group = int(group)
+
+        # Slices to paint: a TRUE Euclidean ball. Find the stroke's medial axis
+        # (centreline) and, at slice offset k, dilate it by radius sqrt(R²-k²) —
+        # cross-sections shrink as a sphere, giving a ball (or a swept ball / capsule
+        # for a dragged stroke), not the octahedral diamond cityblock erosion gives.
+        R = float(radius)
+        if radius > 0:
+            edt = ndimage.distance_transform_edt(footprint)
+            rmax = float(edt.max()) if edt.size else 0.0
+            core = edt >= max(0.5, rmax - 0.5)                 # medial axis of the footprint
+            dist_to_core = ndimage.distance_transform_edt(~core)
+        slices = []
         for k in range(0, radius + 1):
-            fk = footprint if k == 0 else ndimage.binary_erosion(footprint, iterations=k)
+            if k == 0:
+                fk = footprint
+            else:
+                rk2 = R * R - k * k
+                if rk2 <= 0:
+                    break
+                fk = dist_to_core <= rk2 ** 0.5                # disk of radius sqrt(R²-k²)
             if not fk.any():
                 break
             for zz in ({z} if k == 0 else {z - k, z + k}):
                 if 0 <= zz < D:
-                    plane = np.take(mv, zz, axis=axis)
-                    plane[fk] = label
-                    idx = [slice(None)] * 3
-                    idx[axis] = zz
-                    mv[tuple(idx)] = plane
-        state.current_ncolor_volume = None   # rebuild group volume (stable: keeps label_group)
-        return int(label)
+                    slices.append((zz, fk))
+        if not slices:
+            return 0
+
+        if int(mv.max()) + 1 > int(np.iinfo(mv.dtype).max):
+            mv = state.current_mask_volume = mv.astype(np.uint32)
+
+        if group <= 0:
+            target = 0
+        else:
+            # adjacent cells already of this colour → extend/merge them
+            adj = set()
+            for zz, fk in slices:
+                plane = np.take(mv, zz, axis=axis)
+                border = ndimage.binary_dilation(fk) & ~fk
+                for l in np.unique(plane[border]):
+                    li = int(l)
+                    if li > 0 and lg.get(li) == group:
+                        adj.add(li)
+            if adj:
+                same = sorted(adj)
+                target = same[0]
+                for l in same[1:]:                 # a stroke bridging two same-colour cells merges them
+                    mv[mv == l] = target
+                    lg.pop(l, None)
+            else:
+                target = int(mv.max()) + 1         # isolated → new region, SAME colour
+            lg[target] = group                     # keep the chosen colour (never recoloured)
+            state.label_group = lg
+
+        for zz, fk in slices:
+            idx = [slice(None)] * 3
+            idx[axis] = zz
+            plane = mv[tuple(idx)]
+            plane[fk] = target
+            mv[tuple(idx)] = plane
+        state.current_ncolor_volume = None         # rebuild group volume (label_group kept)
+        return int(target)
 
     def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
         """Raw label bytes for mask slice ``z`` along ``axis`` →

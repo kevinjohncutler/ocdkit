@@ -79,20 +79,19 @@ def main():
             slice_changed = (z1 == z0 + 5)
             print("slice scrub:", z0, "->", z1, "ok:", slice_changed)
 
-            # edit: a 2D stroke creates a NEW cell (new label) in the server volume
+            # edit: a stroke paints the SELECTED COLOUR (group) and it shows in the
+            # group display (merge-by-colour; never a recoloured new cell)
             zc = pg.evaluate("window.__volumeMode.getSlice()")
-            def _smax(z):
-                r = pg.request.get(f"{BASE}/api/mask_slice/{sid}?z={z}&axis=0&kind=instance")
-                return int(np.frombuffer(r.body(), dtype=np.dtype(r.headers.get("x-mask-dtype", "uint8"))).max())
-            before_max = _smax(zc)
             pg.evaluate("""(function(){const W=window.__VIEWER_CONFIG__.width,H=window.__VIEWER_CONFIG__.height,
               cx=W>>1,cy=H>>1,idx=[]; for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++)
               if(dx*dx+dy*dy<=16)idx.push((cy+dy)*W+(cx+dx));
               window.__volumeMode.setBrushDim(2); window.__onViewerStroke(idx,[1]);})()""")
             pg.wait_for_timeout(900)
-            after_max = _smax(zc)
-            edit_persisted = after_max > before_max     # a new cell appeared in the volume
-            print("edit (new cell) -> volume max label", before_max, "->", after_max, ":", edit_persisted)
+            W = pg.evaluate("window.__VIEWER_CONFIG__.width"); H = pg.evaluate("window.__VIEWER_CONFIG__.height")
+            r = pg.request.get(f"{BASE}/api/mask_slice/{sid}?z={zc}&axis=0&kind=group")
+            a = np.frombuffer(r.body(), dtype=np.dtype(r.headers.get("x-mask-dtype", "uint8")))
+            edit_persisted = int(a[(H // 2) * W + (W // 2)]) == 1    # painted colour shows at the centre
+            print("edit (paint colour 1) shows in group slice:", edit_persisted)
 
             # orthogonal slicing: switch to Y axis → dims change, slider re-ranges
             pg.evaluate("window.__volumeMode.setAxis(1)")

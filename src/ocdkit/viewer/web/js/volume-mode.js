@@ -137,26 +137,22 @@
     if (hasMask) { fetchNColorMap(); updateMaskSlice(slice); }   // initial palette + overlay
 
     // ── 2D / 3D brush ────────────────────────────────────────────────────────
-    // 2D = paint the current slice only (app.js native). 3D = extrude the stroke
-    // into a ball across neighbouring slices of the volume (server paint_sphere).
+    // 2D brush = paint the current slice only. 3D brush = extrude the stroke into
+    // a true ball across neighbouring slices (server paint_sphere, radius R).
     let brushDim = 2;
-    // Every stroke (2D or 3D) writes the painted LABEL into the server volume —
-    // the single source of truth. radius 0 = current slice (2D), radius R = a
-    // ball across slices (3D). The 2D buffer (group IDs) is then refreshed from
-    // the server so the display + 3D stay in sync.
+    // ncolor mode: a stroke paints the SELECTED COLOUR (group) and merges into
+    // adjacent cells of the same colour — it is never a separate new cell that
+    // gets recoloured. maskValues already hold group IDs, so the value app.js
+    // just painted (`after[0]`) IS the chosen group; 0 = erase.
     window.__onViewerStroke = function (indices, after) {
       if (!indices || !indices.length) return;
       const dim = sliceDims(curAxis);
       const fp = new Uint8Array((dim.width | 0) * (dim.height | 0));
       for (let i = 0; i < indices.length; i++) fp[indices[i]] = 1;
-      // erasing (painted value 0) writes 0; otherwise each stroke = a NEW cell
-      // (server allocates a fresh label) so it doesn't merge with neighbours and
-      // ncolor stays stable for existing cells.
-      const erasing = !!(after && after.length && (after[0] | 0) === 0);
+      const group = (after && after.length) ? (after[0] | 0) : 0;   // chosen colour; 0 = erase
       const radius = (brushDim === 3 && window.__viewerBrushRadius) ? window.__viewerBrushRadius() : 0;
-      const q = erasing ? "&label=0" : "&new=1";
       fetch("/api/paint_sphere/" + encodeURIComponent(cfg.sessionId) +
-            "?z=" + slice + "&axis=" + curAxis + "&radius=" + radius + q, {
+            "?z=" + slice + "&axis=" + curAxis + "&radius=" + radius + "&group=" + group, {
         method: "POST", headers: { "content-type": "application/octet-stream" }, body: fp.buffer,
       }).then((r) => {
         if (!r.ok) return;

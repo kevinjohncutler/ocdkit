@@ -228,23 +228,34 @@ def test_ncolor_map_route(tmp_path):
     assert groups[1] != groups[2] and groups[1] > 0 and groups[2] > 0   # adjacent labels differ
 
 
-def test_paint_sphere_extrudes_across_slices(tmp_path):
-    vol = _write_volume(tmp_path, (9, 30, 30))
+def test_paint_sphere_is_a_round_ball_not_a_diamond(tmp_path):
+    """The 3D brush extrudes a true Euclidean ball: off-centre slices stay round
+    (radius sqrt(R²-k²)), and the painted volume is far closer to a sphere than to
+    the octahedral 'diamond' the old cityblock erosion produced."""
+    vol = _write_volume(tmp_path, (15, 40, 40))
     state = SESSION_MANAGER.get_or_create(None)
     SESSION_MANAGER.set_image(state, vol)
-    yy, xx = np.mgrid[0:30, 0:30]
-    fp = ((xx - 15) ** 2 + (yy - 15) ** 2) < 6 ** 2     # disk on the middle slice
-    SESSION_MANAGER.paint_sphere(state, 4, 0, 5, 3, fp)  # z=4, axis=0, label=5, radius=3
+    R, cz, cy, cx = 6, 7, 20, 20
+    yy, xx = np.mgrid[0:40, 0:40]
+    fp = ((xx - cx) ** 2 + (yy - cy) ** 2) < R ** 2      # disk on the middle slice
+    lab = SESSION_MANAGER.paint_sphere(state, cz, 0, 4, R, fp)   # group 4, radius R
     mv = state.current_mask_volume
-    assert int(mv[4].max()) == 5                         # center slice painted
-    assert int(mv[5].max()) == 5 and int(mv[3].max()) == 5   # neighbors painted (ball)
-    assert (mv[5] == 5).sum() < (mv[4] == 5).sum()       # eroded → smaller off-center
+    painted = mv == lab
+    assert painted[cz].sum() > painted[cz + 4].sum() > painted[cz + 5].sum() > 0  # tapers
+    # compare to the ideal sphere of radius R: a round ball overlaps it far better
+    zz, yy3, xx3 = np.mgrid[0:15, 0:40, 0:40]
+    sphere = ((zz - cz) ** 2 + (yy3 - cy) ** 2 + (xx3 - cx) ** 2) <= R ** 2
+    iou = (painted & sphere).sum() / (painted | sphere).sum()
+    assert iou > 0.7, f"ball IoU vs ideal sphere too low: {iou:.2f}"
+    # an octahedral diamond of the same extent would score much worse
+    diamond = (np.abs(zz - cz) + np.abs(yy3 - cy) + np.abs(xx3 - cx)) <= R
+    assert iou > (painted & diamond).sum() / (painted | diamond).sum()
     assert int(mv[0].max()) == 0                         # beyond radius: untouched
 
 
-def test_ncolor_stable_across_edits(tmp_path):
-    """Existing cells keep their group (color) when a new cell is drawn; the new
-    cell gets its own group."""
+def test_paint_merges_by_visible_colour(tmp_path):
+    """A stroke of the selected colour MERGES into the adjacent same-colour cell
+    (extends it, no new label, no recolour). An isolated stroke keeps that colour."""
     vol = _write_volume(tmp_path, (6, 30, 30))
     masks = np.zeros((6, 30, 30), np.uint8)
     masks[:, 4:10, 4:24] = 1
@@ -252,12 +263,20 @@ def test_ncolor_stable_across_edits(tmp_path):
     tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
     state = SESSION_MANAGER.get_or_create(None)
     SESSION_MANAGER.set_image(state, vol)
-    before = SESSION_MANAGER.ncolor_map(state)           # label → group (cells 1,2)
-    # draw a new cell elsewhere
+    before = SESSION_MANAGER.ncolor_map(state)           # label → group
+    g1 = before[1]                                        # cell 1's colour
+    n_labels_before = len(set(int(x) for x in np.unique(state.current_mask_volume) if x))
+    # paint cell-1's colour just below cell 1 (touching it) → should extend cell 1
     yy, xx = np.mgrid[0:30, 0:30]
-    fp = ((xx - 15) ** 2 + (yy - 24) ** 2) < 4 ** 2
-    new_label = SESSION_MANAGER.paint_sphere(state, 3, 0, 0, 0, fp, new=True)
+    fp = (yy >= 10) & (yy < 12) & (xx >= 4) & (xx < 24)   # adjacent strip under cell 1
+    target = SESSION_MANAGER.paint_sphere(state, 3, 0, g1, 0, fp)
     after = SESSION_MANAGER.ncolor_map(state)
-    assert new_label == 3                                # max+1
-    assert after[1] == before[1] and after[2] == before[2]   # existing colors unchanged
-    assert after[new_label] > 0                          # new cell got a group
+    assert target == 1                                   # merged into cell 1, not a new label
+    assert state.current_mask_volume[3, 11, 12] == 1     # the strip became cell 1
+    assert after[1] == g1 and after[2] == before[2]      # colours unchanged (no recolour)
+    n_labels_after = len(set(int(x) for x in np.unique(state.current_mask_volume) if x))
+    assert n_labels_after == n_labels_before             # no new cell created
+    # isolated stroke of an arbitrary colour → a new region that KEEPS that colour
+    fp2 = ((xx - 15) ** 2 + (yy - 26) ** 2) < 3 ** 2
+    iso = SESSION_MANAGER.paint_sphere(state, 3, 0, g1, 0, fp2)
+    assert SESSION_MANAGER.ncolor_map(state)[iso] == g1  # stays the chosen colour
