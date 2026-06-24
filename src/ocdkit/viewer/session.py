@@ -94,6 +94,8 @@ class SessionState:
     label_group: Optional[dict] = None  # stable label→group map (keeps colors fixed across edits)
     undo_stack: Optional[list] = None  # diff-based mask edit history (server is the source of truth)
     redo_stack: Optional[list] = None
+    mask_source_path: Optional[Path] = None  # original mask file; edits autosave to its *_edited sibling
+    save_timer: Any = field(default=None, compare=False, repr=False)  # debounce timer for autosave
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -241,11 +243,17 @@ class SessionManager:
         is_rgb = arr.ndim == 3 and arr.shape[-1] >= 3
         return arr, is_rgb, False
 
-    def set_mask(self, state: SessionState, path: Path) -> None:
+    def set_mask(self, state: SessionState, path: Path,
+                 source_path: Optional[Path] = None) -> None:
         """Load a label volume from *path* and attach it to the session.
 
         Masks are kept as integer labels (not normalized); their spatial shape
         must match the loaded volume. Feeds the 3D bundle's label layer.
+
+        ``source_path`` is the ORIGINAL mask file edits are derived from (used to
+        compute the ``*_edited`` autosave target); defaults to *path*. When
+        resuming from an already-edited file we load *path* (the edited one) but
+        keep ``source_path`` pointing at the original so we keep one edited file.
         """
         path = Path(path).expanduser().resolve()
         if not path.exists():
@@ -263,6 +271,16 @@ class SessionManager:
         state.label_group = None   # fresh mask → fresh stable color map
         state.undo_stack = None
         state.redo_stack = None
+        state.mask_source_path = Path(source_path or path).expanduser().resolve()
+
+    def _edited_mask_path(self, source: Path) -> Path:
+        """``foo_masks.tif`` → ``foo_masks_edited.tif`` (never overwrites the
+        original). An already-``_edited`` source maps to itself, so resuming +
+        re-saving keeps a single edited file (no ``_edited_edited``)."""
+        source = Path(source)
+        if source.stem.endswith("_edited"):
+            return source
+        return source.with_name(source.stem + "_edited" + source.suffix)
 
     def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
         """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
@@ -280,18 +298,23 @@ class SessionManager:
         return None
 
     def _maybe_auto_mask(self, state: SessionState) -> None:
-        """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort)."""
+        """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort).
+        If a prior ``*_edited`` autosave exists, resume from it instead of the
+        original — so reopening the volume continues your edits automatically."""
         state.current_mask_volume = None
         state.current_ncolor_volume = None
         state.label_group = None
         state.undo_stack = None
         state.redo_stack = None
+        state.mask_source_path = None
         if state.current_volume is None:
             return
         mp = self._auto_mask_path(state.current_path)
         if mp is not None:
+            edited = self._edited_mask_path(mp)
+            load = edited if edited.exists() else mp
             try:
-                self.set_mask(state, mp)
+                self.set_mask(state, load, source_path=mp)   # resume from edited; keep original as source
             except Exception:
                 pass  # mismatched or unreadable sidecar → leave unmasked
 
@@ -559,6 +582,7 @@ class SessionManager:
             mv[tuple(idx)] = plane
         state.current_ncolor_volume = None         # rebuild group volume (label_group kept)
         self._record_edit(state, before_mv, before_lg)
+        self.schedule_autosave(state)
         return int(target)
 
     # ----- undo / redo (server is the single source of truth) -------------
@@ -601,6 +625,7 @@ class SessionManager:
         if state.redo_stack is None:
             state.redo_stack = []
         state.redo_stack.append(entry)
+        self.schedule_autosave(state)
         return True
 
     def redo(self, state: SessionState) -> bool:
@@ -611,6 +636,7 @@ class SessionManager:
         if state.undo_stack is None:
             state.undo_stack = []
         state.undo_stack.append(entry)
+        self.schedule_autosave(state)
         return True
 
     def can_undo(self, state: SessionState) -> bool:
@@ -618,6 +644,59 @@ class SessionManager:
 
     def can_redo(self, state: SessionState) -> bool:
         return bool(state.redo_stack)
+
+    # ----- debounced autosave of the edited mask to disk ------------------
+
+    SAVE_DEBOUNCE_SECONDS = float(_os.environ.get("OCDKIT_VIEWER_AUTOSAVE_DEBOUNCE", "1.2"))
+
+    def schedule_autosave(self, state: SessionState) -> None:
+        """(Re)arm a debounce timer; the edited mask is written once edits settle.
+        Server-driven so it survives client refresh/disconnect. No source path
+        (e.g. no mask loaded from a file) → nothing to autosave."""
+        if state.mask_source_path is None:
+            return
+        try:
+            if state.save_timer is not None:
+                state.save_timer.cancel()
+        except Exception:
+            pass
+        t = threading.Timer(self.SAVE_DEBOUNCE_SECONDS, self._autosave_fire, args=(state.session_id,))
+        t.daemon = True
+        state.save_timer = t
+        t.start()
+
+    def _autosave_fire(self, session_id: str) -> None:
+        with self._lock:
+            state = self._sessions.get(session_id)
+            if state is None or state.current_mask_volume is None or state.mask_source_path is None:
+                return
+            arr = state.current_mask_volume.copy()       # snapshot under lock; write outside
+            dest = self._edited_mask_path(state.mask_source_path)
+        self._write_mask_atomic(dest, arr)
+
+    def save_edited_mask(self, state: SessionState) -> Optional[str]:
+        """Force an immediate save (e.g. on page unload). Returns the path written."""
+        if state.current_mask_volume is None or state.mask_source_path is None:
+            return None
+        dest = self._edited_mask_path(state.mask_source_path)
+        self._write_mask_atomic(dest, state.current_mask_volume.copy())
+        return str(dest)
+
+    @staticmethod
+    def _write_mask_atomic(dest: Path, arr: np.ndarray) -> None:
+        """Write the label volume to a temp file then atomically replace, so a
+        crash mid-write can never corrupt the saved mask."""
+        tmp = dest.with_name(dest.name + ".tmp")
+        try:
+            import tifffile                       # volume-aware writer (imageio.imwrite is 2D-only)
+            tifffile.imwrite(str(tmp), arr)
+            _os.replace(tmp, dest)
+        except Exception:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
 
     def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
         """Raw label bytes for mask slice ``z`` along ``axis`` →

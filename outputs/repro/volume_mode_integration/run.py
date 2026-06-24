@@ -39,6 +39,10 @@ def main():
     lab[((xx - 25) ** 2 + (yy - 25) ** 2 + (zz - 10) ** 2) < 9 ** 2] = 1
     lab[((xx - 55) ** 2 + (yy - 55) ** 2 + (zz - 10) ** 2) < 8 ** 2] = 2
     tifffile.imwrite(MASKS, lab)
+    import os as _os
+    _ed = MASKS.replace(".tif", "_edited.tif")
+    if _os.path.exists(_ed):
+        _os.remove(_ed)                            # don't resume from a prior run's autosave
     srv = subprocess.Popen(
         [sys.executable, "-c",
          f"import uvicorn; uvicorn.run('ocdkit.viewer.app:create_app', factory=True, "
@@ -93,6 +97,17 @@ def main():
             edit_persisted = int(a[(H // 2) * W + (W // 2)]) == 1    # painted colour shows at the centre
             print("edit (paint colour 1) shows in group slice:", edit_persisted)
 
+            # autosave: the stroke arms the server debounce → an *_edited file
+            # appears on disk (and the original upload is left untouched)
+            import os as _os
+            _ed = MASKS.replace(".tif", "_edited.tif")
+            for _ in range(20):
+                if _os.path.exists(_ed):
+                    break
+                pg.wait_for_timeout(200)
+            autosaved = _os.path.exists(_ed) and _os.path.exists(MASKS)
+            print("autosave wrote *_edited (original kept):", autosaved)
+
             # orthogonal slicing: switch to Y axis → dims change, slider re-ranges
             pg.evaluate("window.__volumeMode.setAxis(1)")
             pg.wait_for_timeout(700)   # reinit + new image decode
@@ -136,7 +151,7 @@ def main():
             print("JS errors:", errs or "none")
 
             ok = (is_vol and bar_visible and mask_2d and slice_changed and edit_persisted
-                  and axis_ok and home_ok and gpu_ok and canvas_shown and show_labels == 1
+                  and autosaved and axis_ok and home_ok and gpu_ok and canvas_shown and show_labels == 1
                   and proj == 2 and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()

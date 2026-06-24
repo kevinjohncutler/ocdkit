@@ -335,6 +335,18 @@ def api_redo(session_id: str) -> dict:
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
+@router.post("/save_mask/{session_id}")
+def api_save_mask(session_id: str) -> dict:
+    """Force an immediate save of the edited mask to its *_edited sibling (the
+    debounced server autosave also does this automatically after edits settle)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    path = SESSION_MANAGER.save_edited_mask(state)
+    return {"ok": path is not None, "path": path}
+
+
 @router.get("/volume_bundle/{session_id}")
 def api_volume_bundle(session_id: str) -> dict:
     """Intensity-only 3D bundle for the loaded volume (renders before masks)."""

@@ -53,6 +53,10 @@ def main():
     for y in range(6, 74, 6):
         lab[:, y:y + 5, 8:72] = cid; cid += 1     # stacked rods touching along y
     tifffile.imwrite(MASKS, lab)
+    import os as _os
+    _ed = MASKS.replace(".tif", "_edited.tif")
+    if _os.path.exists(_ed):
+        _os.remove(_ed)                            # don't resume from a prior run's autosave
 
     import os
     env = dict(os.environ, OCDKIT_VIEWER_SAMPLE_IMAGE=VOL)
