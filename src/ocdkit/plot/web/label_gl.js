@@ -74,6 +74,7 @@ uniform vec3  u_outlineColor;      // uniform contour color (e.g. red)
 uniform float u_useOutlineColor;   // >0.5 → override per-cell color on edges
 uniform float u_baseHeadroom;      // >1 → lift the GPU base via EOTF×headroom×OETF (HDR glow)
 uniform float u_baseLinear;        // >0.5 → base texture is RAW linear-light f16 (skip EOTF)
+uniform float u_sdr;               // >0.5 → SDR mode: normalize >1 to SDR (keeps hue, no bloom)
 
 float _eotf(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
 float _oetf(float c) { float x = max(c, 0.0); return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055; }
@@ -199,6 +200,8 @@ void main() {
       outA = max(outA, alpha);
     }
   }
+  // SDR toggle: normalize >1 to the brightest channel (keep hue, drop the bloom).
+  if (u_sdr > 0.5) { float m = max(max(color.r, color.g), color.b); if (m > 1.0) color = color / m; }
   outColor = vec4(color, outA);
 }`;
 
@@ -257,7 +260,7 @@ void main() {
         imageVisible: 0, colorOffset: 0, highlightLabel: 0,
         highlightColor: [1, 0, 0], highlightAlpha: 0.5, highlightBoost: 1.8,
         outlineHdrBoost: 1.0, outlineColor: [1, 0, 0], useOutlineColor: 0,
-        baseHeadroom: 1.0, baseLinear: 0,
+        baseHeadroom: 1.0, baseLinear: 0, sdr: 0,
       };
       const prog = link(gl, VERT, FRAG);
       if (!prog) throw new Error('LabelGLRenderer: program creation failed');
@@ -268,7 +271,7 @@ void main() {
         'maskOpacity', 'maskVisible', 'outlinesVisible', 'maskStyle', 'imageVisible',
         'colorOffset', 'paletteSize', 'usePalette', 'highlightLabel',
         'highlightColor', 'highlightAlpha', 'highlightBoost',
-        'outlineHdrBoost', 'outlineColor', 'useOutlineColor', 'baseHeadroom', 'baseLinear',
+        'outlineHdrBoost', 'outlineColor', 'useOutlineColor', 'baseHeadroom', 'baseLinear', 'sdr',
       ].forEach((n) => { this.u[n] = gl.getUniformLocation(prog, 'u_' + n); });
 
       // unit quad in image-pixel coords + texcoords (matches app.js)
@@ -387,6 +390,10 @@ void main() {
     }
 
     setUniforms(o) { Object.assign(this.uniformsState, o); }
+    // Mirror LabelGPURenderer.setHdr: HDR off → u_sdr=1 (shader normalizes >1 to
+    // SDR). WebGL2 has no extended-canvas HDR anyway, but this keeps the toggle
+    // consistent (next draw() applies it).
+    setHdr(on) { this.uniformsState.sdr = on ? 0 : 1; }
 
     labelAt(px, py) {
       const x = Math.round(px), y = Math.round(py);
@@ -421,6 +428,7 @@ void main() {
       gl.uniform1f(U.outlineHdrBoost, st.outlineHdrBoost);
       gl.uniform1f(U.baseHeadroom, st.baseHeadroom == null ? 1.0 : st.baseHeadroom);
       gl.uniform1f(U.baseLinear, st.baseLinear == null ? 0 : st.baseLinear);
+      gl.uniform1f(U.sdr, st.sdr ? 1 : 0);
       const oc = st.outlineColor || [1, 0, 0];
       gl.uniform3f(U.outlineColor, oc[0], oc[1], oc[2]);
       gl.uniform1f(U.useOutlineColor, st.useOutlineColor);

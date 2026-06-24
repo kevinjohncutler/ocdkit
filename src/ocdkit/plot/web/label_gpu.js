@@ -42,7 +42,7 @@ struct U {
   maskOpacity: f32, maskVisible: f32, outlinesVisible: f32, maskStyle: f32,
   imageVisible: f32, colorOffset: f32, paletteSize: f32, usePalette: f32,
   highlightLabel: f32, highlightAlpha: f32, highlightBoost: f32, outlineHdrBoost: f32,
-  useOutlineColor: f32, baseHeadroom: f32, baseLinear: f32, pad0: f32,
+  useOutlineColor: f32, baseHeadroom: f32, baseLinear: f32, sdr: f32,
 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var samp: sampler;
@@ -129,6 +129,10 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
       outA = max(outA, alpha);
     }
   }
+  // SDR toggle: bring >1 down to SDR by NORMALISING to the brightest channel
+  // (not a hard clamp, which washes mid-tones to white) — so the overlay reads
+  // bright + keeps its hue, just without the HDR bloom. Display-independent.
+  if (u.sdr > 0.5) { let m = max(max(color.r, color.g), color.b); if (m > 1.0) { color = color / m; } }
   // PREMULTIPLIED for alphaMode:'premultiplied' (a WebGPU canvas has no
   // straight-alpha mode). hasBase → outA==1 → unchanged; transparent overlay →
   // color*alpha, which composites identically to WebGL's premultipliedAlpha:false.
@@ -164,7 +168,7 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
         imageVisible: 0, colorOffset: 0, highlightLabel: 0,
         highlightColor: [1, 0, 0], highlightAlpha: 0.5, highlightBoost: 1.8,
         outlineHdrBoost: 1.0, outlineColor: [1, 0, 0], useOutlineColor: 0,
-        baseHeadroom: 1.0, baseLinear: 0,
+        baseHeadroom: 1.0, baseLinear: 0, sdr: 0,
       };
       this._configure();
 
@@ -200,9 +204,11 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
       try { this.ctx.configure(Object.assign({}, base, { toneMapping: { mode: this.hdr === false ? 'standard' : 'extended' } })); }
       catch (e) { this.ctx.configure(base); }
     }
-    // Toggle the canvas tone-mapping (keeps the boosted colours; only the >1
-    // emit-vs-clamp behaviour changes), so SDR mode is a clamped-bright overlay.
-    setHdr(on) { this.hdr = !!on; this._configure(); this.requestRedraw(); }
+    // SDR mode: clamp >1 in the SHADER (u_sdr), not just the canvas tone-mapping —
+    // 'standard' tone-mapping doesn't reliably clamp the boosted overlay on every
+    // display, so the outline kept glowing. The shader clamp is display-independent;
+    // _configure's 'standard' is belt-and-suspenders.
+    setHdr(on) { this.hdr = !!on; this.uniformsState.sdr = on ? 0 : 1; this._configure(); this.requestRedraw(); }
 
     _mkTex(w, h, format) {
       return this.device.createTexture({
@@ -329,7 +335,7 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
       u[27] = st.highlightLabel; u[28] = st.highlightAlpha == null ? 0.5 : st.highlightAlpha;
       u[29] = st.highlightBoost == null ? 1.8 : st.highlightBoost; u[30] = st.outlineHdrBoost;
       u[31] = st.useOutlineColor; u[32] = st.baseHeadroom == null ? 1.0 : st.baseHeadroom;
-      u[33] = st.baseLinear == null ? 0 : st.baseLinear;
+      u[33] = st.baseLinear == null ? 0 : st.baseLinear; u[34] = st.sdr ? 1 : 0;
       this.device.queue.writeBuffer(this.uBuf, 0, u);
 
       const enc = this.device.createCommandEncoder();
