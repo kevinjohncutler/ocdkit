@@ -1051,7 +1051,60 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
     return line;
   }
 
+  // HDR text/labels: render a rasterized label strip (an SDR 2D canvas of colored
+  // text on transparent) onto a WebGPU rgba16float/extended canvas so the glyphs
+  // glow into the headroom EXACTLY like the reference lines — same _rgb01ToP3 lift
+  // (× boost) + OETF + dispPipe the density uses, so a label is pixel-matched to
+  // its line. ``boost`` 1 = SDR (hue-exact). ``srcCv`` and ``hdrCv`` must share dims.
+  function renderHdrLabels(hdrCv, srcCv, boost) {
+    var g = _gpu;
+    if (!g || !g.dispPipe || typeof Float16Array === 'undefined') return false;
+    var device = g.device, W = srcCv.width | 0, H = srcCv.height | 0;
+    if (!W || !H) return false;
+    try {
+      var px = srcCv.getContext('2d').getImageData(0, 0, W, H).data;
+      // sRGB straight color → linear-P3 × boost (rgb), text coverage → alpha; the
+      // dispPipe shader OETF-encodes + premultiplies, so partial-coverage glyph
+      // edges feather and >1 colours bloom past SDR white. (Matches the lines.)
+      var fc = new Float32Array(W * H * 4);
+      for (var i = 0; i < W * H; i++) {
+        var a = px[i * 4 + 3] / 255;
+        if (a > 0) {
+          var lp = _rgb01ToP3([px[i * 4] / 255, px[i * 4 + 1] / 255, px[i * 4 + 2] / 255], boost);
+          fc[i * 4] = lp[0]; fc[i * 4 + 1] = lp[1]; fc[i * 4 + 2] = lp[2];
+        }
+        fc[i * 4 + 3] = a;
+      }
+      var half = new Float16Array(fc.length);
+      for (var k = 0; k < fc.length; k++) half[k] = fc[k];
+      if (hdrCv.width !== W) hdrCv.width = W;
+      if (hdrCv.height !== H) hdrCv.height = H;
+      var ctxg = hdrCv.__hdrLabCtx;
+      if (!ctxg) {
+        ctxg = hdrCv.getContext('webgpu'); if (!ctxg) return false;
+        try { ctxg.configure({ device: device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied', toneMapping: { mode: 'extended' } }); }
+        catch (e) { try { ctxg.configure({ device: device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied' }); } catch (e2) { return false; } }
+        hdrCv.__hdrLabCtx = ctxg;
+      }
+      var tex = device.createTexture({ size: [W, H], format: 'rgba16float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      var rb = W * 8, pbr = Math.ceil(rb / 256) * 256, sb = new Uint8Array(half.buffer), srcU8 = sb;
+      if (pbr !== rb) { srcU8 = new Uint8Array(pbr * H); for (var y = 0; y < H; y++) srcU8.set(sb.subarray(y * rb, (y + 1) * rb), y * pbr); }
+      device.queue.writeTexture({ texture: tex }, srcU8, { bytesPerRow: pbr, rowsPerImage: H }, { width: W, height: H });
+      var bg = device.createBindGroup({ layout: g.dispPipe.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: tex.createView() }, { binding: 1, resource: g.dispSmp }] });
+      var enc = device.createCommandEncoder();
+      var rp = enc.beginRenderPass({ colorAttachments: [{ view: ctxg.getCurrentTexture().createView(),
+        loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+      rp.setPipeline(g.dispPipe); rp.setBindGroup(0, bg); rp.draw(3); rp.end();
+      device.queue.submit([enc.finish()]);
+      tex.destroy();
+      return true;
+    } catch (e) { console.warn('SpectraGL HDR labels:', e && e.message || e); return false; }
+  }
+
   return { decodeAttrs: decodeAttrs, render: render, highlight: highlight,
            highlightById: highlightById, clearHighlight: clearHighlight, setRefs: setRefs,
+           renderHdrLabels: renderHdrLabels,
            nearestLine: nearestLine, COVERAGE_SCALE: COVERAGE_SCALE };
 }));
