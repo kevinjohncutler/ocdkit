@@ -62,6 +62,8 @@ class SessionState:
     saved_states: dict[str, Any] = field(default_factory=dict)
     current_image: Optional[np.ndarray] = None
     image_is_rgb: bool = False
+    current_volume: Optional[np.ndarray] = None  # (Z, Y, X) uint8 when a 3D stack is loaded
+    volume_slice: int = 0  # index of the slice currently shown in the 2D view
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -119,7 +121,7 @@ class SessionManager:
         session_id = secrets.token_urlsafe(16)
         initial_path = get_preload_image_path()
         if initial_path and initial_path.exists():
-            image, is_rgb = self._load_image_from_path(initial_path)
+            image, is_rgb, _is_volume = self._load_image_from_path(initial_path)
             directory = initial_path.parent
             files = self._list_directory_images(directory)
         else:
@@ -170,12 +172,22 @@ class SessionManager:
             if existing:
                 existing.saved_states.clear()
 
-    def _load_image_from_path(self, path: Path) -> tuple[np.ndarray, bool]:
-        arr = imageio.imread(path)
+    def _load_image_from_path(self, path: Path) -> tuple[np.ndarray, bool, bool]:
+        """Read an image or volume. Returns ``(array, is_rgb, is_volume)``.
+
+        A 3-D array is treated as a ``(Z, Y, X)`` volume only when neither the
+        first nor the last axis is a small channel count — so ``(Y, X, 3)`` RGB
+        and ``(3, Y, X)`` channels-first stay 2-D images.
+        """
+        arr = np.asarray(imageio.imread(path))
+        if (arr.ndim == 3 and arr.shape[0] not in (1, 3, 4)
+                and arr.shape[-1] not in (1, 2, 3, 4)):
+            vol = _normalize_uint8(arr)  # global normalize across the whole stack
+            return vol, False, True
         arr = _ensure_spatial_last(arr)
         arr = _normalize_uint8(arr)
         is_rgb = arr.ndim == 3 and arr.shape[-1] >= 3
-        return arr, is_rgb
+        return arr, is_rgb, False
 
     def _list_directory_images(self, directory: Path) -> list[Path]:
         try:
@@ -192,20 +204,32 @@ class SessionManager:
             path = path.expanduser().resolve()
             if not path.exists():
                 raise FileNotFoundError(path)
-            image, is_rgb = self._load_image_from_path(path)
+            image, is_rgb, is_volume = self._load_image_from_path(path)
             directory = path.parent
             files = self._list_directory_images(directory)
         else:
             image = load_image_uint8(as_rgb=True)
             is_rgb = image.ndim == 3 and image.shape[-1] >= 3
+            is_volume = False
             directory = None
             files = []
         state.current_path = path
         state.directory = directory
         state.files = files
-        state.current_image = np.ascontiguousarray(image, dtype=np.uint8)
-        state.image_is_rgb = is_rgb
-        raw_bytes = self._encode_image_bytes(state.current_image, is_rgb=is_rgb)
+        if is_volume:
+            # Store the full (Z, Y, X) stack; the 2D pipeline shows one slice.
+            state.current_volume = np.ascontiguousarray(image, dtype=np.uint8)
+            state.volume_slice = int(state.current_volume.shape[0] // 2)
+            state.current_image = np.ascontiguousarray(
+                state.current_volume[state.volume_slice], dtype=np.uint8
+            )
+            state.image_is_rgb = False
+        else:
+            state.current_volume = None
+            state.volume_slice = 0
+            state.current_image = np.ascontiguousarray(image, dtype=np.uint8)
+            state.image_is_rgb = is_rgb
+        raw_bytes = self._encode_image_bytes(state.current_image, is_rgb=state.image_is_rgb)
         state.encoded_image_bytes = raw_bytes
         state.encoded_image_mime = "image/png"
         state.encoded_image = (
@@ -254,6 +278,12 @@ class SessionManager:
             "isRgb": is_rgb,
             "useWebglPipeline": True,
         }
+        if state.current_volume is not None:
+            config["isVolume"] = True
+            config["volumeDepth"] = int(state.current_volume.shape[0])
+            config["currentSlice"] = int(state.volume_slice)
+        else:
+            config["isVolume"] = False
         if embed_image:
             config["imageDataUrl"] = state.encoded_image
         else:
@@ -267,6 +297,18 @@ class SessionManager:
             config["savedViewerState"] = sanitized
             state.saved_states[state.path_key()] = sanitized
         return config
+
+    def encode_slice_png(self, state: SessionState, z: int) -> Optional[bytes]:
+        """PNG bytes for slice ``z`` of the loaded volume, or None if not a volume.
+
+        Also updates ``state.volume_slice`` so the 2D view + config stay in sync.
+        """
+        vol = state.current_volume
+        if vol is None:
+            return None
+        z = max(0, min(int(z), vol.shape[0] - 1))
+        state.volume_slice = z
+        return self._encode_image_bytes(np.ascontiguousarray(vol[z]), is_rgb=False)
 
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:
         raw_bytes = self._encode_image_bytes(array, is_rgb=is_rgb)

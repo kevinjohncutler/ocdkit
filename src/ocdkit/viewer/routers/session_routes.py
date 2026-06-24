@@ -182,6 +182,23 @@ def api_image(session_id: str) -> Response:
     )
 
 
+@router.get("/volume_slice/{session_id}")
+def api_volume_slice(session_id: str, z: int = 0) -> Response:
+    """Serve slice ``z`` of the loaded volume as PNG (2.5D slice navigation)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    png = SESSION_MANAGER.encode_slice_png(state, z)
+    if png is None:
+        raise NotFound("not_a_volume")
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @router.post("/save_state")
 def api_save_state(
     payload: SaveStatePayload,
