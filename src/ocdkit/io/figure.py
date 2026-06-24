@@ -2713,6 +2713,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // 1.0 (SDR white); HDR → configured boosts. Applied on open + on toggle.
       const _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
       function setSdr(sdr) {
+        if (!r) return;   // renderer still resolving (openZoom races the async create);
+                          // the createLabelRenderer .then applies the current SDR state.
         r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
                         highlightBoost: sdr ? 1.0 : _cfgOutlineHdr });
         redraw(lastState);
