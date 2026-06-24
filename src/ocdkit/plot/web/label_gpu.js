@@ -298,8 +298,15 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
       const M = this._matrix;
       if (!M || !this.w) return;
       const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-      const cw = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
-      const ch = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+      // Size from the ACTUAL on-screen rect, NOT clientWidth: a label tile lives in
+      // an SVG <foreignObject>, so clientWidth is the unscaled SVG-user-unit size
+      // while getBoundingClientRect() is the real post-viewBox-scale pixel size.
+      // Backing at clientWidth*dpr under-renders the canvas (e.g. 256 for a 512-device-px
+      // display) → the screen-space outline subsamples + breaks. The popup canvas
+      // isn't SVG-scaled, so rect.width == clientWidth there (no change).
+      const rect = this.canvas.getBoundingClientRect();
+      const cw = Math.max(1, Math.round((rect.width || this.canvas.clientWidth) * dpr));
+      const ch = Math.max(1, Math.round((rect.height || this.canvas.clientHeight) * dpr));
       if (cw !== this._cw || ch !== this._ch) { this._cw = cw; this._ch = ch; this.canvas.width = cw; this.canvas.height = ch; this._configure(); }
 
       const st = this.uniformsState;
