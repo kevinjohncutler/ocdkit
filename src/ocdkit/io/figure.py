@@ -2568,25 +2568,19 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         'position:absolute; inset:0; width:100%; height:100%;'
       + ' image-rendering:pixelated; pointer-events:none;';
       parent.appendChild(canvas);
-      // Unified WebGL2 context budget (the SAME pool the inline tiles use): reserve a
-      // slot for this popup's context — acquiring evicts an off-screen tile if we're at
-      // the cap, so opening a zoom never crosses Chrome's ~16-context limit.
+      // Unified WebGL context budget (the SAME pool the inline tiles use): reserve a
+      // slot — acquiring evicts an off-screen tile if we're at the cap, so opening a
+      // zoom never crosses Chrome's ~16-context limit. A WebGPU dispatch gives the
+      // slot back (cap-free, shared device); a WebGL2 dispatch keeps it.
       var POOL = self.__ocdGLPool || (self.__ocdGLPool = __OCD_GL_POOL_IIFE__);
       var _poolEntry = { cv: canvas, release: function () {} };   // on-screen -> never evicted
       POOL.acquire(_poolEntry);
-      const gl = canvas.getContext('webgl2',
-        { alpha: true, premultipliedAlpha: false });
-      if (!gl) { if (canvas.parentElement) canvas.parentElement.removeChild(canvas); return null; }
-      // HDR float16 extended-range backbuffer (see inline controller) so >1.0
-      // outline/highlight colors emit TRUE HDR. Needs EXT_color_buffer_float;
-      // (re)allocated in syncSize on every resize. SDR fallback if absent.
-      const _hdr = !!gl.drawingBufferStorage;
-      if (_hdr) {
-        try {
-          gl.getExtension('EXT_color_buffer_float');
-          gl.drawingBufferColorSpace = 'display-p3';
-        } catch (e) {}
-      }
+      // Renderer + (for the WebGL2 fallback) the gl context are resolved ASYNC by
+      // createLabelRenderer (the WebGPU backend needs a GPUDevice). gl/_hdr stay null
+      // until a WebGL2 fallback resolves; _backend gates the WebGPU vs WebGL2 paths
+      // in redraw / syncSize / dispose. The float16 extended-range HDR backbuffer is
+      // set up on the resolved WebGL2 context (WebGPU emits true HDR natively).
+      let r = null, gl = null, _backend = null, _hdr = false;
       let cfg = srcCanvas.__labelCfg || self.LabelGL.decodeAttrs(srcCanvas);
       const imgW = cfg.w, imgH = cfg.h;
       let lastState = { s: 1, tx: 0, ty: 0 };
@@ -2681,19 +2675,40 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           canvas.style.backgroundColor = 'Canvas';
         }
       }
-      let r;
-      try {
-        // No baseSrc → buildRenderer leaves the canvas transparent (labels/
-        // outlines only); the HDR <img> above provides the base.
-        r = self.LabelGL.buildRenderer(gl, cfg, () => redraw(lastState));
-      } catch (e) {
+      // Dispatch WebGPU (true HDR glow via toneMapping:'extended') → WebGL2 (the
+      // drawingBufferStorage RGBA16F best-effort). createLabelRenderer fetches any
+      // streamed matrix itself. The viewer object is returned synchronously; its
+      // r-dependent methods guard on r and the first paint happens once the renderer
+      // resolves (mirrors the colormap popup viewer's async pattern). No baseSrc is
+      // passed → the canvas stays transparent (labels/outlines only); the HDR <img>
+      // above (or setBaseRaw) supplies the base.
+      self.LabelGL.createLabelRenderer(canvas, cfg, () => redraw(lastState)).then(function (rr) {
+        r = rr; _backend = rr.backend;
+        if (_backend === 'webgpu') {
+          POOL.release(_poolEntry);                  // cap-free, return the reserved slot
+        } else {
+          gl = rr.gl;
+          _hdr = !!(gl && gl.drawingBufferStorage);  // float16 extended-range backbuffer
+          if (_hdr) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
+        }
+        // Kick off the thumb→hi-res base upgrade (retries while the hi-res is 204).
+        if (_hdrBaseUpgrade) { try { _hdrBaseUpgrade(r); } catch (e) {} }
+        // Apply the figure's current HDR-toggle state, then first paint.
+        try { r.setUniforms({ outlineHdrBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr,
+                              highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : 1.8 }); } catch (_) {}
+        _dirty = true; redraw(lastState);
+      }).catch(function (e) {
         console.warn('LabelGL popup:', e);
         if (baseImg && baseImg.parentElement) baseImg.parentElement.removeChild(baseImg);
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
-        return null;
-      }
-      // Kick off the thumb→hi-res base upgrade (retries while the hi-res is 204).
-      if (_hdrBaseUpgrade) { try { _hdrBaseUpgrade(r); } catch (e) {} }
+        try { POOL.release(_poolEntry); } catch (_) {}
+      });
+      // The popup canvas is 0-sized until the overlay opens + lays out, and the
+      // async renderer may resolve before OR after that. A ResizeObserver re-runs
+      // redraw (recomputing mat3ForFit at the live CSS size) so the first real paint
+      // lands at the right size regardless of ordering — the sync WebGL2 path used
+      // to rely on openZoom's post-open redraw, which now races the async resolve.
+      try { new ResizeObserver(function () { _dirty = true; redraw(lastState); }).observe(canvas); } catch (e) {}
       // HDR toggle response (mirror the inline controller): SDR → boosts to
       // 1.0 (SDR white); HDR → configured boosts. Applied on open + on toggle.
       const _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
@@ -2707,27 +2722,34 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       canvas.__invalidateSize = invalidateSize;
       function syncSize() {
         if (!_dirty) return;
-        _cssW = canvas.clientWidth; _cssH = canvas.clientHeight;
+        _cssW = canvas.clientWidth; _cssH = canvas.clientHeight;   // mat3ForFit needs these (both backends)
         _dpr = window.devicePixelRatio || 1;
-        const w = Math.max(1, Math.round(_cssW * _dpr));
-        const h = Math.max(1, Math.round(_cssH * _dpr));
-        // Always size via width/height first (full resolution + SDR fallback),
-        // then upgrade the same-size buffer to float16 HDR in place. If
-        // drawingBufferStorage errors it's a no-op and the SDR buffer remains,
-        // so resolution is never lost.
-        if (canvas.width !== w) canvas.width = w;
-        if (canvas.height !== h) canvas.height = h;
-        if (_hdr) { try { gl.drawingBufferStorage(gl.RGBA16F, w, h); } catch (e) {} }
+        if (gl) {
+          // WebGL2: size the backbuffer (full resolution + SDR fallback), then
+          // upgrade the same-size buffer to float16 HDR in place. A
+          // drawingBufferStorage error is a no-op (SDR buffer remains), so
+          // resolution is never lost. (WebGPU self-sizes its canvas in draw().)
+          const w = Math.max(1, Math.round(_cssW * _dpr));
+          const h = Math.max(1, Math.round(_cssH * _dpr));
+          if (canvas.width !== w) canvas.width = w;
+          if (canvas.height !== h) canvas.height = h;
+          if (_hdr) { try { gl.drawingBufferStorage(gl.RGBA16F, w, h); } catch (e) {} }
+        }
         _dirty = false;
       }
       function redraw(s) {
         lastState = s;
+        if (!r) return;                 // renderer still resolving; first paint deferred to its .then
         syncSize();
-        gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
         // (outline width is computed in the shader now from dFdx/textureSize — no
         // outlineLod/outlineThresh uniforms needed.)
-        r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));
+        if (_backend === 'webgpu') {
+          r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));   // self-clears/sizes
+        } else {
+          gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+          gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+          r.draw(self.LabelGL.mat3ForFit(s, imgW, imgH, _cssW, _cssH));
+        }
         // Track the SDR base <img> to the SAME fit+pan+zoom the shader uses
         // (mat3ForFit's geometry), so the browser-composited HDR base stays
         // pixel-aligned with the GPU label/outline overlay.
@@ -2749,6 +2771,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // hover-highlight + tooltip, wired on the gesture surface (parent)
       let tip = null, cur = 0;
       function onMove(e) {
+        if (!r) return;                 // renderer still resolving
         const rc = canvas.getBoundingClientRect();
         const p = self.LabelGL.imagePointFromCss(lastState, imgW, imgH,
           rc.width, rc.height, e.clientX - rc.left, e.clientY - rc.top);
@@ -2768,7 +2791,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         } else if (tip) { tip.style.display = 'none'; }
       }
       function onLeave() {
-        cur = 0; r.setUniforms({ highlightLabel: 0 }); redraw(lastState);
+        cur = 0; if (r) { r.setUniforms({ highlightLabel: 0 }); redraw(lastState); }
         if (tip) tip.style.display = 'none';
       }
       parent.addEventListener('pointermove', onMove);
@@ -2791,17 +2814,14 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         tip = null;
         if (baseImg && baseImg.parentElement) baseImg.parentElement.removeChild(baseImg);
         baseImg = null;
-        try { const ext = gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (_) {}
-        try { POOL.release(_poolEntry); } catch (e) {}
+        if (r && _backend === 'webgpu') { try { r.destroy(); } catch (_) {} }   // no terminal loseContext
+        else { try { const ext = gl && gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (_) {} }
+        try { POOL.release(_poolEntry); } catch (e) {}   // idempotent (already released on WebGPU resolve)
         if (canvas.parentElement) canvas.parentElement.removeChild(canvas);
       }
       function clearActive() {}  // one tile per popup session
-      // Apply the figure's current HDR-toggle state to this fresh popup
-      // viewer (the overlay carries .ocd-sdr-mode); setUniforms only — the
-      // first real paint comes from openZoom's applyTransform.
-      try { r.setUniforms({
-        outlineHdrBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr,
-        highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : 1.8 }); } catch (_) {}
+      // (HDR-toggle state + first paint are applied in the createLabelRenderer
+      // .then above, once the async renderer resolves.)
       return { canvas, redraw, loadImage, isPointInImage, dispose, clearActive,
                hideHover, setSdr,
                get textureLoaded() { return true; },
@@ -5203,6 +5223,27 @@ def _load_label_gl_js():
     except OSError:
         return ""
 
+
+def _load_label_gpu_js(with_device=True):
+    """Read the WebGPU label renderer (``label_gpu.js``) so createLabelRenderer
+    can dispatch to it. ``with_device`` bundles the HdrColormap device prelude
+    (``hdr_headroom`` + ``hdr_colormap``, which expose the shared getDevice) —
+    skip it when the colormap stack (which already loads them) is also present,
+    to avoid spinning up a duplicate GPUDevice. Read FRESH per render, like
+    _load_label_gl_js."""
+    import os
+    here = os.path.dirname(os.path.dirname(__file__))  # ocdkit/
+    names = (("hdr_headroom.js", "hdr_colormap.js", "label_gpu.js")
+             if with_device else ("label_gpu.js",))
+    parts = []
+    for _name in names:
+        try:
+            with open(os.path.join(here, "plot", "web", _name), "r", encoding="utf-8") as fh:
+                parts.append(fh.read())
+        except OSError:
+            pass
+    return "\n".join(parts)
+
 # Per-figure controller: finds every ``<canvas data-label-tile>`` in the
 # wrapper, decodes its label matrix + palette, and renders it live via the
 # shared LabelGLRenderer (palette fill + outlines), with hover-highlight.
@@ -5282,6 +5323,8 @@ _LABEL_CONTROLLER_JS = r"""
     }
     function render() {
       if (!r) return;
+      // WebGPU self-manages dpr sizing / clear / viewport in its draw().
+      if (r.backend === 'webgpu') { r.draw(self.LabelGL.ortho()); return; }
       sizeCanvas();
       gl.viewport(0, 0, cv.width, cv.height);
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
@@ -5315,14 +5358,12 @@ _LABEL_CONTROLLER_JS = r"""
       if (_tip) _tip.style.display = 'none';
     }
     function build() {
-      poolEntry = { cv: cv, release: unmount };   // may synchronously evict an off-screen tile
+      // Reserve a WebGL-budget slot FIRST (may evict an off-screen tile). The
+      // dispatch is async, so we hold the slot until we learn the backend: a
+      // WebGPU tile gives it back (cap-free, shared device), a WebGL2 tile keeps
+      // it. Either way the cap is never exceeded mid-dispatch.
+      poolEntry = { cv: cv, release: unmount };
       POOL.acquire(poolEntry);
-      gl = cv.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
-      if (!gl) { console.warn('LabelGL: no WebGL2'); return; }
-      // float16 extended-range backbuffer so a >1.0 outline/highlight emits TRUE HDR.
-      _hdrBuf = !!gl.drawingBufferStorage;
-      if (_hdrBuf) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
-      sizeCanvas();
       cv.__labelCfg = cfg;
       cv.__labelRender = render;
       // HDR/SDR toggle (shell button): SDR drops boosts to 1.0; HDR uses configured.
@@ -5334,25 +5375,41 @@ _LABEL_CONTROLLER_JS = r"""
       cv.addEventListener('pointermove', onMove);
       cv.addEventListener('pointerleave', onLeave);
       try { new ResizeObserver(function () { render(); }).observe(cv); } catch (e) {}
-      self.LabelGL.fetchMatrices(cfg).then(function () {
-        if (!mounted || !gl) return;                   // released while fetching
-        try { r = self.LabelGL.buildRenderer(gl, cfg, render); }
-        catch (e) { console.warn('LabelGL:', e); return; }
-        cv.__labelRenderer = r;
+      // Dispatch WebGPU (true HDR glow via toneMapping:'extended') → WebGL2
+      // (drawingBufferStorage RGBA16F best-effort). createLabelRenderer fetches
+      // the streamed matrix itself, so cfg goes straight in.
+      var thisCanvas = cv;
+      self.LabelGL.createLabelRenderer(cv, cfg, render).then(function (rr) {
+        if (!mounted || cv !== thisCanvas) { try { rr.destroy && rr.destroy(); } catch (e) {} return; }
+        r = rr; cv.__labelRenderer = r;
+        if (r.backend === 'webgpu') {
+          // WebGPU canvases share ONE device and have no ~16-context cap → give
+          // the reserved WebGL slot back so it never competes with WebGL2 tiles.
+          if (poolEntry) { POOL.release(poolEntry); poolEntry = null; }
+        } else {
+          // WebGL2: float16 extended-range backbuffer on the renderer's own
+          // context so a >1.0 outline/highlight emits HDR where the platform
+          // supports it (clamps to a brighter SDR edge otherwise).
+          gl = r.gl;
+          _hdrBuf = !!(gl && gl.drawingBufferStorage);
+          if (_hdrBuf) { try { gl.getExtension('EXT_color_buffer_float'); gl.drawingBufferColorSpace = 'display-p3'; } catch (e) {} }
+        }
         if (cur) r.setUniforms({ highlightLabel: cur });   // restore hover on remount
         cv.__labelSetSdr(wrapper.classList.contains('ocd-sdr-mode'));
         render();
-      }).catch(function (e) { console.warn('LabelGL fetch/build failed:', e); });
+      }).catch(function (e) { console.warn('LabelGL build failed:', e); });
     }
     function mount() { if (mounted) return; mounted = true; build(); }
     function unmount() {
       if (!mounted) return;
       mounted = false;
       if (poolEntry) { POOL.release(poolEntry); poolEntry = null; }
-      var _gl = gl; gl = null; r = null; cv.__labelRenderer = null;
-      try { var ext = _gl && _gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) {}
-      // swap in a FRESH clone (loseContext'd canvas can't re-getContext); carry the
-      // popup config + re-point the observer so the next mount() builds anew.
+      var _r = r, _gl = gl; r = null; gl = null; cv.__labelRenderer = null;
+      if (_r && _r.backend === 'webgpu') { try { _r.destroy(); } catch (e) {} }   // no terminal loseContext
+      else { try { var ext = _gl && _gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); } catch (e) {} }
+      // swap in a FRESH clone either way: a loseContext'd WebGL2 canvas can't
+      // re-getContext, and a fresh canvas avoids duplicate listeners + a stale
+      // configured WebGPU context. Carry the popup config + re-point the observer.
       var fresh = cv.cloneNode(false);
       fresh.__labelCfg = cfg;
       if (cv.parentNode) cv.parentNode.replaceChild(fresh, cv);
@@ -6440,7 +6497,11 @@ def interactive_shell(content_html: str, *,
     # (palette fill + outlines + hover-highlight), reusing the same engine
     # as the viewer. Only included when the markup actually has a label tile.
     if 'data-label-tile' in content_html:
-        js = (_load_label_gl_js() + "\n"
+        # label_gpu.js (+ the HdrColormap device prelude unless the colormap stack
+        # already loads it) so createLabelRenderer can dispatch to the WebGPU/HDR
+        # backend; label_gl.js then provides the dispatcher + WebGL2 fallback.
+        js = (_load_label_gpu_js(with_device='data-colormap-tile' not in content_html) + "\n"
+              + _load_label_gl_js() + "\n"
               + _LABEL_CONTROLLER_JS.replace("__UID__", uid) + "\n" + js)
     # Same pattern for ``<canvas data-colormap-tile>`` — a raw scalar (e.g. an
     # ncolor group map) GPU-colormapped via ColormapImage, the SAME backend the

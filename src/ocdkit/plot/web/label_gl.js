@@ -247,6 +247,7 @@ void main() {
   class LabelGLRenderer {
     constructor(gl) {
       this.gl = gl;
+      this.backend = 'webgl2'; this.hdr = false;   // SDR (no toneMapping:'extended')
       this.w = 0; this.h = 0;
       this.labels = null;            // Int32Array CPU copy for labelAt()
       this.paletteSize = 256;
@@ -597,7 +598,10 @@ void main() {
     opts = opts || {};
     const LG = (typeof window !== 'undefined' && window.LabelGPU) || (typeof self !== 'undefined' && self.LabelGPU) || null;
     function webgl2() {
-      const gl = canvas.getContext('webgl2');
+      // Straight alpha (premultipliedAlpha:false) — the label tile is a
+      // transparent overlay over a separate HDR <image>; matches the inline
+      // controller's historical context options.
+      const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
       if (!gl) throw new Error('createLabelRenderer: no webgl2');
       return _applyConfig(new LabelGLRenderer(gl), cfg, onRender);
     }
