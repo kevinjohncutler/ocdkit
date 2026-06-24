@@ -192,7 +192,7 @@ void main() {
           // the rim brighter and off-hue versus the interior).
           vec3 _hc = (u_usePalette > 0.5) ? paletteColor(label) : hashColor(label);
           maskColor = _hc * u_highlightBoost + 0.12;
-          alpha = max(alpha, 0.9);
+          alpha = max(alpha, u_maskOpacity);   // match the outline's translucency (was 0.9)
         }
       }
       color = hasBase ? mix(color, maskColor, alpha) : maskColor;

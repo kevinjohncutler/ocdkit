@@ -122,7 +122,7 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
         } else {
           let hc = select(hashColor(label), paletteColor(label), u.usePalette > 0.5);
           maskColor = hc * u.highlightBoost + 0.12;
-          alpha = max(alpha, 0.9);
+          alpha = max(alpha, u.maskOpacity);   // match the outline's translucency (was 0.9)
         }
       }
       color = select(maskColor, mix(color, maskColor, alpha), hasBase);
