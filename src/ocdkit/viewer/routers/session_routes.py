@@ -335,6 +335,31 @@ def api_redo(session_id: str) -> dict:
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
+@router.get("/label_at/{session_id}")
+def api_label_at(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int = 0) -> dict:
+    """3D colour picker: the (label, group) of the cell at a voxel."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    lab, grp = SESSION_MANAGER.label_at(state, z, axis, y, x)
+    return {"label": lab, "group": grp}
+
+
+@router.post("/fill_cell/{session_id}")
+def api_fill_cell(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int = 0,
+                  target: int = 0) -> dict:
+    """3D fill: target 0 deletes the clicked cell; target>0 merges it into that
+    label. Operates on the whole 3D cell. Returns the resulting label + history."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    lab = SESSION_MANAGER.fill_cell(state, z, axis, y, x, target)
+    return {"ok": True, "label": lab,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
 @router.post("/save_mask/{session_id}")
 def api_save_mask(session_id: str) -> dict:
     """Force an immediate save of the edited mask to its *_edited sibling (the

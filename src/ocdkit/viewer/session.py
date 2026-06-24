@@ -526,7 +526,12 @@ class SessionManager:
         if radius > 0:
             edt = ndimage.distance_transform_edt(footprint)
             rmax = float(edt.max()) if edt.size else 0.0
-            core = edt >= max(0.5, rmax - 0.5)                 # medial axis of the footprint
+            # The swept path = footprint eroded ~by the brush radius. Threshold at
+            # the BRUSH scale (min(R, rmax)), NOT the widest blob (rmax): a stroke
+            # with both wide and narrow sections must extrude in z everywhere, else
+            # the narrow sections paint only the current slice (a 2D circle).
+            depth = min(R, rmax)
+            core = edt >= max(0.5, depth - 0.5)
             dist_to_core = ndimage.distance_transform_edt(~core)
         slices = []
         for k in range(0, radius + 1):
@@ -584,6 +589,55 @@ class SessionManager:
         self._record_edit(state, before_mv, before_lg)
         self.schedule_autosave(state)
         return int(target)
+
+    # ----- whole-cell ops: 3D colour picker + 3D fill (merge / delete) -----
+
+    def label_at(self, state: SessionState, z: int, axis: int, y: int, x: int):
+        """The (label, group) at a voxel — the 3D colour picker. Picks a whole
+        cell's identity + colour from one click on any slice/axis."""
+        mv = state.current_mask_volume
+        if mv is None:
+            return 0, 0
+        plane = np.take(mv, int(z), axis=int(axis) % 3)
+        H, W = plane.shape
+        if not (0 <= int(y) < H and 0 <= int(x) < W):
+            return 0, 0
+        lab = int(plane[int(y), int(x)])
+        self.ensure_ncolor(state)
+        return lab, int((state.label_group or {}).get(lab, 0))
+
+    def fill_cell(self, state: SessionState, z: int, axis: int, y: int, x: int,
+                  target_label: int) -> int:
+        """Whole-cell 3D fill from one click. ``target_label == 0`` deletes the
+        clicked cell (all its voxels across the volume); ``target_label > 0``
+        merges the clicked cell into that label (its whole 3D extent). Operates on
+        the entire connected label, so it works from any slice/axis."""
+        mv = state.current_mask_volume
+        if mv is None:
+            return 0
+        plane = np.take(mv, int(z), axis=int(axis) % 3)
+        H, W = plane.shape
+        if not (0 <= int(y) < H and 0 <= int(x) < W):
+            return 0
+        L = int(plane[int(y), int(x)])
+        if L == 0:
+            return 0                                   # clicked background
+        target = max(0, int(target_label))
+        if target == L:
+            return L                                   # no-op
+        self.ensure_ncolor(state)
+        lg = state.label_group if state.label_group is not None else {}
+        before_mv = mv.copy()
+        before_lg = dict(lg)
+        mv[mv == L] = target                           # whole cell → delete (0) or merge (target)
+        lg.pop(L, None)
+        if target > 0 and target not in lg:
+            lg[target] = 1
+        state.label_group = lg
+        state.current_ncolor_volume = None
+        self._record_edit(state, before_mv, before_lg)
+        self.schedule_autosave(state)
+        return target
 
     # ----- undo / redo (server is the single source of truth) -------------
 

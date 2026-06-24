@@ -253,6 +253,26 @@ def test_paint_sphere_is_a_round_ball_not_a_diamond(tmp_path):
     assert int(mv[0].max()) == 0                         # beyond radius: untouched
 
 
+def test_3d_brush_extrudes_every_section_not_just_the_widest(tmp_path):
+    """A non-uniform stroke (a deep overlap blob + a separate dab) must extrude in
+    z EVERYWHERE, not only under the widest part — the bug where thin sections drew
+    only a 2D circle because the core was thresholded at the global max depth."""
+    vol = _write_volume(tmp_path, (15, 30, 60))
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    yy, xx = np.mgrid[0:30, 0:60]
+    blob = ((xx - 12) ** 2 + (yy - 15) ** 2) < 9 ** 2     # deep overlap region (edt up to ~9)
+    dab = ((xx - 44) ** 2 + (yy - 15) ** 2) < 6 ** 2       # a separate brush-radius dab
+    fp = blob | dab
+    z = 7
+    lab = SESSION_MANAGER.paint_sphere(state, z, 0, 3, 6, fp)   # radius-6 ball brush
+    mv = state.current_mask_volume
+    # the SEPARATE dab must have z-extent (a sphere), not just the centre slice
+    assert int(mv[z, 15, 44]) == lab                      # painted on the click slice
+    assert int(mv[z + 2, 15, 44]) == lab                  # ...and extruded in z (was 0 before the fix)
+    assert int(mv[z - 2, 15, 44]) == lab
+
+
 def test_paint_merges_by_visible_colour(tmp_path):
     """A stroke of the selected colour MERGES into the adjacent same-colour cell
     (extends it, no new label, no recolour). An isolated stroke keeps that colour."""

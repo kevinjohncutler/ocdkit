@@ -3945,12 +3945,16 @@ function setBrushKernelMode(nextMode) {
 }
 
 function floodFill(point) {
+  // Volume mode: fill is a whole-3D-cell op on the server (merge / delete).
+  if (window.__viewerVolumeFill && window.__viewerVolumeFill(point.x, point.y)) return;
   if (typeof paintingApi.floodFill === 'function') {
     paintingApi.floodFill(point);
   }
 }
 
 function pickColor(point) {
+  // Volume mode: pick a whole cell's identity + colour from the server.
+  if (window.__viewerVolumePick && window.__viewerVolumePick(point.x, point.y)) return;
   if (typeof paintingApi.pickColor === 'function') {
     paintingApi.pickColor(point);
   }
@@ -7668,6 +7672,9 @@ window.__viewerGetMask = function () { return maskValues; };
 
 // Brush radius in pixels (for the 3D sphere brush) + the active label.
 window.__viewerBrushRadius = function () { return Math.max(1, Math.round(brushDiameter / 2)); };
+window.__viewerEraseActive = function () { return eraseActive; };
+// Volume picker uses this to set the active paint colour to a picked cell's group.
+window.__viewerSetCurrentColor = function (g) { applyCurrentLabel(g | 0, { scheduleSave: false }); };
 window.__viewerCurrentLabel = function () { return currentLabel | 0; };
 
 // Override the N-color palette (e.g. with a golden-ratio HSV palette matching

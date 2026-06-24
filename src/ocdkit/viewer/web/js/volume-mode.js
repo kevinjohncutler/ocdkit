@@ -183,6 +183,38 @@
     }
     window.__viewerVolumeUndo = () => serverHistory("undo");
     window.__viewerVolumeRedo = () => serverHistory("redo");
+
+    // ----- 3D colour picker + 3D fill (whole-cell merge / delete) -----
+    let pickedLabel = 0;     // the cell identity captured by the picker → merge target for fill
+    window.__viewerVolumePick = function (wx, wy) {
+      if (!cfg.isVolume || !hasMask) return false;
+      const y = Math.floor(wy), x = Math.floor(wx);
+      fetch("/api/label_at/" + encodeURIComponent(cfg.sessionId) +
+            "?z=" + slice + "&axis=" + curAxis + "&y=" + y + "&x=" + x)
+        .then((r) => r.json()).then((j) => {
+          pickedLabel = j.label | 0;                       // remember the cell to merge into
+          if (j.group > 0 && window.__viewerSetCurrentColor) window.__viewerSetCurrentColor(j.group);
+        }).catch(() => {});
+      return true;
+    };
+    window.__viewerVolumeFill = function (wx, wy) {
+      if (!cfg.isVolume || !hasMask) return false;
+      const y = Math.floor(wy), x = Math.floor(wx);
+      const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive());
+      const target = erasing ? 0 : pickedLabel;            // 0 = delete cell, else merge into picked cell
+      if (!erasing && !target) return true;                // nothing picked → no merge target (no-op)
+      fetch("/api/fill_cell/" + encodeURIComponent(cfg.sessionId) +
+            "?z=" + slice + "&axis=" + curAxis + "&y=" + y + "&x=" + x + "&target=" + target, { method: "POST" })
+        .then(async (r) => {
+          if (!r.ok) return;
+          const j = await r.json();
+          srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
+          mask3dStale = true;
+          await fetchNColorMap(); await updateMaskSlice(slice);
+          if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
+        }).catch(() => {});
+      return true;
+    };
     function setBrushDim(d) {
       brushDim = d | 0;
       if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>
