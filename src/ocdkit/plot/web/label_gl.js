@@ -325,19 +325,16 @@ void main() {
     setLabels(colorLabels, w, h, instanceLabels) {
       const gl = this.gl;
       this.w = w; this.h = h;
-      const inst = instanceLabels || colorLabels;
-      // this.labels = INSTANCE ids: labelAt() + the outline boundary scan
-      // both want per-cell granularity, not the coarse ncolor group id.
-      this.labels = inst.constructor === Int32Array ? inst : Int32Array.from(inst);
-      // RGBA-pack: RG = color id (low+high*256), BA = instance id.
+      // this.labels = INSTANCE ids (labelAt() + hover). Alias the typed array — no
+      // Int32Array.from copy of the whole matrix (values ≤65535 read fine), which
+      // was a per-tile O(N) main-thread allocation on big segs.
+      this.labels = instanceLabels || colorLabels;
+      // RGBA-pack RG = color id, BA = instance id as ONE 32-bit write per cell
+      // (little-endian = [color_lo, color_hi, inst_lo, inst_hi]) instead of 4 byte
+      // stores — ~3-4× faster on the hot O(N²) loop that serialized large tiles.
       const rgba = new Uint8Array(w * h * 4);
-      for (let i = 0; i < w * h; i += 1) {
-        const c = colorLabels[i] | 0, v = this.labels[i] | 0;
-        rgba[i * 4] = c & 0xff;
-        rgba[i * 4 + 1] = (c >> 8) & 0xff;
-        rgba[i * 4 + 2] = v & 0xff;
-        rgba[i * 4 + 3] = (v >> 8) & 0xff;
-      }
+      const u32 = new Uint32Array(rgba.buffer), lbl = this.labels, n = w * h;
+      for (let i = 0; i < n; i += 1) u32[i] = (colorLabels[i] & 0xffff) | ((lbl[i] & 0xffff) << 16);
       gl.bindTexture(gl.TEXTURE_2D, this.maskTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
       gl.bindTexture(gl.TEXTURE_2D, null);

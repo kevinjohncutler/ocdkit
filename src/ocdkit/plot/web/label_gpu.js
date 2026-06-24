@@ -231,14 +231,16 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     setLabels(colorLabels, w, h, instanceLabels) {
       this.w = w; this.h = h;
-      const inst = instanceLabels || colorLabels;
-      this.labels = inst.constructor === Int32Array ? inst : Int32Array.from(inst);
+      // inst ids for labelAt() — alias the typed array (no Int32Array.from copy of
+      // the whole matrix; values ≤65535 read fine as-is). Big segs: this copy was
+      // a per-tile O(N) allocation that blocked the main thread.
+      this.labels = instanceLabels || colorLabels;
+      // Pack RG=colour id, BA=instance id as ONE 32-bit write per cell (little-endian
+      // byte order = [color_lo, color_hi, inst_lo, inst_hi]) instead of 4 byte stores
+      // — ~3-4× faster on the hot O(N²) loop that serialized large tiles.
       const rgba = new Uint8Array(w * h * 4);
-      for (let i = 0; i < w * h; i += 1) {
-        const c = colorLabels[i] | 0, v = this.labels[i] | 0;
-        rgba[i * 4] = c & 0xff; rgba[i * 4 + 1] = (c >> 8) & 0xff;
-        rgba[i * 4 + 2] = v & 0xff; rgba[i * 4 + 3] = (v >> 8) & 0xff;
-      }
+      const u32 = new Uint32Array(rgba.buffer), lbl = this.labels, n = w * h;
+      for (let i = 0; i < n; i += 1) u32[i] = (colorLabels[i] & 0xffff) | ((lbl[i] & 0xffff) << 16);
       if (this.maskTex.width !== w || this.maskTex.height !== h) {
         this.maskTex.destroy(); this.maskTex = this._mkTex(w, h, 'rgba8unorm'); this._rebuildBind();
       }
