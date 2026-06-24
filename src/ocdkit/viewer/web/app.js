@@ -7618,32 +7618,34 @@ window.__viewerSetSliceImage = function (url) {
 // maskValues holds the groups so the N-color palette has no adjacent collisions
 // and the affinity/outline (group boundaries == cell boundaries) is reliable.
 // `instance` (identity labels) is kept separately for picking / persistence.
-window.__viewerSetMaskSlice = function (labels) {
+window.__viewerSetMaskSlice = function (groups) {
   let nz = false;
-  if (labels && labels.length === maskValues.length) {
-    maskValues.set(labels);                       // labels = the editable source of truth
-    for (let i = 0; i < labels.length; i += 1) { if (labels[i]) { nz = true; break; } }
+  if (groups && groups.length === maskValues.length) {
+    maskValues.set(groups);                       // ncolor group IDs (display)
+    for (let i = 0; i < groups.length; i += 1) { if (groups[i]) { nz = true; break; } }
   } else {
     maskValues.fill(0);
   }
   nColorInstanceMask = null;
-  nColorActive = true;                            // colored via per-label palette (volume-mode)
+  nColorActive = true;                            // colored by the per-group palette
   maskHasNonZero = nz;
   window.__viewerMaskApplied = nz;   // test/automation hook
   if (typeof updateMaxLabelFromMask === 'function') updateMaxLabelFromMask();
   if (typeof clearAffinityGraphData === 'function') clearAffinityGraphData();
+  // Build affinity + outline from the new mask and DRAW now, so outlines appear
+  // immediately (the bug: rebuildLocalAffinityGraph populates outlineState but
+  // doesn't draw, so outlines only showed after a pan/redraw).
+  if (typeof rebuildLocalAffinityGraph === 'function') {
+    try { rebuildLocalAffinityGraph(); } catch (e) {}
+  }
   maskTextureFullDirty = true;
   outlineTextureFullDirty = true;
   needsMaskRedraw = true;
   paletteTextureDirty = true;
   applyMaskRedrawImmediate();
   draw();
-  if (typeof scheduleAffinityRebuildIfStale === 'function') {
-    scheduleAffinityRebuildIfStale('volume-slice');
-  }
 };
 
-// Current slice labels (the source of truth) for persisting edits to the volume.
 window.__viewerGetMask = function () { return maskValues; };
 
 // Brush radius in pixels (for the 3D sphere brush) + the active label.

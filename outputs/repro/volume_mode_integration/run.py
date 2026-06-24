@@ -79,17 +79,17 @@ def main():
             slice_changed = (z1 == z0 + 5)
             print("slice scrub:", z0, "->", z1, "ok:", slice_changed)
 
-            # edit persistence: paint label 99 in a corner, scrub away + back,
-            # verify the loaded slice reflects the persisted edit
-            pg.evaluate("var m=window.__viewerGetMask(); for(var i=0;i<60;i++) m[i]=99; window.__viewerMaskEdited=true;")
+            # edit persistence: a 2D stroke writes the LABEL to the server volume
             zc = pg.evaluate("window.__volumeMode.getSlice()")
-            pg.evaluate("window.__volumeMode.showSlice(" + str(zc) + "+1)")  # leaves zc → persists
-            pg.wait_for_timeout(400)
-            pg.evaluate("window.__volumeMode.showSlice(" + str(zc) + ")")    # back → reload from server
-            pg.wait_for_timeout(400)
-            edit_persisted = pg.evaluate(
-                "(function(){var m=window.__viewerGetMask();for(var i=0;i<60;i++)if(m[i]!==99)return false;return true;})()")
-            print("edit persisted across scrub:", edit_persisted)
+            pg.evaluate("""(function(){const W=window.__VIEWER_CONFIG__.width,H=window.__VIEWER_CONFIG__.height,
+              cx=W>>1,cy=H>>1,idx=[]; for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++)
+              if(dx*dx+dy*dy<=16)idx.push((cy+dy)*W+(cx+dx));
+              window.__volumeMode.setBrushDim(2); window.__onViewerStroke(idx,[222]);})()""")
+            pg.wait_for_timeout(900)
+            _r = pg.request.get(f"{BASE}/api/mask_slice/{sid}?z={zc}&axis=0&kind=instance")
+            _a = np.frombuffer(_r.body(), dtype=np.dtype(_r.headers.get("x-mask-dtype", "uint8")))
+            edit_persisted = int(_a.max()) >= 222
+            print("edit persisted (2D stroke -> server volume):", edit_persisted)
 
             # orthogonal slicing: switch to Y axis → dims change, slider re-ranges
             pg.evaluate("window.__volumeMode.setAxis(1)")

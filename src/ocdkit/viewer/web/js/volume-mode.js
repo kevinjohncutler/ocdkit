@@ -45,14 +45,16 @@
               Math.round((Math.sin(a + 4 * Math.PI / 3) * 0.5 + 0.5) * 255)];
     }
     let labelGroups = [0];   // label → ncolor group (index by label)
+    // Per-GROUP palette: maskValues holds group IDs, so the ncolor panel shows
+    // only the ~N group colors. group g → palette[g-1] = sinebow(fract(g·φ)),
+    // matching the 3D shader.
     function applyNColorPalette() {
       if (typeof window.__viewerSetNColorPalette !== "function") return;
+      let maxG = 1;
+      for (let i = 1; i < labelGroups.length; i++) if (labelGroups[i] > maxG) maxG = labelGroups[i];
       const pal = [];
-      for (let label = 1; label < labelGroups.length; label++) {
-        pal.push(sinebow(((labelGroups[label] || 1) * PHI) % 1));
-      }
-      if (!pal.length) pal.push(sinebow(PHI));
-      window.__viewerSetNColorPalette(pal);   // indexed (label-1) → per-label color
+      for (let g = 1; g <= maxG; g++) pal.push(sinebow((g * PHI) % 1));
+      window.__viewerSetNColorPalette(pal);
     }
     async function fetchNColorMap() {
       try {
@@ -102,39 +104,22 @@
     async function updateMaskSlice(z) {
       if (typeof window.__viewerSetMaskSlice !== "function") return;
       if (!hasMask) { window.__viewerSetMaskSlice(null); return; }
+      if (labelGroups.length <= 1) await fetchNColorMap();   // palette ready → no first-render flash
       try {
         const r = await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
-                              "?z=" + z + "&axis=" + curAxis + "&kind=instance&t=" + Date.now());
+                              "?z=" + z + "&axis=" + curAxis + "&kind=group&t=" + Date.now());
         if (!r.ok) return;
-        window.__viewerSetMaskSlice(_bufToU32(r, await r.arrayBuffer()));   // labels
-        applyNColorPalette();   // per-label sinebow (beats any app.js reset)
+        applyNColorPalette();   // set the per-group palette BEFORE the mask render
+        window.__viewerSetMaskSlice(_bufToU32(r, await r.arrayBuffer()));   // group IDs
       } catch (e) { /* leave current mask on transient error */ }
     }
 
     // reload the mask whenever the 2D image (re)loads (initial + axis switch)
     window.__onViewerImageReady = function () { if (hasMask) updateMaskSlice(slice); };
 
-    // persist edits to the slice we're leaving back into the volume mask
-    async function persistIfEdited() {
-      if (!window.__viewerMaskEdited) return;
-      window.__viewerMaskEdited = false;
-      const mv = (typeof window.__viewerGetMask === "function") ? window.__viewerGetMask() : null;
-      if (!mv) return;
-      const u32 = new Uint32Array(mv);
-      try {
-        await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
-                    "?z=" + slice + "&axis=" + curAxis, {
-          method: "POST",
-          headers: { "content-type": "application/octet-stream", "X-Mask-Dtype": "uint32" },
-          body: u32.buffer,
-        });
-        hasMask = true;
-        mask3dStale = true;
-        await fetchNColorMap();   // labels changed → recompute groups → refresh palette
-      } catch (e) {
-        window.__viewerMaskEdited = true;
-      }
-    }
+    // Edits persist via __onViewerStroke (which writes LABELS to the volume).
+    // maskValues holds group IDs, so we must NOT post it back as labels.
+    async function persistIfEdited() { window.__viewerMaskEdited = false; }
 
     // scrub within the current axis (dimensions unchanged → cheap image swap)
     async function showSlice(z) {
@@ -155,19 +140,25 @@
     // 2D = paint the current slice only (app.js native). 3D = extrude the stroke
     // into a ball across neighbouring slices of the volume (server paint_sphere).
     let brushDim = 2;
+    // Every stroke (2D or 3D) writes the painted LABEL into the server volume —
+    // the single source of truth. radius 0 = current slice (2D), radius R = a
+    // ball across slices (3D). The 2D buffer (group IDs) is then refreshed from
+    // the server so the display + 3D stay in sync.
     window.__onViewerStroke = function (indices, after) {
-      if (brushDim !== 3 || !indices || !indices.length) return;
+      if (!indices || !indices.length) return;
       const dim = sliceDims(curAxis);
       const fp = new Uint8Array((dim.width | 0) * (dim.height | 0));
       for (let i = 0; i < indices.length; i++) fp[indices[i]] = 1;
       const label = (after && after.length) ? (after[0] | 0)
                   : (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 1);
-      const radius = window.__viewerBrushRadius ? window.__viewerBrushRadius() : 3;
+      const radius = (brushDim === 3 && window.__viewerBrushRadius) ? window.__viewerBrushRadius() : 0;
       fetch("/api/paint_sphere/" + encodeURIComponent(cfg.sessionId) +
             "?z=" + slice + "&axis=" + curAxis + "&label=" + label + "&radius=" + radius, {
         method: "POST", headers: { "content-type": "application/octet-stream" }, body: fp.buffer,
       }).then((r) => {
-        if (r.ok) { hasMask = true; mask3dStale = true; window.__viewerMaskEdited = false; fetchNColorMap(); }
+        if (!r.ok) return;
+        hasMask = true; mask3dStale = true; window.__viewerMaskEdited = false;
+        fetchNColorMap().then(() => updateMaskSlice(slice));   // reflect the edit (groups + palette)
       }).catch(() => {});
     };
     function setBrushDim(d) {
