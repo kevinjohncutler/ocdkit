@@ -240,3 +240,24 @@ def test_paint_sphere_extrudes_across_slices(tmp_path):
     assert int(mv[5].max()) == 5 and int(mv[3].max()) == 5   # neighbors painted (ball)
     assert (mv[5] == 5).sum() < (mv[4] == 5).sum()       # eroded → smaller off-center
     assert int(mv[0].max()) == 0                         # beyond radius: untouched
+
+
+def test_ncolor_stable_across_edits(tmp_path):
+    """Existing cells keep their group (color) when a new cell is drawn; the new
+    cell gets its own group."""
+    vol = _write_volume(tmp_path, (6, 30, 30))
+    masks = np.zeros((6, 30, 30), np.uint8)
+    masks[:, 4:10, 4:24] = 1
+    masks[:, 12:18, 4:24] = 2
+    tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    before = SESSION_MANAGER.ncolor_map(state)           # label → group (cells 1,2)
+    # draw a new cell elsewhere
+    yy, xx = np.mgrid[0:30, 0:30]
+    fp = ((xx - 15) ** 2 + (yy - 24) ** 2) < 4 ** 2
+    new_label = SESSION_MANAGER.paint_sphere(state, 3, 0, 0, 0, fp, new=True)
+    after = SESSION_MANAGER.ncolor_map(state)
+    assert new_label == 3                                # max+1
+    assert after[1] == before[1] and after[2] == before[2]   # existing colors unchanged
+    assert after[new_label] > 0                          # new cell got a group

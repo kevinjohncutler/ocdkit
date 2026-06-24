@@ -149,11 +149,14 @@
       const dim = sliceDims(curAxis);
       const fp = new Uint8Array((dim.width | 0) * (dim.height | 0));
       for (let i = 0; i < indices.length; i++) fp[indices[i]] = 1;
-      const label = (after && after.length) ? (after[0] | 0)
-                  : (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 1);
+      // erasing (painted value 0) writes 0; otherwise each stroke = a NEW cell
+      // (server allocates a fresh label) so it doesn't merge with neighbours and
+      // ncolor stays stable for existing cells.
+      const erasing = !!(after && after.length && (after[0] | 0) === 0);
       const radius = (brushDim === 3 && window.__viewerBrushRadius) ? window.__viewerBrushRadius() : 0;
+      const q = erasing ? "&label=0" : "&new=1";
       fetch("/api/paint_sphere/" + encodeURIComponent(cfg.sessionId) +
-            "?z=" + slice + "&axis=" + curAxis + "&label=" + label + "&radius=" + radius, {
+            "?z=" + slice + "&axis=" + curAxis + "&radius=" + radius + q, {
         method: "POST", headers: { "content-type": "application/octet-stream" }, body: fp.buffer,
       }).then((r) => {
         if (!r.ok) return;

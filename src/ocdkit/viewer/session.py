@@ -91,6 +91,7 @@ class SessionState:
     volume_slice: int = 0  # index of the slice currently shown in the 2D view
     current_mask_volume: Optional[np.ndarray] = None  # (Z, Y, X) label volume, if loaded
     current_ncolor_volume: Optional[np.ndarray] = None  # (Z, Y, X) ncolor group volume (cache)
+    label_group: Optional[dict] = None  # stable label→group map (keeps colors fixed across edits)
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -257,6 +258,7 @@ class SessionManager:
             )
         state.current_mask_volume = _narrow_labels(arr)
         state.current_ncolor_volume = None
+        state.label_group = None   # fresh mask → fresh stable color map
 
     def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
         """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
@@ -277,6 +279,7 @@ class SessionManager:
         """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort)."""
         state.current_mask_volume = None
         state.current_ncolor_volume = None
+        state.label_group = None
         if state.current_volume is None:
             return
         mp = self._auto_mask_path(state.current_path)
@@ -397,19 +400,50 @@ class SessionManager:
         return self._encode_image_bytes(sl, is_rgb=False)
 
     def ensure_ncolor(self, state: SessionState) -> Optional[np.ndarray]:
-        """Compute + cache the volume ncolor group volume (adjacent cells get
-        different small group IDs, computed once on the whole 3D volume so the
-        coloring is consistent across slices and matches the 3D render)."""
+        """Stable ncolor group volume. The label→group map is cached and kept
+        FIXED across edits, so existing cells never change color when you draw;
+        only NEW labels are assigned a (non-conflicting) group incrementally.
+        Computed once on the whole 3D volume so 2D slices and 3D match."""
         if state.current_ncolor_volume is not None:
             return state.current_ncolor_volume
         mv = state.current_mask_volume
         if mv is None:
             return None
-        try:
-            import ncolor
-            g = _narrow_labels(np.asarray(ncolor.label(mv)))
-        except Exception:
-            g = _narrow_labels(mv)   # fallback: raw labels
+        maxl = int(mv.max())
+        present = set(int(x) for x in np.unique(mv) if x > 0)
+        cache = dict(state.label_group) if state.label_group else {}
+        if not cache:
+            # first time: a full ncolor pass seeds the stable map
+            try:
+                import ncolor
+                g = np.asarray(ncolor.label(mv))
+                lut0 = np.zeros(maxl + 1, dtype=np.int64)
+                flat, gf = mv.reshape(-1), g.reshape(-1)
+                nz = flat > 0
+                lut0[flat[nz]] = gf[nz]
+                for lab in present:
+                    cache[lab] = int(lut0[lab]) or 1
+            except Exception:
+                for lab in present:
+                    cache[lab] = ((lab - 1) % 7) + 1
+        else:
+            new_labels = present - set(cache.keys())
+            if new_labels:
+                from scipy import ndimage
+                for nl in sorted(new_labels):
+                    region = mv == nl
+                    nbrs = np.unique(mv[ndimage.binary_dilation(region)])
+                    used = {cache.get(int(x)) for x in nbrs if int(x) > 0 and int(x) != nl}
+                    grp = 1
+                    while grp in used:
+                        grp += 1
+                    cache[nl] = grp
+        state.label_group = cache
+        lut = np.zeros(maxl + 1, dtype=np.int64)
+        for lab, grp in cache.items():
+            if 0 < lab <= maxl:
+                lut[lab] = grp
+        g = _narrow_labels(lut[mv])
         state.current_ncolor_volume = g
         return g
 
@@ -429,9 +463,11 @@ class SessionManager:
         return out.tolist()
 
     def paint_sphere(self, state: SessionState, z: int, axis: int, label: int,
-                     radius: int, footprint: np.ndarray) -> None:
+                     radius: int, footprint: np.ndarray, new: bool = False) -> int:
         """Extrude a 2D stroke ``footprint`` (bool, slice-shaped) into a ball:
-        paint ``label`` on slices ``z±k`` eroded by k, for the 3D brush."""
+        paint ``label`` on slices ``z±k`` eroded by k. ``new=True`` allocates a
+        fresh label (max+1) so each stroke is a distinct new cell. Returns the
+        label written."""
         vol = state.current_volume
         if vol is None:
             raise ValueError("no volume loaded")
@@ -442,6 +478,8 @@ class SessionManager:
         if mv is None:
             mv = np.zeros(vol.shape, np.uint32)
             state.current_mask_volume = mv
+        if new:
+            label = int(mv.max()) + 1
         if int(label) > int(np.iinfo(mv.dtype).max):
             mv = state.current_mask_volume = mv.astype(np.uint32)
         radius = max(0, int(radius))
@@ -456,7 +494,8 @@ class SessionManager:
                     idx = [slice(None)] * 3
                     idx[axis] = zz
                     mv[tuple(idx)] = plane
-        state.current_ncolor_volume = None
+        state.current_ncolor_volume = None   # rebuild group volume (stable: keeps label_group)
+        return int(label)
 
     def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
         """Raw label bytes for mask slice ``z`` along ``axis`` →
