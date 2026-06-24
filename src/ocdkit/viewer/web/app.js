@@ -3606,6 +3606,7 @@ function pushHistory(indices, before, after) {
   if (typeof ViewerHistory.push === 'function') {
     ViewerHistory.push(indices, before, after);
   }
+  window.__viewerMaskEdited = true;   // volume-mode persists edited slices back
   updateHistoryButtons();
 }
 
@@ -7620,13 +7621,24 @@ window.__viewerSetMaskSlice = function (labels) {
   }
   maskHasNonZero = nz;
   window.__viewerMaskApplied = nz;   // test/automation hook
-  outlineState.fill(0);
+  // Drop the previous slice's affinity graph + outline, then rebuild from the
+  // new mask. This makes the loaded slice render with the active style (filled
+  // OR semi-opaque outlines) and become an editable native mask (drawing edits
+  // the rebuilt affinity graph, exactly like a segmented mask).
+  if (typeof clearAffinityGraphData === 'function') clearAffinityGraphData();
   maskTextureFullDirty = true;
   outlineTextureFullDirty = true;
   needsMaskRedraw = true;
   applyMaskRedrawImmediate();
   draw();
+  if (typeof scheduleAffinityRebuildIfStale === 'function') {
+    scheduleAffinityRebuildIfStale('volume-slice');
+  }
 };
+
+// Return the current mask buffer (live Uint32Array of labels) so volume-mode can
+// persist an edited slice back to the volume.
+window.__viewerGetMask = function () { return maskValues; };
 
 function computeHistogram() {
   if (!originalImageData) {

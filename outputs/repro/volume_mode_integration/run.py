@@ -79,6 +79,18 @@ def main():
             slice_changed = (z1 == z0 + 5)
             print("slice scrub:", z0, "->", z1, "ok:", slice_changed)
 
+            # edit persistence: paint label 99 in a corner, scrub away + back,
+            # verify the loaded slice reflects the persisted edit
+            pg.evaluate("var m=window.__viewerGetMask(); for(var i=0;i<60;i++) m[i]=99; window.__viewerMaskEdited=true;")
+            zc = pg.evaluate("window.__volumeMode.getSlice()")
+            pg.evaluate("window.__volumeMode.showSlice(" + str(zc) + "+1)")  # leaves zc → persists
+            pg.wait_for_timeout(400)
+            pg.evaluate("window.__volumeMode.showSlice(" + str(zc) + ")")    # back → reload from server
+            pg.wait_for_timeout(400)
+            edit_persisted = pg.evaluate(
+                "(function(){var m=window.__viewerGetMask();for(var i=0;i<60;i++)if(m[i]!==99)return false;return true;})()")
+            print("edit persisted across scrub:", edit_persisted)
+
             # switch to 3D and let it mount + render
             pg.eval_on_selector('[data-view="3d"]', "el => el.click()")
             pg.wait_for_function("window.__volumeMode.gpu() !== null", timeout=20000)
@@ -110,8 +122,8 @@ def main():
                   "| render std:", round(nonblank, 2))
             print("JS errors:", errs or "none")
 
-            ok = (is_vol and bar_visible and mask_2d and slice_changed and home_ok
-                  and gpu_ok and canvas_shown and show_labels == 1 and proj == 2
+            ok = (is_vol and bar_visible and mask_2d and slice_changed and edit_persisted
+                  and home_ok and gpu_ok and canvas_shown and show_labels == 1 and proj == 2
                   and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()

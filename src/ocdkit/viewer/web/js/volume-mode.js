@@ -35,6 +35,7 @@
     let loading = null;
     let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
     let hasMask = !!cfg.hasVolumeMask;
+    let mask3dStale = false;   // 2D edits not yet reflected in the 3D bundle
 
     // ── 2.5D slice scrubbing ────────────────────────────────────────────────
     let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depth >> 1);
@@ -63,7 +64,28 @@
       } catch (e) { /* leave current mask on transient error */ }
     }
 
-    function showSlice(z) {
+    // persist edits to the slice we're leaving back into the volume mask
+    async function persistIfEdited() {
+      if (!window.__viewerMaskEdited) return;
+      window.__viewerMaskEdited = false;
+      const mv = (typeof window.__viewerGetMask === "function") ? window.__viewerGetMask() : null;
+      if (!mv) return;
+      const u32 = new Uint32Array(mv);   // copy of the slice's labels
+      try {
+        await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) + "?z=" + slice, {
+          method: "POST",
+          headers: { "content-type": "application/octet-stream", "X-Mask-Dtype": "uint32" },
+          body: u32.buffer,
+        });
+        hasMask = true;
+        mask3dStale = true;              // 3D bundle now out of date
+      } catch (e) {
+        window.__viewerMaskEdited = true;  // retry on the next transition
+      }
+    }
+
+    async function showSlice(z) {
+      await persistIfEdited();           // save edits to the slice we're leaving
       z = Math.max(0, Math.min(depth - 1, z | 0));
       slice = z;
       slider.value = String(z);
@@ -133,6 +155,7 @@
     }
 
     async function setMode(next) {
+      await persistIfEdited();                          // flush 2D edits before switching
       mode = next;
       const is3d = next === "3d";
       btn2d.classList.toggle("is-active", !is3d);
@@ -143,6 +166,11 @@
       sliceBar.hidden = is3d;                           // scrubber is a 2D control
       if (projRow) projRow.hidden = !is3d;              // projection picker is a 3D control
       if (is3d) {
+        if (mask3dStale && vgpu) {                      // rebuild with the edited mask
+          try { vgpu.destroy(); } catch (e) {}
+          vgpu = null; window.__volumeGPU = null; loading = null;
+        }
+        mask3dStale = false;
         const g = await ensureVolume();
         if (g) g.render();                              // size to the visible canvas + draw
         else { mode = "2d"; setMode("2d"); }            // load failed → fall back

@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from ..dependencies import get_session_state
@@ -254,6 +254,22 @@ def api_mask_slice(session_id: str, z: int = 0) -> Response:
             "Cache-Control": "no-cache",
         },
     )
+
+
+@router.post("/mask_slice/{session_id}")
+async def api_put_mask_slice(session_id: str, request: Request, z: int = 0) -> dict:
+    """Persist edited label bytes back into mask slice ``z`` (2D edits → volume)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    dtype = request.headers.get("X-Mask-Dtype", "uint32")
+    data = await request.body()
+    try:
+        SESSION_MANAGER.set_mask_slice(state, z, data, dtype)
+    except ValueError as exc:
+        raise BadRequest("mask_write_failed", detail=str(exc)) from exc
+    return {"ok": True}
 
 
 @router.get("/volume_bundle/{session_id}")

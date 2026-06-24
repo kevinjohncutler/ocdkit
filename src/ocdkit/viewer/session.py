@@ -402,6 +402,23 @@ class SessionManager:
         sl = np.ascontiguousarray(mv[z])
         return sl.tobytes(), int(sl.shape[1]), int(sl.shape[0]), str(sl.dtype)
 
+    def set_mask_slice(self, state: SessionState, z: int, data: bytes, dtype: str) -> None:
+        """Write edited label bytes back into mask slice ``z`` (creates the mask
+        volume on the first edit of an unmasked volume; widens dtype as needed)."""
+        vol = state.current_volume
+        if vol is None:
+            raise ValueError("no volume loaded")
+        D, H, W = vol.shape
+        incoming = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(H, W)
+        z = max(0, min(int(z), D - 1))
+        mv = state.current_mask_volume
+        if mv is None:
+            mv = np.zeros((D, H, W), np.uint32)
+            state.current_mask_volume = mv
+        if int(incoming.max(initial=0)) > int(np.iinfo(mv.dtype).max):
+            mv = state.current_mask_volume = mv.astype(np.uint32)
+        mv[z] = incoming.astype(mv.dtype, copy=False)
+
     def encode_volume_bundle(self, state: SessionState) -> Optional[dict[str, Any]]:
         """Intensity-only 3D viewer bundle from the loaded volume, or None.
 
@@ -423,7 +440,7 @@ class SessionManager:
             "image": _encode_array(vol),
         }
         if state.current_mask_volume is not None:
-            bundle["mask"] = _encode_array(state.current_mask_volume)
+            bundle["mask"] = _encode_array(_narrow_labels(state.current_mask_volume))
         return bundle
 
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:

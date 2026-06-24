@@ -143,3 +143,22 @@ def test_mask_slice_route(tmp_path):
     # config advertises the mask
     cfg = SESSION_MANAGER.build_config(state, embed_image=False)
     assert cfg["hasVolumeMask"] is True
+
+
+def test_set_mask_slice_roundtrip_and_create(tmp_path):
+    vol = _write_volume(tmp_path, (6, 16, 16))
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    assert state.current_mask_volume is None              # no sidecar here
+    labels = np.zeros((16, 16), np.uint32)
+    labels[2:5, 2:5] = 9
+    SESSION_MANAGER.set_mask_slice(state, 3, labels.tobytes(), "uint32")   # creates the volume
+    assert state.current_mask_volume.shape == (6, 16, 16)
+    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 3)
+    back = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(h, w)
+    assert int(back.max()) == 9
+    b = SESSION_MANAGER.encode_volume_bundle(state)        # bundle picks up the edit (narrowed)
+    m = b["mask"]
+    marr = np.frombuffer(gzip.decompress(base64.b64decode(m["b64"])),
+                         dtype=np.dtype(m["dtype"])).reshape(m["shape"])
+    assert marr.shape == (6, 16, 16) and int(marr.max()) == 9
