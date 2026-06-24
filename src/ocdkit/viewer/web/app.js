@@ -7605,6 +7605,29 @@ window.__viewerSetSliceImage = function (url) {
   img.src = url;
 };
 
+// Replace the displayed mask with a full label slice (Uint32Array length W*H), or
+// null to clear. Renders with the current label palette + opacity, so volumetric
+// masks scrub in the 2D view just like a segmented/hand-drawn mask. (Outline
+// style + affinity-graph editing for loaded masks are a follow-up.)
+window.__viewerSetMaskSlice = function (labels) {
+  let nz = false;
+  if (labels && labels.length === maskValues.length) {
+    maskValues.set(labels);
+    for (let i = 0; i < labels.length; i += 1) { if (labels[i]) { nz = true; break; } }
+    if (typeof updateMaxLabelFromMask === 'function') updateMaxLabelFromMask();
+  } else {
+    maskValues.fill(0);
+  }
+  maskHasNonZero = nz;
+  window.__viewerMaskApplied = nz;   // test/automation hook
+  outlineState.fill(0);
+  maskTextureFullDirty = true;
+  outlineTextureFullDirty = true;
+  needsMaskRedraw = true;
+  applyMaskRedrawImmediate();
+  draw();
+};
+
 function computeHistogram() {
   if (!originalImageData) {
     histogramData = null;

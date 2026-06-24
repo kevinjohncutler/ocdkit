@@ -34,6 +34,7 @@
     let vgpu = null;
     let loading = null;
     let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
+    let hasMask = !!cfg.hasVolumeMask;
 
     // ── 2.5D slice scrubbing ────────────────────────────────────────────────
     let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depth >> 1);
@@ -42,6 +43,25 @@
     slider.value = String(slice);
     function paintLabel() { sliceLabel.textContent = "z " + (slice + 1) + " / " + depth; }
     paintLabel();
+
+    // overlay the volumetric mask for slice z onto the 2D view (filled labels)
+    async function updateMaskSlice(z) {
+      if (typeof window.__viewerSetMaskSlice !== "function") return;
+      if (!hasMask) { window.__viewerSetMaskSlice(null); return; }
+      try {
+        const r = await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
+                              "?z=" + z + "&t=" + Date.now());
+        if (!r.ok) return;
+        const dtype = r.headers.get("X-Mask-Dtype") || "uint8";
+        const buf = await r.arrayBuffer();
+        const raw = dtype === "uint16" ? new Uint16Array(buf)
+                  : dtype === "uint32" ? new Uint32Array(buf)
+                  : new Uint8Array(buf);
+        const u32 = new Uint32Array(raw.length);
+        u32.set(raw);
+        window.__viewerSetMaskSlice(u32);
+      } catch (e) { /* leave current mask on transient error */ }
+    }
 
     function showSlice(z) {
       z = Math.max(0, Math.min(depth - 1, z | 0));
@@ -54,16 +74,23 @@
       if (typeof window.__viewerSetSliceImage === "function") {
         window.__viewerSetSliceImage(url);
       }
+      updateMaskSlice(z);
     }
     slider.addEventListener("input", () => showSlice(parseInt(slider.value, 10)));
+    // show the mask for the initial (server-rendered) slice without re-fetching the image
+    if (hasMask) updateMaskSlice(slice);
 
-    // arrow keys scrub z (2D mode only; ignore while typing / with modifiers)
+    // keys: H = home (reset 3D camera) in 3D; arrows scrub z in 2D.
+    // (ignore while typing / with modifiers)
     window.addEventListener("keydown", (e) => {
-      if (mode !== "2d") return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target;
       if (t && (t.isContentEditable ||
           (t.closest && t.closest('input, textarea, select, [contenteditable="true"]')))) {
+        return;
+      }
+      if (mode === "3d") {
+        if ((e.key === "h" || e.key === "H") && vgpu) { e.preventDefault(); vgpu.resetView(); }
         return;
       }
       let d = 0;
@@ -145,6 +172,8 @@
         body: JSON.stringify({ sessionId: cfg.sessionId }),
       });
       if (!r.ok) return false;
+      hasMask = true;
+      updateMaskSlice(slice);                            // refresh the 2D overlay
       if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; window.__volumeGPU = null; }
       loading = null;                                    // force a fresh bundle (now with mask)
       if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }

@@ -233,6 +233,29 @@ def api_select_mask_file(
     return {"ok": True}
 
 
+@router.get("/mask_slice/{session_id}")
+def api_mask_slice(session_id: str, z: int = 0) -> Response:
+    """Raw label bytes for mask slice ``z`` (2D overlay of the volumetric mask)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    res = SESSION_MANAGER.mask_slice(state, z)
+    if res is None:
+        raise NotFound("no_mask")
+    data, width, height, dtype = res
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "X-Mask-Width": str(width),
+            "X-Mask-Height": str(height),
+            "X-Mask-Dtype": dtype,
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
 @router.get("/volume_bundle/{session_id}")
 def api_volume_bundle(session_id: str) -> dict:
     """Intensity-only 3D bundle for the loaded volume (renders before masks)."""

@@ -66,6 +66,11 @@ def main():
             bar_visible = pg.eval_on_selector("#viewModePanel", "el => !el.hidden")
             print("isVolume:", is_vol, "| View pane visible:", bar_visible)
 
+            # volumetric mask overlays the 2D view (auto-loaded sidecar)
+            pg.wait_for_function("window.__viewerMaskApplied === true", timeout=10000)
+            mask_2d = pg.evaluate("window.__viewerMaskApplied")
+            print("2D mask applied:", mask_2d)
+
             # 2.5D slice scrub: arrow-key / slider changes the displayed slice
             z0 = pg.evaluate("window.__volumeMode.getSlice()")
             pg.evaluate("window.__volumeMode.showSlice(window.__volumeMode.getSlice() + 5)")
@@ -78,6 +83,14 @@ def main():
             pg.eval_on_selector('[data-view="3d"]', "el => el.click()")
             pg.wait_for_function("window.__volumeMode.gpu() !== null", timeout=20000)
             pg.wait_for_timeout(600)
+
+            # H key homes the 3D camera: move target, press H, expect reset to ~origin
+            pg.evaluate("var g=window.__volumeMode.gpu(); g.target=[12,12,12]; g.render();")
+            pg.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', {key:'h'}))")
+            pg.wait_for_timeout(150)
+            tgt = pg.evaluate("window.__volumeMode.gpu().target")
+            home_ok = all(abs(v) < 1.0 for v in tgt)
+            print("H home reset:", [round(v, 2) for v in tgt], "ok:", home_ok)
 
             gpu_ok = pg.evaluate("window.__volumeMode.gpu() !== null")
             canvas_shown = pg.eval_on_selector("#volumeViewer", "el => !el.hidden")
@@ -97,8 +110,9 @@ def main():
                   "| render std:", round(nonblank, 2))
             print("JS errors:", errs or "none")
 
-            ok = (is_vol and bar_visible and slice_changed and gpu_ok and canvas_shown
-                  and show_labels == 1 and proj == 2 and nonblank > 1.0 and not errs)
+            ok = (is_vol and bar_visible and mask_2d and slice_changed and home_ok
+                  and gpu_ok and canvas_shown and show_labels == 1 and proj == 2
+                  and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()
             return 0 if ok else 1

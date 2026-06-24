@@ -359,8 +359,10 @@ class SessionManager:
             config["isVolume"] = True
             config["volumeDepth"] = int(state.current_volume.shape[0])
             config["currentSlice"] = int(state.volume_slice)
+            config["hasVolumeMask"] = state.current_mask_volume is not None
         else:
             config["isVolume"] = False
+            config["hasVolumeMask"] = False
         if embed_image:
             config["imageDataUrl"] = state.encoded_image
         else:
@@ -386,6 +388,19 @@ class SessionManager:
         z = max(0, min(int(z), vol.shape[0] - 1))
         state.volume_slice = z
         return self._encode_image_bytes(np.ascontiguousarray(vol[z]), is_rgb=False)
+
+    def mask_slice(self, state: SessionState, z: int):
+        """Raw label bytes for mask slice ``z`` → ``(bytes, width, height, dtype)``.
+
+        None if no mask volume is loaded. Used by the 2D view to overlay the
+        volumetric mask one plane at a time.
+        """
+        mv = state.current_mask_volume
+        if mv is None:
+            return None
+        z = max(0, min(int(z), mv.shape[0] - 1))
+        sl = np.ascontiguousarray(mv[z])
+        return sl.tobytes(), int(sl.shape[1]), int(sl.shape[0]), str(sl.dtype)
 
     def encode_volume_bundle(self, state: SessionState) -> Optional[dict[str, Any]]:
         """Intensity-only 3D viewer bundle from the loaded volume, or None.

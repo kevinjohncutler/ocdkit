@@ -125,3 +125,21 @@ def test_open_mask_route_and_shape_mismatch(tmp_path):
     tifffile.imwrite(str(bad), np.ones((4, 10, 10), np.uint8))
     with pytest.raises(Exception):
         api_open_mask(OpenMaskPayload(sessionId=state.session_id, path=str(bad)), state)
+
+
+def test_mask_slice_route(tmp_path):
+    from ocdkit.viewer.routers.session_routes import api_mask_slice
+    vol = _write_volume(tmp_path, (12, 32, 32))
+    masks = np.zeros((12, 32, 32), np.uint8)
+    masks[5, 8:16, 8:16] = 7
+    tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    resp = api_mask_slice(state.session_id, z=5)
+    assert resp.headers["X-Mask-Dtype"] == "uint8"
+    assert resp.headers["X-Mask-Width"] == "32" and resp.headers["X-Mask-Height"] == "32"
+    arr = np.frombuffer(resp.body, dtype=np.uint8).reshape(32, 32)
+    assert int(arr.max()) == 7
+    # config advertises the mask
+    cfg = SESSION_MANAGER.build_config(state, embed_image=False)
+    assert cfg["hasVolumeMask"] is True
