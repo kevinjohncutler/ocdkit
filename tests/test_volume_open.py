@@ -273,6 +273,23 @@ def test_3d_brush_extrudes_every_section_not_just_the_widest(tmp_path):
     assert int(mv[z - 2, 15, 44]) == lab
 
 
+def test_3d_brush_thin_sliver_still_extrudes(tmp_path):
+    """A section THINNER than the brush (a fast thin connector, or a sliver clipped
+    at the canvas edge) must still extrude in z — it drew only a single plane when
+    the core was a global-depth threshold instead of the EDT ridge."""
+    vol = _write_volume(tmp_path, (15, 40, 60))
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    fp = np.zeros((40, 60), bool)
+    fp[19:21, 30:60] = True                                # 2px sliver running off the right edge
+    z = 7
+    lab = SESSION_MANAGER.paint_sphere(state, z, 0, 4, 6, fp)
+    mv = state.current_mask_volume
+    assert int(mv[z, 20, 55]) == lab
+    assert int(mv[z + 1, 20, 55]) == lab                  # extrudes in z (was a single plane before)
+    assert int(mv[z - 1, 20, 55]) == lab
+
+
 def test_paint_merges_by_visible_colour(tmp_path):
     """A stroke of the selected colour MERGES into the adjacent same-colour cell
     (extends it, no new label, no recolour). An isolated stroke keeps that colour."""

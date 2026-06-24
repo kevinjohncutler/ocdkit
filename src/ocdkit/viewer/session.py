@@ -525,13 +525,12 @@ class SessionManager:
         R = float(radius)
         if radius > 0:
             edt = ndimage.distance_transform_edt(footprint)
-            rmax = float(edt.max()) if edt.size else 0.0
-            # The swept path = footprint eroded ~by the brush radius. Threshold at
-            # the BRUSH scale (min(R, rmax)), NOT the widest blob (rmax): a stroke
-            # with both wide and narrow sections must extrude in z everywhere, else
-            # the narrow sections paint only the current slice (a 2D circle).
-            depth = min(R, rmax)
-            core = edt >= max(0.5, depth - 0.5)
+            # The medial axis = the RIDGE of the EDT (its local maxima), so EVERY
+            # section of the stroke contributes to the z-extrusion: thick dabs, thin
+            # connectors from fast motion, and clipped slivers at the canvas edge
+            # alike. A global depth threshold missed anything shallower than it,
+            # leaving those sections a single 2D plane.
+            core = (edt >= 0.5) & (edt >= ndimage.maximum_filter(edt, size=3))
             dist_to_core = ndimage.distance_transform_edt(~core)
         slices = []
         for k in range(0, radius + 1):
@@ -607,11 +606,16 @@ class SessionManager:
         return lab, int((state.label_group or {}).get(lab, 0))
 
     def fill_cell(self, state: SessionState, z: int, axis: int, y: int, x: int,
-                  target_label: int) -> int:
-        """Whole-cell 3D fill from one click. ``target_label == 0`` deletes the
-        clicked cell (all its voxels across the volume); ``target_label > 0``
-        merges the clicked cell into that label (its whole 3D extent). Operates on
-        the entire connected label, so it works from any slice/axis."""
+                  group: int = -1, target_label: int = 0, erase: bool = False) -> int:
+        """Whole-cell 3D op from one click on any slice/axis. Acts on the entire
+        connected label under the cursor:
+
+        - ``erase`` → delete the cell (all its voxels across the volume).
+        - ``target_label > 0`` → merge the cell into that label (identity merge;
+          works even for non-touching cells, e.g. after the picker captures one).
+        - else ``group >= 0`` → recolour the cell to that colour, merging it into an
+          adjacent same-colour cell if one touches it (colour-merge, like the brush)."""
+        from scipy import ndimage
         mv = state.current_mask_volume
         if mv is None:
             return 0
@@ -621,15 +625,32 @@ class SessionManager:
             return 0
         L = int(plane[int(y), int(x)])
         if L == 0:
-            return 0                                   # clicked background
-        target = max(0, int(target_label))
-        if target == L:
-            return L                                   # no-op
+            return 0                                   # clicked background → nothing to fill
         self.ensure_ncolor(state)
         lg = state.label_group if state.label_group is not None else {}
         before_mv = mv.copy()
         before_lg = dict(lg)
-        mv[mv == L] = target                           # whole cell → delete (0) or merge (target)
+        cell = mv == L
+        if erase:
+            target = 0
+        elif int(target_label) > 0 and int(target_label) != L:
+            target = int(target_label)                 # identity merge into the picked cell
+        else:
+            g = int(group)
+            if g <= 0:
+                return L                               # no colour/target → nothing to do
+            border = ndimage.binary_dilation(cell) & ~cell
+            adj = [int(n) for n in np.unique(mv[border]) if n > 0 and lg.get(int(n)) == g and int(n) != L]
+            if adj:
+                target = min(adj)                      # colour-merge into a touching same-colour cell
+            else:
+                lg[L] = g                              # isolated → just recolour the cell
+                state.label_group = lg
+                state.current_ncolor_volume = None
+                self._record_edit(state, before_mv, before_lg)
+                self.schedule_autosave(state)
+                return L
+        mv[cell] = target
         lg.pop(L, None)
         if target > 0 and target not in lg:
             lg[target] = 1

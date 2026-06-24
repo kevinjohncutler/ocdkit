@@ -348,14 +348,16 @@ def api_label_at(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int 
 
 @router.post("/fill_cell/{session_id}")
 def api_fill_cell(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int = 0,
-                  target: int = 0) -> dict:
-    """3D fill: target 0 deletes the clicked cell; target>0 merges it into that
-    label. Operates on the whole 3D cell. Returns the resulting label + history."""
+                  group: int = -1, target: int = 0, erase: int = 0) -> dict:
+    """3D whole-cell fill: ``erase`` deletes the clicked cell; ``target>0`` merges
+    it into that label (identity merge); else ``group`` recolours/colour-merges it.
+    Returns the resulting label + history availability."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
         raise UnknownSession() from exc
-    lab = SESSION_MANAGER.fill_cell(state, z, axis, y, x, target)
+    lab = SESSION_MANAGER.fill_cell(state, z, axis, y, x, group=group,
+                                    target_label=target, erase=bool(erase))
     return {"ok": True, "label": lab,
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 

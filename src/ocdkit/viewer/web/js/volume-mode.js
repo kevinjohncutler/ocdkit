@@ -201,10 +201,13 @@
       if (!cfg.isVolume || !hasMask) return false;
       const y = Math.floor(wy), x = Math.floor(wx);
       const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive());
-      const target = erasing ? 0 : pickedLabel;            // 0 = delete cell, else merge into picked cell
-      if (!erasing && !target) return true;                // nothing picked → no merge target (no-op)
+      // erase → delete; a picked cell → identity-merge into it; otherwise fill with
+      // the current colour (colour-merge into a touching same-colour cell / recolour).
+      const group = (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 0) | 0;
+      const q = erasing ? "&erase=1"
+              : (pickedLabel ? "&target=" + pickedLabel : "&group=" + group);
       fetch("/api/fill_cell/" + encodeURIComponent(cfg.sessionId) +
-            "?z=" + slice + "&axis=" + curAxis + "&y=" + y + "&x=" + x + "&target=" + target, { method: "POST" })
+            "?z=" + slice + "&axis=" + curAxis + "&y=" + y + "&x=" + x + q, { method: "POST" })
         .then(async (r) => {
           if (!r.ok) return;
           const j = await r.json();
