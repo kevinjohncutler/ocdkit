@@ -327,11 +327,10 @@
       if (projRow) projRow.hidden = !is3d;
       setStyleButtonsFor3D(is3d);
       if (is3d) {
-        // an outline-only mode can't render in 3D → fall back to solid (filled)
-        const m = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : "solid";
-        if ((m === "outlined" || m === "outline") && window.__viewerSetMaskDisplayMode) {
-          window.__viewerSetMaskDisplayMode("solid");
-        }
+        // NOTE: do NOT change the global maskDisplayMode here — it drives the 2D
+        // outline rendering and is persisted. The 3D render only cares about
+        // show-vs-hide labels (applyLabelVisibilityToGpu), independent of the
+        // 2D outline/fill style. (Forcing 'solid' here wiped 2D outlines.)
         if (mask3dStale && vgpu) {
           try { vgpu.destroy(); } catch (e) {}
           vgpu = null; window.__volumeGPU = null; loading = null;
