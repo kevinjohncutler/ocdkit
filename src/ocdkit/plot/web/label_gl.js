@@ -540,11 +540,12 @@ void main() {
     return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
   }
 
-  // Build a fully-configured renderer on ``gl`` from a config (decodeAttrs
-  // output). Loads the optional base image async, calling ``onRender`` once
-  // it arrives so the caller can repaint.
-  function buildRenderer(gl, cfg, onRender) {
-    const r = new LabelGLRenderer(gl);
+  // Apply a decodeAttrs config to ANY label renderer (WebGL2 or WebGPU — both
+  // expose setLabels/setPalette/setUniforms/setBase). Loads the optional base
+  // image + streamed matrices async, calling ``onRender`` once they arrive so
+  // the caller can repaint. Backend-agnostic so buildRenderer (WebGL2) and
+  // createLabelRenderer (the dispatcher) share one config path.
+  function _applyConfig(r, cfg, onRender) {
     if (cfg.labels) {
       r.setLabels(cfg.labels, cfg.w, cfg.h, cfg.instances);
     } else if (cfg.labelsSrc) {
@@ -574,6 +575,39 @@ void main() {
       bimg.src = cfg.baseSrc;
     }
     return r;
+  }
+
+  // Build a fully-configured WebGL2 renderer on ``gl`` from a config (decodeAttrs
+  // output). Synchronous; the explicit-WebGL2 path for callers that already hold
+  // a gl context. For backend dispatch use createLabelRenderer.
+  function buildRenderer(gl, cfg, onRender) {
+    return _applyConfig(new LabelGLRenderer(gl), cfg, onRender);
+  }
+
+  // Dispatcher: WebGPU (HDR — true >1.0 outline/highlight glow via
+  // toneMapping:'extended') when available, else WebGL2 (SDR). Mirrors
+  // colormap_image.js createColormapRenderer: probe the shared GPU device FIRST
+  // (LabelGPURenderer.create awaits HdrColormap.getDevice, which doesn't touch
+  // the canvas) so the WebGL2 fallback can still claim the canvas context if
+  // WebGPU is unusable. Returns Promise<renderer>; the renderer exposes the SAME
+  // interface as LabelGLRenderer, so callers `await` then use draw()/labelAt()
+  // unchanged. ``opts.forceWebgl`` pins WebGL2 (e.g. SDR tiles dodging the
+  // WebGPU cold-init flash, exactly as the colormap path does for hdr=false).
+  function createLabelRenderer(canvas, cfg, onRender, opts) {
+    opts = opts || {};
+    const LG = (typeof window !== 'undefined' && window.LabelGPU) || (typeof self !== 'undefined' && self.LabelGPU) || null;
+    function webgl2() {
+      const gl = canvas.getContext('webgl2');
+      if (!gl) throw new Error('createLabelRenderer: no webgl2');
+      return _applyConfig(new LabelGLRenderer(gl), cfg, onRender);
+    }
+    if (!opts.forceWebgl && LG && LG.LabelGPURenderer && typeof navigator !== 'undefined' && navigator.gpu) {
+      return LG.LabelGPURenderer.create(canvas, opts)
+        .then(function (r) { return _applyConfig(r, cfg, onRender); })
+        .catch(function () { return webgl2(); });   // WebGPU unusable → WebGL2 (SDR)
+    }
+    try { return Promise.resolve(webgl2()); }
+    catch (e) { return Promise.reject(e); }
   }
 
   // mat3 (column-major) for LabelGLRenderer.draw that fits + pans + zooms
@@ -609,6 +643,6 @@ void main() {
 
   return {
     LabelGLRenderer, ortho, orthoTile, VERT, FRAG,
-    decodeAttrs, fetchMatrices, buildRenderer, mat3ForFit, imagePointFromCss,
+    decodeAttrs, fetchMatrices, buildRenderer, createLabelRenderer, mat3ForFit, imagePointFromCss,
   };
 }));
