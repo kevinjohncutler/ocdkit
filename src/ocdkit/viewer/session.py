@@ -10,6 +10,7 @@ server cannot grow memory unboundedly as new browsers connect (issue #2).
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import json
 import secrets
@@ -51,6 +52,22 @@ SESSION_COOKIE_NAME = "OCDSESSION"
 
 def _session_path_key(path: Optional[Path]) -> str:
     return str(path.resolve()) if path else "__sample__"
+
+
+def _encode_array(arr: np.ndarray, *, level: int = 1) -> dict[str, Any]:
+    """Pack an ndarray as ``{dtype, shape, gzip, b64}`` (C-order bytes).
+
+    Matches omnipose ``_volume3d.encode_array`` / the JS ``decodeField`` so the
+    3D viewer can consume a bundle built straight from session state.
+    """
+    arr = np.ascontiguousarray(arr)
+    raw = gzip.compress(arr.tobytes(), level)
+    return {
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+        "gzip": True,
+        "b64": base64.b64encode(raw).decode("ascii"),
+    }
 
 
 @dataclass
@@ -117,16 +134,44 @@ class SessionManager:
         with self._lock:
             return len(self._sessions)
 
+    def _apply_image(self, state: SessionState, image: np.ndarray,
+                     is_rgb: bool, is_volume: bool) -> None:
+        """Store a loaded image/volume on the session + (re)encode the 2D view.
+
+        For a volume the full ``(Z, Y, X)`` stack is kept and the middle slice
+        feeds the 2D pipeline. Shared by the create and set-image paths so a
+        preloaded volume behaves the same as one opened later.
+        """
+        if is_volume:
+            state.current_volume = np.ascontiguousarray(image, dtype=np.uint8)
+            state.volume_slice = int(state.current_volume.shape[0] // 2)
+            state.current_image = np.ascontiguousarray(
+                state.current_volume[state.volume_slice], dtype=np.uint8
+            )
+            state.image_is_rgb = False
+        else:
+            state.current_volume = None
+            state.volume_slice = 0
+            state.current_image = np.ascontiguousarray(image, dtype=np.uint8)
+            state.image_is_rgb = is_rgb
+        raw_bytes = self._encode_image_bytes(state.current_image, is_rgb=state.image_is_rgb)
+        state.encoded_image_bytes = raw_bytes
+        state.encoded_image_mime = "image/png"
+        state.encoded_image = (
+            "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
+        )
+
     def _create_session_unlocked(self) -> SessionState:
         session_id = secrets.token_urlsafe(16)
         initial_path = get_preload_image_path()
         if initial_path and initial_path.exists():
-            image, is_rgb, _is_volume = self._load_image_from_path(initial_path)
+            image, is_rgb, is_volume = self._load_image_from_path(initial_path)
             directory = initial_path.parent
             files = self._list_directory_images(directory)
         else:
             image = load_image_uint8(as_rgb=True)
             is_rgb = image.ndim == 3 and image.shape[-1] >= 3
+            is_volume = False
             directory = None
             files = []
             initial_path = None
@@ -135,18 +180,11 @@ class SessionManager:
             current_path=initial_path,
             directory=directory,
             files=files,
-            current_image=np.ascontiguousarray(image, dtype=np.uint8),
-            image_is_rgb=is_rgb,
             encoded_image=None,
         )
+        self._apply_image(state, image, is_rgb, is_volume)
         state.last_seen = time.time()
         self._sessions[session_id] = state
-        raw_bytes = self._encode_image_bytes(state.current_image, is_rgb=is_rgb)
-        state.encoded_image_bytes = raw_bytes
-        state.encoded_image_mime = "image/png"
-        state.encoded_image = (
-            "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
-        )
         return state
 
     def get_or_create(self, session_id: Optional[str]) -> SessionState:
@@ -216,25 +254,7 @@ class SessionManager:
         state.current_path = path
         state.directory = directory
         state.files = files
-        if is_volume:
-            # Store the full (Z, Y, X) stack; the 2D pipeline shows one slice.
-            state.current_volume = np.ascontiguousarray(image, dtype=np.uint8)
-            state.volume_slice = int(state.current_volume.shape[0] // 2)
-            state.current_image = np.ascontiguousarray(
-                state.current_volume[state.volume_slice], dtype=np.uint8
-            )
-            state.image_is_rgb = False
-        else:
-            state.current_volume = None
-            state.volume_slice = 0
-            state.current_image = np.ascontiguousarray(image, dtype=np.uint8)
-            state.image_is_rgb = is_rgb
-        raw_bytes = self._encode_image_bytes(state.current_image, is_rgb=state.image_is_rgb)
-        state.encoded_image_bytes = raw_bytes
-        state.encoded_image_mime = "image/png"
-        state.encoded_image = (
-            "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")
-        )
+        self._apply_image(state, image, is_rgb, is_volume)
 
     def build_config(
         self, state: SessionState, *, embed_image: bool = True
@@ -309,6 +329,27 @@ class SessionManager:
         z = max(0, min(int(z), vol.shape[0] - 1))
         state.volume_slice = z
         return self._encode_image_bytes(np.ascontiguousarray(vol[z]), is_rgb=False)
+
+    def encode_volume_bundle(self, state: SessionState) -> Optional[dict[str, Any]]:
+        """Intensity-only 3D viewer bundle from the loaded volume, or None.
+
+        Lets a raw (Z, Y, X) stack render in the 3D view before any
+        segmentation — masks/overlays are added later via the plugin bundle.
+        """
+        vol = state.current_volume
+        if vol is None:
+            return None
+        D, H, W = vol.shape
+        return {
+            "meta": {
+                "dim": 3,
+                "axes": ["t", "y", "x"],
+                "depth": int(D),
+                "height": int(H),
+                "width": int(W),
+            },
+            "image": _encode_array(vol),
+        }
 
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:
         raw_bytes = self._encode_image_bytes(array, is_rgb=is_rgb)
