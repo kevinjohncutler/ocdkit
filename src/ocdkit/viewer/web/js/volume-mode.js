@@ -33,9 +33,11 @@
     panel.hidden = false;
     sliceBar.hidden = false;
 
-    // golden-ratio HSV palette matching the 3D shader's labelColor, so 2D ncolor
-    // groups and the 3D volume render with identical colors.
-    (function setupNColorPalette() {
+    // golden-ratio HSV palette matching the 3D shader's labelColor (group g →
+    // hsv(fract(g·φ), 0.65, 1)), so 2D ncolor groups and the 3D volume render
+    // with identical colors. Re-asserted after every mask set because app.js's
+    // async initialize()/state-restore can otherwise reset the palette.
+    const ncPalette = (function () {
       function hsvRgb(h, s, v) {
         const i = Math.floor(h * 6), f = h * 6 - i;
         const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
@@ -48,10 +50,14 @@
       }
       const PHI = 0.61803398875, pal = [];
       for (let i = 0; i < 32; i++) pal.push(hsvRgb(((i + 1) * PHI) % 1, 0.65, 1.0));
-      if (typeof window.__viewerSetNColorPalette === "function") {
-        window.__viewerSetNColorPalette(pal);
-      }
+      return pal;
     })();
+    function applyNColorPalette() {
+      if (typeof window.__viewerSetNColorPalette === "function") {
+        window.__viewerSetNColorPalette(ncPalette);
+      }
+    }
+    applyNColorPalette();
 
     let mode = "2d";
     let vgpu = null;
@@ -99,6 +105,7 @@
         if (!gR.ok || !iR.ok) return;
         const [gB, iB] = await Promise.all([gR.arrayBuffer(), iR.arrayBuffer()]);
         window.__viewerSetMaskSlice(_bufToU32(gR, gB), _bufToU32(iR, iB));
+        applyNColorPalette();   // re-assert golden-HSV (beats any app.js reset)
       } catch (e) { /* leave current mask on transient error */ }
     }
 
