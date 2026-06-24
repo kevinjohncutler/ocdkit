@@ -413,6 +413,51 @@ class SessionManager:
         state.current_ncolor_volume = g
         return g
 
+    def ncolor_map(self, state: SessionState):
+        """label → ncolor group as a list indexed by label (0 unused). Lets the
+        2D view color each label by its volume-consistent group while keeping the
+        label itself as the editable source of truth."""
+        mv = state.current_mask_volume
+        if mv is None:
+            return None
+        g = self.ensure_ncolor(state)
+        maxl = int(mv.max())
+        out = np.zeros(maxl + 1, dtype=np.int32)
+        flat_l = mv.reshape(-1)
+        nz = flat_l > 0
+        out[flat_l[nz]] = g.reshape(-1)[nz]   # ncolor is per-label, so last-wins is fine
+        return out.tolist()
+
+    def paint_sphere(self, state: SessionState, z: int, axis: int, label: int,
+                     radius: int, footprint: np.ndarray) -> None:
+        """Extrude a 2D stroke ``footprint`` (bool, slice-shaped) into a ball:
+        paint ``label`` on slices ``z±k`` eroded by k, for the 3D brush."""
+        vol = state.current_volume
+        if vol is None:
+            raise ValueError("no volume loaded")
+        from scipy import ndimage
+        axis = int(axis) % 3
+        D = vol.shape[axis]
+        mv = state.current_mask_volume
+        if mv is None:
+            mv = np.zeros(vol.shape, np.uint32)
+            state.current_mask_volume = mv
+        if int(label) > int(np.iinfo(mv.dtype).max):
+            mv = state.current_mask_volume = mv.astype(np.uint32)
+        radius = max(0, int(radius))
+        for k in range(0, radius + 1):
+            fk = footprint if k == 0 else ndimage.binary_erosion(footprint, iterations=k)
+            if not fk.any():
+                break
+            for zz in ({z} if k == 0 else {z - k, z + k}):
+                if 0 <= zz < D:
+                    plane = np.take(mv, zz, axis=axis)
+                    plane[fk] = label
+                    idx = [slice(None)] * 3
+                    idx[axis] = zz
+                    mv[tuple(idx)] = plane
+        state.current_ncolor_volume = None
+
     def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
         """Raw label bytes for mask slice ``z`` along ``axis`` →
         ``(bytes, width, height, dtype)``. ``kind='group'`` returns the ncolor

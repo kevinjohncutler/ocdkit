@@ -273,6 +273,41 @@ async def api_put_mask_slice(session_id: str, request: Request, z: int = 0, axis
     return {"ok": True}
 
 
+@router.get("/ncolor_map/{session_id}")
+def api_ncolor_map(session_id: str) -> dict:
+    """label → ncolor group (list indexed by label) for per-label 2D coloring."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    m = SESSION_MANAGER.ncolor_map(state)
+    if m is None:
+        raise NotFound("no_mask")
+    return {"groups": m}
+
+
+@router.post("/paint_sphere/{session_id}")
+async def api_paint_sphere(session_id: str, request: Request, z: int = 0, axis: int = 0,
+                           label: int = 1, radius: int = 0) -> dict:
+    """3D brush: extrude a 2D stroke footprint into a ball across slices."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    import numpy as _np
+    vol = state.current_volume
+    if vol is None:
+        raise BadRequest("no_volume")
+    sshape = [vol.shape[a] for a in range(3) if a != (int(axis) % 3)]
+    data = await request.body()
+    try:
+        footprint = _np.frombuffer(data, dtype=_np.uint8).reshape(sshape).astype(bool)
+        SESSION_MANAGER.paint_sphere(state, z, axis, label, radius, footprint)
+    except ValueError as exc:
+        raise BadRequest("paint_failed", detail=str(exc)) from exc
+    return {"ok": True}
+
+
 @router.get("/volume_bundle/{session_id}")
 def api_volume_bundle(session_id: str) -> dict:
     """Intensity-only 3D bundle for the loaded volume (renders before masks)."""

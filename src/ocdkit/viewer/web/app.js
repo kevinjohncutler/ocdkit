@@ -3607,6 +3607,9 @@ function pushHistory(indices, before, after) {
     ViewerHistory.push(indices, before, after);
   }
   window.__viewerMaskEdited = true;   // volume-mode persists edited slices back
+  if (typeof window.__onViewerStroke === 'function') {
+    try { window.__onViewerStroke(indices, after); } catch (e) {}   // 3D brush hook
+  }
   updateHistoryButtons();
 }
 
@@ -7615,23 +7618,16 @@ window.__viewerSetSliceImage = function (url) {
 // maskValues holds the groups so the N-color palette has no adjacent collisions
 // and the affinity/outline (group boundaries == cell boundaries) is reliable.
 // `instance` (identity labels) is kept separately for picking / persistence.
-window.__viewerSetMaskSlice = function (groups, instance) {
+window.__viewerSetMaskSlice = function (labels) {
   let nz = false;
-  if (groups && groups.length === maskValues.length) {
-    maskValues.set(groups);
-    for (let i = 0; i < groups.length; i += 1) { if (groups[i]) { nz = true; break; } }
+  if (labels && labels.length === maskValues.length) {
+    maskValues.set(labels);                       // labels = the editable source of truth
+    for (let i = 0; i < labels.length; i += 1) { if (labels[i]) { nz = true; break; } }
   } else {
     maskValues.fill(0);
   }
-  if (instance && instance.length === maskValues.length) {
-    if (!nColorInstanceMask || nColorInstanceMask.length !== instance.length) {
-      nColorInstanceMask = new Uint32Array(instance.length);
-    }
-    nColorInstanceMask.set(instance);
-    nColorActive = true;
-  } else {
-    nColorInstanceMask = null;
-  }
+  nColorInstanceMask = null;
+  nColorActive = true;                            // colored via per-label palette (volume-mode)
   maskHasNonZero = nz;
   window.__viewerMaskApplied = nz;   // test/automation hook
   if (typeof updateMaxLabelFromMask === 'function') updateMaxLabelFromMask();
@@ -7647,8 +7643,12 @@ window.__viewerSetMaskSlice = function (groups, instance) {
   }
 };
 
-// Identity labels for the current slice (for persisting edits to the volume).
-window.__viewerGetMask = function () { return nColorInstanceMask || maskValues; };
+// Current slice labels (the source of truth) for persisting edits to the volume.
+window.__viewerGetMask = function () { return maskValues; };
+
+// Brush radius in pixels (for the 3D sphere brush) + the active label.
+window.__viewerBrushRadius = function () { return Math.max(1, Math.round(brushDiameter / 2)); };
+window.__viewerCurrentLabel = function () { return currentLabel | 0; };
 
 // Override the N-color palette (e.g. with a golden-ratio HSV palette matching
 // the 3D shader, so 2D slices and the 3D volume use identical colors).

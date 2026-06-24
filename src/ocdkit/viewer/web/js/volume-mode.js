@@ -33,31 +33,35 @@
     panel.hidden = false;
     sliceBar.hidden = false;
 
-    // sinebow palette (vibrant; matches app.js's default colormap) — group g →
-    // sinebow((g-1)/32). The 3D shader uses the identical formula on the same
-    // group values, so 2D slices and the 3D volume render with the same colors.
-    // Re-asserted after every mask set because app.js's async initialize()/
-    // state-restore can otherwise reset the palette.
-    const ncPalette = (function () {
-      function sinebow(t) {
-        const a = 2 * Math.PI * (t - Math.floor(t));
-        return [
-          Math.round((Math.sin(a) * 0.5 + 0.5) * 255),
-          Math.round((Math.sin(a + 2 * Math.PI / 3) * 0.5 + 0.5) * 255),
-          Math.round((Math.sin(a + 4 * Math.PI / 3) * 0.5 + 0.5) * 255),
-        ];
-      }
-      // golden-ratio spread into sinebow so groups are well-separated for any count
-      const PHI = 0.61803398875, pal = [];
-      for (let i = 0; i < 32; i++) pal.push(sinebow(((i + 1) * PHI) % 1));
-      return pal;
-    })();
-    function applyNColorPalette() {
-      if (typeof window.__viewerSetNColorPalette === "function") {
-        window.__viewerSetNColorPalette(ncPalette);
-      }
+    // Labels are the source of truth; each label is colored by sinebow(fract(
+    // group·φ)) of its volume ncolor group, so 2D and 3D match (the shader uses
+    // the same formula on the group) and adjacent cells differ. golden-ratio
+    // spread → well-separated for any group count.
+    const PHI = 0.61803398875;
+    function sinebow(t) {
+      const a = 2 * Math.PI * (t - Math.floor(t));
+      return [Math.round((Math.sin(a) * 0.5 + 0.5) * 255),
+              Math.round((Math.sin(a + 2 * Math.PI / 3) * 0.5 + 0.5) * 255),
+              Math.round((Math.sin(a + 4 * Math.PI / 3) * 0.5 + 0.5) * 255)];
     }
-    applyNColorPalette();
+    let labelGroups = [0];   // label → ncolor group (index by label)
+    function applyNColorPalette() {
+      if (typeof window.__viewerSetNColorPalette !== "function") return;
+      const pal = [];
+      for (let label = 1; label < labelGroups.length; label++) {
+        pal.push(sinebow(((labelGroups[label] || 1) * PHI) % 1));
+      }
+      if (!pal.length) pal.push(sinebow(PHI));
+      window.__viewerSetNColorPalette(pal);   // indexed (label-1) → per-label color
+    }
+    async function fetchNColorMap() {
+      try {
+        const r = await fetch("/api/ncolor_map/" + encodeURIComponent(cfg.sessionId) + "?t=" + Date.now());
+        if (!r.ok) return;
+        labelGroups = (await r.json()).groups || [0];
+        applyNColorPalette();
+      } catch (e) { /* keep prior palette */ }
+    }
 
     let mode = "2d";
     let vgpu = null;
@@ -97,15 +101,13 @@
     }
     async function updateMaskSlice(z) {
       if (typeof window.__viewerSetMaskSlice !== "function") return;
-      if (!hasMask) { window.__viewerSetMaskSlice(null, null); return; }
+      if (!hasMask) { window.__viewerSetMaskSlice(null); return; }
       try {
-        const base = "/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
-                     "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
-        const [gR, iR] = await Promise.all([fetch(base), fetch(base + "&kind=instance")]);
-        if (!gR.ok || !iR.ok) return;
-        const [gB, iB] = await Promise.all([gR.arrayBuffer(), iR.arrayBuffer()]);
-        window.__viewerSetMaskSlice(_bufToU32(gR, gB), _bufToU32(iR, iB));
-        applyNColorPalette();   // re-assert golden-HSV (beats any app.js reset)
+        const r = await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
+                              "?z=" + z + "&axis=" + curAxis + "&kind=instance&t=" + Date.now());
+        if (!r.ok) return;
+        window.__viewerSetMaskSlice(_bufToU32(r, await r.arrayBuffer()));   // labels
+        applyNColorPalette();   // per-label sinebow (beats any app.js reset)
       } catch (e) { /* leave current mask on transient error */ }
     }
 
@@ -128,6 +130,7 @@
         });
         hasMask = true;
         mask3dStale = true;
+        await fetchNColorMap();   // labels changed → recompute groups → refresh palette
       } catch (e) {
         window.__viewerMaskEdited = true;
       }
@@ -146,7 +149,37 @@
       updateMaskSlice(z);
     }
     slider.addEventListener("input", () => showSlice(parseInt(slider.value, 10)));
-    if (hasMask) updateMaskSlice(slice);                // initial mask overlay
+    if (hasMask) { fetchNColorMap(); updateMaskSlice(slice); }   // initial palette + overlay
+
+    // ── 2D / 3D brush ────────────────────────────────────────────────────────
+    // 2D = paint the current slice only (app.js native). 3D = extrude the stroke
+    // into a ball across neighbouring slices of the volume (server paint_sphere).
+    let brushDim = 2;
+    window.__onViewerStroke = function (indices, after) {
+      if (brushDim !== 3 || !indices || !indices.length) return;
+      const dim = sliceDims(curAxis);
+      const fp = new Uint8Array((dim.width | 0) * (dim.height | 0));
+      for (let i = 0; i < indices.length; i++) fp[indices[i]] = 1;
+      const label = (after && after.length) ? (after[0] | 0)
+                  : (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 1);
+      const radius = window.__viewerBrushRadius ? window.__viewerBrushRadius() : 3;
+      fetch("/api/paint_sphere/" + encodeURIComponent(cfg.sessionId) +
+            "?z=" + slice + "&axis=" + curAxis + "&label=" + label + "&radius=" + radius, {
+        method: "POST", headers: { "content-type": "application/octet-stream" }, body: fp.buffer,
+      }).then((r) => {
+        if (r.ok) { hasMask = true; mask3dStale = true; window.__viewerMaskEdited = false; fetchNColorMap(); }
+      }).catch(() => {});
+    };
+    function setBrushDim(d) {
+      brushDim = d | 0;
+      if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>
+        x.classList.toggle("is-active", parseInt(x.getAttribute("data-brush"), 10) === brushDim));
+    }
+    const brushDimRow = document.getElementById("brushDimRow");
+    if (brushDimRow) {
+      brushDimRow.querySelectorAll("[data-brush]").forEach((b) =>
+        b.addEventListener("click", () => setBrushDim(parseInt(b.getAttribute("data-brush"), 10))));
+    }
 
     // switch slicing axis: dimensions change, so reinit the 2D view
     async function setAxis(a) {
@@ -297,6 +330,7 @@
       setMode, getMode: () => mode, gpu: () => vgpu,
       showSlice, getSlice: () => slice, setProj, getProj: () => curProj,
       setAxis, getAxis: () => curAxis,
+      setBrushDim, getBrushDim: () => brushDim,
     };
   }
 

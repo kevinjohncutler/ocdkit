@@ -212,3 +212,31 @@ def test_ncolor_groups_separate_adjacent_cells(tmp_path):
     g1 = int(np.unique(g[masks == 1])[0])
     g2 = int(np.unique(g[masks == 2])[0])
     assert g1 != g2 and g1 > 0 and g2 > 0     # adjacent cells → different groups
+
+
+def test_ncolor_map_route(tmp_path):
+    from ocdkit.viewer.routers.session_routes import api_ncolor_map
+    vol = _write_volume(tmp_path, (5, 20, 20))
+    masks = np.zeros((5, 20, 20), np.uint8)
+    masks[:, 4:10, 4:16] = 1
+    masks[:, 10:16, 4:16] = 2
+    tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    groups = api_ncolor_map(state.session_id)["groups"]
+    assert len(groups) >= 3
+    assert groups[1] != groups[2] and groups[1] > 0 and groups[2] > 0   # adjacent labels differ
+
+
+def test_paint_sphere_extrudes_across_slices(tmp_path):
+    vol = _write_volume(tmp_path, (9, 30, 30))
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    yy, xx = np.mgrid[0:30, 0:30]
+    fp = ((xx - 15) ** 2 + (yy - 15) ** 2) < 6 ** 2     # disk on the middle slice
+    SESSION_MANAGER.paint_sphere(state, 4, 0, 5, 3, fp)  # z=4, axis=0, label=5, radius=3
+    mv = state.current_mask_volume
+    assert int(mv[4].max()) == 5                         # center slice painted
+    assert int(mv[5].max()) == 5 and int(mv[3].max()) == 5   # neighbors painted (ball)
+    assert (mv[5] == 5).sum() < (mv[4] == 5).sum()       # eroded → smaller off-center
+    assert int(mv[0].max()) == 0                         # beyond radius: untouched
