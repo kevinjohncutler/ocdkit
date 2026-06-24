@@ -2695,7 +2695,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         if (_hdrBaseUpgrade) { try { _hdrBaseUpgrade(r); } catch (e) {} }
         // Apply the figure's current HDR-toggle state, then first paint.
         try { r.setUniforms({ outlineHdrBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr,
-                              highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : 1.8 }); } catch (_) {}
+                              highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr }); } catch (_) {}
         _dirty = true; redraw(lastState);
       }).catch(function (e) {
         console.warn('LabelGL popup:', e);
@@ -2714,7 +2714,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       const _cfgOutlineHdr = (cfg.uniforms && cfg.uniforms.outlineHdrBoost) || 1.0;
       function setSdr(sdr) {
         r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
-                        highlightBoost: sdr ? 1.0 : 1.8 });
+                        highlightBoost: sdr ? 1.0 : _cfgOutlineHdr });
         redraw(lastState);
       }
       let _cssW = 0, _cssH = 0, _dpr = 1, _dirty = true;
@@ -5369,7 +5369,7 @@ _LABEL_CONTROLLER_JS = r"""
       // HDR/SDR toggle (shell button): SDR drops boosts to 1.0; HDR uses configured.
       cv.__labelSetSdr = function (sdr) {
         if (!r) return;
-        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr, highlightBoost: sdr ? 1.0 : 1.8 });
+        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr, highlightBoost: sdr ? 1.0 : _cfgOutlineHdr });
         render();
       };
       cv.addEventListener('pointermove', onMove);
