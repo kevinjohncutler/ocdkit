@@ -21,6 +21,8 @@ def test_page_has_volume_canvas_toggle_and_slider():
     assert 'id="projModeRow"' in html        # projection (MIP/Mean/Additive)
     assert 'data-proj="1"' in html
     assert 'id="loadMasksButton"' in html     # manual mask selector
+    assert 'id="sliceAxisRow"' in html       # orthogonal axis toggle (Z/Y/X)
+    assert 'data-axis="2"' in html
 
 
 def test_page_loads_volume_modules_after_app():

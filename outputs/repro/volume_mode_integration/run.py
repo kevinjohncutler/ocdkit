@@ -91,6 +91,17 @@ def main():
                 "(function(){var m=window.__viewerGetMask();for(var i=0;i<60;i++)if(m[i]!==99)return false;return true;})()")
             print("edit persisted across scrub:", edit_persisted)
 
+            # orthogonal slicing: switch to Y axis → dims change, slider re-ranges
+            pg.evaluate("window.__volumeMode.setAxis(1)")
+            pg.wait_for_timeout(700)   # reinit + new image decode
+            ax = pg.evaluate("window.__volumeMode.getAxis()")
+            smax = pg.eval_on_selector("#sliceSlider", "el => parseInt(el.max, 10)")
+            vshape = pg.evaluate("window.__VIEWER_CONFIG__.volumeShape")
+            axis_ok = (ax == 1 and smax == vshape[1] - 1)
+            print("axis switch -> Y:", ax, "| slider max:", smax, "(expect", vshape[1] - 1, ") ok:", axis_ok)
+            pg.evaluate("window.__volumeMode.setAxis(0)")   # back to Z for the 3D test
+            pg.wait_for_timeout(500)
+
             # switch to 3D and let it mount + render
             pg.eval_on_selector('[data-view="3d"]', "el => el.click()")
             pg.wait_for_function("window.__volumeMode.gpu() !== null", timeout=20000)
@@ -123,8 +134,8 @@ def main():
             print("JS errors:", errs or "none")
 
             ok = (is_vol and bar_visible and mask_2d and slice_changed and edit_persisted
-                  and home_ok and gpu_ok and canvas_shown and show_labels == 1 and proj == 2
-                  and nonblank > 1.0 and not errs)
+                  and axis_ok and home_ok and gpu_ok and canvas_shown and show_labels == 1
+                  and proj == 2 and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()
             return 0 if ok else 1

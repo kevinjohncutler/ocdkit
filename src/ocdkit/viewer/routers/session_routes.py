@@ -184,13 +184,13 @@ def api_image(session_id: str) -> Response:
 
 
 @router.get("/volume_slice/{session_id}")
-def api_volume_slice(session_id: str, z: int = 0) -> Response:
-    """Serve slice ``z`` of the loaded volume as PNG (2.5D slice navigation)."""
+def api_volume_slice(session_id: str, z: int = 0, axis: int = 0) -> Response:
+    """Serve slice ``z`` along ``axis`` (0=Z,1=Y,2=X) as PNG (2.5D navigation)."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
         raise UnknownSession() from exc
-    png = SESSION_MANAGER.encode_slice_png(state, z)
+    png = SESSION_MANAGER.encode_slice_png(state, z, axis)
     if png is None:
         raise NotFound("not_a_volume")
     return Response(
@@ -234,13 +234,13 @@ def api_select_mask_file(
 
 
 @router.get("/mask_slice/{session_id}")
-def api_mask_slice(session_id: str, z: int = 0) -> Response:
-    """Raw label bytes for mask slice ``z`` (2D overlay of the volumetric mask)."""
+def api_mask_slice(session_id: str, z: int = 0, axis: int = 0) -> Response:
+    """Raw label bytes for mask slice ``z`` along ``axis`` (2D mask overlay)."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
         raise UnknownSession() from exc
-    res = SESSION_MANAGER.mask_slice(state, z)
+    res = SESSION_MANAGER.mask_slice(state, z, axis)
     if res is None:
         raise NotFound("no_mask")
     data, width, height, dtype = res
@@ -257,8 +257,8 @@ def api_mask_slice(session_id: str, z: int = 0) -> Response:
 
 
 @router.post("/mask_slice/{session_id}")
-async def api_put_mask_slice(session_id: str, request: Request, z: int = 0) -> dict:
-    """Persist edited label bytes back into mask slice ``z`` (2D edits → volume)."""
+async def api_put_mask_slice(session_id: str, request: Request, z: int = 0, axis: int = 0) -> dict:
+    """Persist edited label bytes back into mask slice ``z`` along ``axis``."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
@@ -266,7 +266,7 @@ async def api_put_mask_slice(session_id: str, request: Request, z: int = 0) -> d
     dtype = request.headers.get("X-Mask-Dtype", "uint32")
     data = await request.body()
     try:
-        SESSION_MANAGER.set_mask_slice(state, z, data, dtype)
+        SESSION_MANAGER.set_mask_slice(state, z, data, dtype, axis)
     except ValueError as exc:
         raise BadRequest("mask_write_failed", detail=str(exc)) from exc
     return {"ok": True}

@@ -162,3 +162,34 @@ def test_set_mask_slice_roundtrip_and_create(tmp_path):
     marr = np.frombuffer(gzip.decompress(base64.b64decode(m["b64"])),
                          dtype=np.dtype(m["dtype"])).reshape(m["shape"])
     assert marr.shape == (6, 16, 16) and int(marr.max()) == 9
+
+
+def test_orthogonal_slicing_dims(tmp_path):
+    from ocdkit.viewer.routers.session_routes import api_volume_slice
+    vol = _write_volume(tmp_path, (10, 24, 30))           # D=10, H=24, W=30
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    shapes = {
+        0: (24, 30),   # Z slice → (H, W)
+        1: (10, 30),   # Y slice → (D, W)
+        2: (10, 24),   # X slice → (D, H)
+    }
+    for axis, want in shapes.items():
+        r = api_volume_slice(state.session_id, z=3, axis=axis)
+        img = np.asarray(imageio.imread(io.BytesIO(r.body)))
+        assert img.shape == want, (axis, img.shape)
+    cfg = SESSION_MANAGER.build_config(state, embed_image=False)
+    assert cfg["volumeShape"] == [10, 24, 30]
+
+
+def test_mask_slice_write_along_axis(tmp_path):
+    vol = _write_volume(tmp_path, (8, 20, 16))           # D, H, W
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    labels = np.zeros((8, 16), np.uint32)               # Y-axis slice shape = (D, W)
+    labels[1:4, 2:5] = 4
+    SESSION_MANAGER.set_mask_slice(state, 7, labels.tobytes(), "uint32", axis=1)
+    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 7, axis=1)
+    arr = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(h, w)
+    assert arr.shape == (8, 16) and int(arr.max()) == 4
+    assert int(state.current_mask_volume[:, 7, :].max()) == 4   # landed at y=7

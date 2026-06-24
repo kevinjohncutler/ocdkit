@@ -358,6 +358,7 @@ class SessionManager:
         if state.current_volume is not None:
             config["isVolume"] = True
             config["volumeDepth"] = int(state.current_volume.shape[0])
+            config["volumeShape"] = [int(s) for s in state.current_volume.shape]  # [D, H, W]
             config["currentSlice"] = int(state.volume_slice)
             config["hasVolumeMask"] = state.current_mask_volume is not None
         else:
@@ -377,47 +378,53 @@ class SessionManager:
             state.saved_states[state.path_key()] = sanitized
         return config
 
-    def encode_slice_png(self, state: SessionState, z: int) -> Optional[bytes]:
-        """PNG bytes for slice ``z`` of the loaded volume, or None if not a volume.
+    def encode_slice_png(self, state: SessionState, z: int, axis: int = 0) -> Optional[bytes]:
+        """PNG bytes for slice ``z`` along ``axis`` (0=Z, 1=Y, 2=X), or None.
 
-        Also updates ``state.volume_slice`` so the 2D view + config stay in sync.
+        Updates ``state.volume_slice`` for the Z axis so the config stays in sync.
         """
         vol = state.current_volume
         if vol is None:
             return None
-        z = max(0, min(int(z), vol.shape[0] - 1))
-        state.volume_slice = z
-        return self._encode_image_bytes(np.ascontiguousarray(vol[z]), is_rgb=False)
+        axis = int(axis) % 3
+        z = max(0, min(int(z), vol.shape[axis] - 1))
+        if axis == 0:
+            state.volume_slice = z
+        sl = np.ascontiguousarray(np.take(vol, z, axis=axis))
+        return self._encode_image_bytes(sl, is_rgb=False)
 
-    def mask_slice(self, state: SessionState, z: int):
-        """Raw label bytes for mask slice ``z`` → ``(bytes, width, height, dtype)``.
-
-        None if no mask volume is loaded. Used by the 2D view to overlay the
-        volumetric mask one plane at a time.
-        """
+    def mask_slice(self, state: SessionState, z: int, axis: int = 0):
+        """Raw label bytes for mask slice ``z`` along ``axis`` →
+        ``(bytes, width, height, dtype)``. None if no mask volume is loaded."""
         mv = state.current_mask_volume
         if mv is None:
             return None
-        z = max(0, min(int(z), mv.shape[0] - 1))
-        sl = np.ascontiguousarray(mv[z])
+        axis = int(axis) % 3
+        z = max(0, min(int(z), mv.shape[axis] - 1))
+        sl = np.ascontiguousarray(np.take(mv, z, axis=axis))
         return sl.tobytes(), int(sl.shape[1]), int(sl.shape[0]), str(sl.dtype)
 
-    def set_mask_slice(self, state: SessionState, z: int, data: bytes, dtype: str) -> None:
-        """Write edited label bytes back into mask slice ``z`` (creates the mask
-        volume on the first edit of an unmasked volume; widens dtype as needed)."""
+    def set_mask_slice(self, state: SessionState, z: int, data: bytes, dtype: str,
+                       axis: int = 0) -> None:
+        """Write edited label bytes back into mask slice ``z`` along ``axis``
+        (creates the mask volume on the first edit; widens dtype as needed)."""
         vol = state.current_volume
         if vol is None:
             raise ValueError("no volume loaded")
-        D, H, W = vol.shape
-        incoming = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(H, W)
-        z = max(0, min(int(z), D - 1))
+        axis = int(axis) % 3
+        shp = list(vol.shape)
+        z = max(0, min(int(z), shp[axis] - 1))
+        sshape = [shp[a] for a in range(3) if a != axis]   # 2D slice shape for this axis
+        incoming = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(sshape)
         mv = state.current_mask_volume
         if mv is None:
-            mv = np.zeros((D, H, W), np.uint32)
+            mv = np.zeros(tuple(shp), np.uint32)
             state.current_mask_volume = mv
         if int(incoming.max(initial=0)) > int(np.iinfo(mv.dtype).max):
             mv = state.current_mask_volume = mv.astype(np.uint32)
-        mv[z] = incoming.astype(mv.dtype, copy=False)
+        idx = [slice(None)] * 3
+        idx[axis] = z
+        mv[tuple(idx)] = incoming.astype(mv.dtype, copy=False)
 
     def encode_volume_bundle(self, state: SessionState) -> Optional[dict[str, Any]]:
         """Intensity-only 3D viewer bundle from the loaded volume, or None.

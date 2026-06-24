@@ -1,10 +1,13 @@
 /* volume-mode.js — volume support in the main ocdkit viewer. No-op unless the
  * loaded image is a volume (CONFIG.isVolume).
  *
- * Two views, switched from the "View" pane (left panel):
- *   - 2D slices (2.5D): the normal app.js canvas showing one z-slice; a slider
- *     along the bottom of the field of view + arrow keys scrub through z.
- *   - 3D volume: raw-WebGPU VolumeGPU render (needs WebGPU).
+ * Views, switched from the "View" pane (left panel):
+ *   - 2D slices (2.5D): the normal app.js canvas showing one slice; a slider
+ *     along the bottom of the field of view + arrow keys scrub. An axis toggle
+ *     (Z/Y/X) picks the slicing plane (switching axis reinitialises the 2D view
+ *     for the new dimensions). Loaded/edited masks render and edit per slice,
+ *     and edits persist back to the volume (and into the 3D render).
+ *   - 3D volume: raw-WebGPU VolumeGPU render (needs WebGPU). H = home camera.
  */
 (function () {
   "use strict";
@@ -12,7 +15,6 @@
   function init() {
     const cfg = (typeof window !== "undefined" && window.__VIEWER_CONFIG__) || {};
     if (!cfg.isVolume) return;                         // 2D image → nothing to do
-    const depth = cfg.volumeDepth || 1;
 
     const panel = document.getElementById("viewModePanel");
     const sliceBar = document.getElementById("sliceBar");
@@ -25,6 +27,7 @@
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');
     const projRow = document.getElementById("projModeRow");
+    const axisRow = document.getElementById("sliceAxisRow");
     const loadMasksBtn = document.getElementById("loadMasksButton");
 
     panel.hidden = false;
@@ -35,23 +38,35 @@
     let loading = null;
     let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
     let hasMask = !!cfg.hasVolumeMask;
-    let mask3dStale = false;   // 2D edits not yet reflected in the 3D bundle
+    let mask3dStale = false; // 2D edits not yet reflected in the 3D bundle
 
-    // ── 2.5D slice scrubbing ────────────────────────────────────────────────
-    let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depth >> 1);
+    // axis: 0=Z, 1=Y, 2=X. volumeShape = [D, H, W].
+    const AXES = ["Z", "Y", "X"];
+    const vshape = Array.isArray(cfg.volumeShape) ? cfg.volumeShape
+                 : [cfg.volumeDepth || 1, cfg.height || 0, cfg.width || 0];
+    let curAxis = 0;
+    function depthOf(a) { return vshape[a] || 1; }
+    function sliceDims(a) {                              // {height, width} of a slice along axis a
+      const rest = vshape.filter((_, i) => i !== a);
+      return { height: rest[0], width: rest[1] };
+    }
+
+    let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depthOf(0) >> 1);
     slider.min = "0";
-    slider.max = String(Math.max(0, depth - 1));
+    slider.max = String(Math.max(0, depthOf(curAxis) - 1));
     slider.value = String(slice);
-    function paintLabel() { sliceLabel.textContent = "z " + (slice + 1) + " / " + depth; }
+    function paintLabel() {
+      sliceLabel.textContent = AXES[curAxis] + " " + (slice + 1) + " / " + depthOf(curAxis);
+    }
     paintLabel();
 
-    // overlay the volumetric mask for slice z onto the 2D view (filled labels)
+    // overlay the volumetric mask for slice z (current axis) onto the 2D view
     async function updateMaskSlice(z) {
       if (typeof window.__viewerSetMaskSlice !== "function") return;
       if (!hasMask) { window.__viewerSetMaskSlice(null); return; }
       try {
         const r = await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
-                              "?z=" + z + "&t=" + Date.now());
+                              "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now());
         if (!r.ok) return;
         const dtype = r.headers.get("X-Mask-Dtype") || "uint8";
         const buf = await r.arrayBuffer();
@@ -64,46 +79,79 @@
       } catch (e) { /* leave current mask on transient error */ }
     }
 
+    // reload the mask whenever the 2D image (re)loads (initial + axis switch)
+    window.__onViewerImageReady = function () { if (hasMask) updateMaskSlice(slice); };
+
     // persist edits to the slice we're leaving back into the volume mask
     async function persistIfEdited() {
       if (!window.__viewerMaskEdited) return;
       window.__viewerMaskEdited = false;
       const mv = (typeof window.__viewerGetMask === "function") ? window.__viewerGetMask() : null;
       if (!mv) return;
-      const u32 = new Uint32Array(mv);   // copy of the slice's labels
+      const u32 = new Uint32Array(mv);
       try {
-        await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) + "?z=" + slice, {
+        await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
+                    "?z=" + slice + "&axis=" + curAxis, {
           method: "POST",
           headers: { "content-type": "application/octet-stream", "X-Mask-Dtype": "uint32" },
           body: u32.buffer,
         });
         hasMask = true;
-        mask3dStale = true;              // 3D bundle now out of date
+        mask3dStale = true;
       } catch (e) {
-        window.__viewerMaskEdited = true;  // retry on the next transition
+        window.__viewerMaskEdited = true;
       }
     }
 
+    // scrub within the current axis (dimensions unchanged → cheap image swap)
     async function showSlice(z) {
-      await persistIfEdited();           // save edits to the slice we're leaving
-      z = Math.max(0, Math.min(depth - 1, z | 0));
+      await persistIfEdited();
+      z = Math.max(0, Math.min(depthOf(curAxis) - 1, z | 0));
       slice = z;
       slider.value = String(z);
       paintLabel();
-      // server tracks volume_slice; cache-bust so the <img> reloads each step
       const url = "/api/volume_slice/" + encodeURIComponent(cfg.sessionId) +
-                  "?z=" + z + "&t=" + Date.now();
-      if (typeof window.__viewerSetSliceImage === "function") {
-        window.__viewerSetSliceImage(url);
-      }
+                  "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
+      if (typeof window.__viewerSetSliceImage === "function") window.__viewerSetSliceImage(url);
       updateMaskSlice(z);
     }
     slider.addEventListener("input", () => showSlice(parseInt(slider.value, 10)));
-    // show the mask for the initial (server-rendered) slice without re-fetching the image
-    if (hasMask) updateMaskSlice(slice);
+    if (hasMask) updateMaskSlice(slice);                // initial mask overlay
 
-    // keys: H = home (reset 3D camera) in 3D; arrows scrub z in 2D.
-    // (ignore while typing / with modifiers)
+    // switch slicing axis: dimensions change, so reinit the 2D view
+    async function setAxis(a) {
+      a = a | 0;
+      if (a === curAxis) return;
+      await persistIfEdited();
+      curAxis = a;
+      const dep = depthOf(a);
+      slice = dep >> 1;
+      slider.max = String(Math.max(0, dep - 1));
+      slider.value = String(slice);
+      paintLabel();
+      if (axisRow) axisRow.querySelectorAll("[data-axis]").forEach((x) =>
+        x.classList.toggle("is-active", parseInt(x.getAttribute("data-axis"), 10) === a));
+      const dim = sliceDims(a);
+      const url = "/api/volume_slice/" + encodeURIComponent(cfg.sessionId) +
+                  "?z=" + slice + "&axis=" + a + "&t=" + Date.now();
+      if (typeof window.__viewer_reinitialize === "function") {
+        window.__viewer_reinitialize({
+          width: dim.width, height: dim.height, imageUrl: url,
+          imageName: (cfg.imageName || "volume") + " [" + AXES[a] + "]",
+          isVolume: true, hasVolumeMask: hasMask, volumeDepth: dep,
+          volumeShape: vshape, currentSlice: slice, sessionId: cfg.sessionId,
+          savedViewerState: null, directoryEntries: [], directoryIndex: null,
+          hasPrev: false, hasNext: false,
+        });
+        // mask reloads via __onViewerImageReady once the new image is decoded
+      }
+    }
+    if (axisRow) {
+      axisRow.querySelectorAll("[data-axis]").forEach((b) =>
+        b.addEventListener("click", () => setAxis(parseInt(b.getAttribute("data-axis"), 10))));
+    }
+
+    // keys: H = home (reset 3D camera) in 3D; arrows scrub in 2D.
     window.addEventListener("keydown", (e) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target;
@@ -139,7 +187,7 @@
           overlayShaderUrl: "/static/js/overlay.wgsl",
           mode: curProj,
         });
-        vgpu.setOverlay("axes", false);                // no axes triad in the embedded view
+        vgpu.setOverlay("axes", false);
         window.__volumeGPU = vgpu;
         return vgpu;
       })();
@@ -155,7 +203,7 @@
     }
 
     async function setMode(next) {
-      await persistIfEdited();                          // flush 2D edits before switching
+      await persistIfEdited();
       mode = next;
       const is3d = next === "3d";
       btn2d.classList.toggle("is-active", !is3d);
@@ -163,17 +211,18 @@
       canvas2d.style.visibility = is3d ? "hidden" : "";
       if (brush) brush.style.visibility = is3d ? "hidden" : "";
       vcanvas.hidden = !is3d;
-      sliceBar.hidden = is3d;                           // scrubber is a 2D control
-      if (projRow) projRow.hidden = !is3d;              // projection picker is a 3D control
+      sliceBar.hidden = is3d;
+      if (axisRow) axisRow.hidden = is3d;               // axis picker is a 2D control
+      if (projRow) projRow.hidden = !is3d;
       if (is3d) {
-        if (mask3dStale && vgpu) {                      // rebuild with the edited mask
+        if (mask3dStale && vgpu) {
           try { vgpu.destroy(); } catch (e) {}
           vgpu = null; window.__volumeGPU = null; loading = null;
         }
         mask3dStale = false;
         const g = await ensureVolume();
-        if (g) g.render();                              // size to the visible canvas + draw
-        else { mode = "2d"; setMode("2d"); }            // load failed → fall back
+        if (g) g.render();
+        else { mode = "2d"; setMode("2d"); }
       }
     }
 
@@ -181,7 +230,6 @@
     btn3d.addEventListener("click", () => setMode("3d"));
     window.addEventListener("resize", () => { if (mode === "3d" && vgpu) vgpu.render(); });
 
-    // projection mode (MIP / mean / additive) — 3D only
     function setProj(p) {
       curProj = p | 0;
       if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) =>
@@ -193,7 +241,6 @@
         b.addEventListener("click", () => setProj(parseInt(b.getAttribute("data-proj"), 10))));
     }
 
-    // manual mask loader — native picker server-side, then rebuild the 3D bundle
     async function loadMasks() {
       const r = await fetch("/api/select_mask_file", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -201,9 +248,9 @@
       });
       if (!r.ok) return false;
       hasMask = true;
-      updateMaskSlice(slice);                            // refresh the 2D overlay
+      updateMaskSlice(slice);
       if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; window.__volumeGPU = null; }
-      loading = null;                                    // force a fresh bundle (now with mask)
+      loading = null;
       if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }
       return true;
     }
@@ -219,11 +266,7 @@
     window.__volumeMode = {
       setMode, getMode: () => mode, gpu: () => vgpu,
       showSlice, getSlice: () => slice, setProj, getProj: () => curProj,
-      reloadBundle: async () => {
-        if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; }
-        loading = null;
-        if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }
-      },
+      setAxis, getAxis: () => curAxis,
     };
   }
 
