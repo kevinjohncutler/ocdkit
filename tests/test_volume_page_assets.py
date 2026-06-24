@@ -11,11 +11,13 @@ def _cfg(**kw):
     return base
 
 
-def test_page_has_volume_canvas_and_toggle():
+def test_page_has_volume_canvas_toggle_and_slider():
     html = build_html(_cfg(), inline_assets=False)
     assert 'id="volumeViewer"' in html
-    assert 'id="viewModeBar"' in html
+    assert 'id="viewModePanel"' in html      # toggle lives in a left-panel pane
     assert 'data-view="3d"' in html
+    assert 'id="sliceBar"' in html           # slice scrubber overlaid on the FOV
+    assert 'id="sliceSlider"' in html
 
 
 def test_page_loads_volume_modules_after_app():

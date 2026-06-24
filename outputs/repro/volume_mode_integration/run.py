@@ -56,8 +56,16 @@ def main():
             pg.wait_for_function("window.__volumeMode !== undefined", timeout=15000)
 
             is_vol = pg.evaluate("window.__VIEWER_CONFIG__.isVolume")
-            bar_visible = pg.eval_on_selector("#viewModeBar", "el => !el.hidden")
-            print("isVolume:", is_vol, "| viewModeBar visible:", bar_visible)
+            bar_visible = pg.eval_on_selector("#viewModePanel", "el => !el.hidden")
+            print("isVolume:", is_vol, "| View pane visible:", bar_visible)
+
+            # 2.5D slice scrub: arrow-key / slider changes the displayed slice
+            z0 = pg.evaluate("window.__volumeMode.getSlice()")
+            pg.evaluate("window.__volumeMode.showSlice(window.__volumeMode.getSlice() + 5)")
+            pg.wait_for_timeout(300)
+            z1 = pg.evaluate("window.__volumeMode.getSlice()")
+            slice_changed = (z1 == z0 + 5)
+            print("slice scrub:", z0, "->", z1, "ok:", slice_changed)
 
             # switch to 3D and let it mount + render
             pg.eval_on_selector('[data-view="3d"]', "el => el.click()")
@@ -75,7 +83,7 @@ def main():
                   "| render std:", round(nonblank, 2))
             print("JS errors:", errs or "none")
 
-            ok = (is_vol and bar_visible and gpu_ok and canvas_shown
+            ok = (is_vol and bar_visible and slice_changed and gpu_ok and canvas_shown
                   and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()

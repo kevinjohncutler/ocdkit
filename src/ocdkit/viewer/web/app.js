@@ -7591,6 +7591,20 @@ function applyImageAdjustments() {
   renderHistogram();
 }
 
+// Swap only the displayed intensity image (same dimensions) without touching
+// masks, view, window/gamma or history. Used by volume-mode.js to scrub through
+// z-slices of a loaded volume (2.5D). Reuses the normal adjust→upload→draw path.
+window.__viewerSetSliceImage = function (url) {
+  const img = new Image();
+  img.onload = function () {
+    offCtx.drawImage(img, 0, 0);
+    originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
+    if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
+    applyImageAdjustments();   // re-applies current window/gamma → base texture + draw
+  };
+  img.src = url;
+};
+
 function computeHistogram() {
   if (!originalImageData) {
     histogramData = null;

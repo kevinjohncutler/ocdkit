@@ -96,28 +96,43 @@ canvas.histogram {
 }
 #volumeViewer[hidden] { display: none; }
 
-#viewModeBar {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 12;
-  display: flex;
-  gap: 2px;
-  padding: 2px;
-  background: rgba(20, 22, 26, 0.72);
-  border-radius: 6px;
-}
-#viewModeBar[hidden] { display: none; }
+/* 2D/3D toggle — lives in the left "View" pane (not floating over the canvas) */
+.view-mode-row { display: flex; gap: 4px; }
 .view-mode-btn {
-  border: 0;
-  background: transparent;
+  flex: 1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
   color: #b8c0c8;
   font: inherit;
   font-size: 12px;
-  line-height: 1.4;
-  padding: 3px 10px;
-  border-radius: 4px;
+  padding: 4px 8px;
+  border-radius: 5px;
   cursor: pointer;
 }
-.view-mode-btn.is-active { background: #2d6cdf; color: #fff; }
+.view-mode-btn.is-active { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
 .view-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* slice scrubber overlaid along the bottom of the field of view */
+#sliceBar {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(60%, 520px);
+  padding: 6px 12px;
+  background: rgba(20, 22, 26, 0.72);
+  border-radius: 8px;
+}
+#sliceBar[hidden] { display: none; }
+#sliceBar input[type="range"] { flex: 1; }
+#sliceLabel {
+  color: #cdd4db;
+  font-size: 12px;
+  min-width: 70px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
