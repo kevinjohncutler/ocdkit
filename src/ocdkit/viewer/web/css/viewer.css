@@ -96,20 +96,27 @@ canvas.histogram {
 }
 #volumeViewer[hidden] { display: none; }
 
-/* 2D/3D toggle — lives in the left "View" pane (not floating over the canvas) */
+/* View pane toggles (2D/3D, projection, load masks) — themed to match the app */
 .view-mode-row { display: flex; gap: 4px; }
+.view-mode-row + .view-mode-row { margin-top: 4px; }
 .view-mode-btn {
   flex: 1;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: #b8c0c8;
+  border: 1px solid var(--control-border);
+  background: transparent;
+  color: var(--panel-text-color);
   font: inherit;
-  font-size: 12px;
+  font-size: 0.85rem;
   padding: 4px 8px;
-  border-radius: 5px;
+  border-radius: var(--control-inset-radius);
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.view-mode-btn.is-active { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
+.view-mode-btn:hover { border-color: var(--accent-color); }
+.view-mode-btn.is-active {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: var(--accent-ink, #161616);
+}
 .view-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* slice scrubber overlaid along the bottom of the field of view */

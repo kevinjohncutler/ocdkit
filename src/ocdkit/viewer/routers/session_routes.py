@@ -16,6 +16,7 @@ from ..routes import _choose_path_osascript
 from ..schemas import (
     OpenImageFolderPayload,
     OpenImagePayload,
+    OpenMaskPayload,
     SaveStatePayload,
     SessionPayload,
 )
@@ -197,6 +198,52 @@ def api_volume_slice(session_id: str, z: int = 0) -> Response:
         media_type="image/png",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@router.post("/open_mask")
+def api_open_mask(
+    payload: OpenMaskPayload,
+    state: SessionState = Depends(get_session_state),
+) -> dict:
+    """Attach a label volume (from a file) to the current volume session."""
+    try:
+        SESSION_MANAGER.set_mask(state, Path(payload.path))
+    except FileNotFoundError as exc:
+        raise NotFound("file_not_found", detail=str(exc)) from exc
+    except ValueError as exc:
+        raise BadRequest("mask_mismatch", detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/select_mask_file")
+def api_select_mask_file(
+    payload: SessionPayload,
+    state: SessionState = Depends(get_session_state),
+) -> dict:
+    """Native file picker → attach the chosen label volume."""
+    file_path = _native_picker("file")
+    if not file_path:
+        raise BadRequest("cancelled")
+    try:
+        SESSION_MANAGER.set_mask(state, Path(file_path))
+    except FileNotFoundError as exc:
+        raise NotFound("file_not_found", detail=str(exc)) from exc
+    except ValueError as exc:
+        raise BadRequest("mask_mismatch", detail=str(exc)) from exc
+    return {"ok": True}
+
+
+@router.get("/volume_bundle/{session_id}")
+def api_volume_bundle(session_id: str) -> dict:
+    """Intensity-only 3D bundle for the loaded volume (renders before masks)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    bundle = SESSION_MANAGER.encode_volume_bundle(state)
+    if bundle is None:
+        raise NotFound("not_a_volume")
+    return bundle
 
 
 @router.post("/save_state")

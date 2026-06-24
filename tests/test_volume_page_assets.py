@@ -18,6 +18,9 @@ def test_page_has_volume_canvas_toggle_and_slider():
     assert 'data-view="3d"' in html
     assert 'id="sliceBar"' in html           # slice scrubber overlaid on the FOV
     assert 'id="sliceSlider"' in html
+    assert 'id="projModeRow"' in html        # projection (MIP/Mean/Additive)
+    assert 'data-proj="1"' in html
+    assert 'id="loadMasksButton"' in html     # manual mask selector
 
 
 def test_page_loads_volume_modules_after_app():

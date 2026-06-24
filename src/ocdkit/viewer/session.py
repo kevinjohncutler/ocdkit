@@ -70,6 +70,14 @@ def _encode_array(arr: np.ndarray, *, level: int = 1) -> dict[str, Any]:
     }
 
 
+def _narrow_labels(arr: np.ndarray) -> np.ndarray:
+    """Downcast a label volume to the smallest uint that holds its max label."""
+    arr = np.asarray(arr)
+    m = int(arr.max()) if arr.size else 0
+    dt = np.uint8 if m <= 0xFF else (np.uint16 if m <= 0xFFFF else np.uint32)
+    return arr.astype(dt, copy=False)
+
+
 @dataclass
 class SessionState:
     session_id: str
@@ -81,6 +89,7 @@ class SessionState:
     image_is_rgb: bool = False
     current_volume: Optional[np.ndarray] = None  # (Z, Y, X) uint8 when a 3D stack is loaded
     volume_slice: int = 0  # index of the slice currently shown in the 2D view
+    current_mask_volume: Optional[np.ndarray] = None  # (Z, Y, X) label volume, if loaded
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -183,6 +192,7 @@ class SessionManager:
             encoded_image=None,
         )
         self._apply_image(state, image, is_rgb, is_volume)
+        self._maybe_auto_mask(state)
         state.last_seen = time.time()
         self._sessions[session_id] = state
         return state
@@ -227,6 +237,52 @@ class SessionManager:
         is_rgb = arr.ndim == 3 and arr.shape[-1] >= 3
         return arr, is_rgb, False
 
+    def set_mask(self, state: SessionState, path: Path) -> None:
+        """Load a label volume from *path* and attach it to the session.
+
+        Masks are kept as integer labels (not normalized); their spatial shape
+        must match the loaded volume. Feeds the 3D bundle's label layer.
+        """
+        path = Path(path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(path)
+        if state.current_volume is None:
+            raise ValueError("masks require a loaded volume")
+        arr = np.asarray(imageio.imread(path))
+        if tuple(arr.shape) != tuple(state.current_volume.shape):
+            raise ValueError(
+                f"mask shape {tuple(arr.shape)} does not match "
+                f"volume shape {tuple(state.current_volume.shape)}"
+            )
+        state.current_mask_volume = _narrow_labels(arr)
+
+    def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
+        """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
+        env = _os.environ.get("OCDKIT_VIEWER_SAMPLE_MASKS")
+        if env:
+            p = Path(env).expanduser()
+            if p.is_file():
+                return p
+        if image_path is None:
+            return None
+        for suffix in ("_masks", "_cp_masks"):
+            cand = image_path.with_name(image_path.stem + suffix + image_path.suffix)
+            if cand.is_file():
+                return cand
+        return None
+
+    def _maybe_auto_mask(self, state: SessionState) -> None:
+        """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort)."""
+        state.current_mask_volume = None
+        if state.current_volume is None:
+            return
+        mp = self._auto_mask_path(state.current_path)
+        if mp is not None:
+            try:
+                self.set_mask(state, mp)
+            except Exception:
+                pass  # mismatched or unreadable sidecar → leave unmasked
+
     def _list_directory_images(self, directory: Path) -> list[Path]:
         try:
             return [
@@ -255,6 +311,7 @@ class SessionManager:
         state.directory = directory
         state.files = files
         self._apply_image(state, image, is_rgb, is_volume)
+        self._maybe_auto_mask(state)
 
     def build_config(
         self, state: SessionState, *, embed_image: bool = True
@@ -340,7 +397,7 @@ class SessionManager:
         if vol is None:
             return None
         D, H, W = vol.shape
-        return {
+        bundle = {
             "meta": {
                 "dim": 3,
                 "axes": ["t", "y", "x"],
@@ -350,6 +407,9 @@ class SessionManager:
             },
             "image": _encode_array(vol),
         }
+        if state.current_mask_volume is not None:
+            bundle["mask"] = _encode_array(state.current_mask_volume)
+        return bundle
 
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:
         raw_bytes = self._encode_image_bytes(array, is_rgb=is_rgb)

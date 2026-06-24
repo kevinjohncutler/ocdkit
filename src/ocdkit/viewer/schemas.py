@@ -86,6 +86,10 @@ class OpenImageFolderPayload(SessionPayload):
     path: str = Field(min_length=1)
 
 
+class OpenMaskPayload(SessionPayload):
+    path: str = Field(min_length=1)
+
+
 class SaveStatePayload(SessionPayload):
     viewerState: dict[str, Any]
     imagePath: Optional[str] = None

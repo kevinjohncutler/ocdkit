@@ -24,6 +24,8 @@
     if (!panel || !sliceBar || !slider || !vcanvas || !canvas2d) return;
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');
+    const projRow = document.getElementById("projModeRow");
+    const loadMasksBtn = document.getElementById("loadMasksButton");
 
     panel.hidden = false;
     sliceBar.hidden = false;
@@ -31,6 +33,7 @@
     let mode = "2d";
     let vgpu = null;
     let loading = null;
+    let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
 
     // ── 2.5D slice scrubbing ────────────────────────────────────────────────
     let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depth >> 1);
@@ -85,8 +88,10 @@
         vgpu = await window.VolumeGPU.create(vcanvas, decoded, {
           shaderUrl: "/static/js/raymarch.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
+          mode: curProj,
         });
-        window.__volumeGPU = vgpu;                      // for the 3D control panel (later)
+        vgpu.setOverlay("axes", false);                // no axes triad in the embedded view
+        window.__volumeGPU = vgpu;
         return vgpu;
       })();
       try {
@@ -109,6 +114,7 @@
       if (brush) brush.style.visibility = is3d ? "hidden" : "";
       vcanvas.hidden = !is3d;
       sliceBar.hidden = is3d;                           // scrubber is a 2D control
+      if (projRow) projRow.hidden = !is3d;              // projection picker is a 3D control
       if (is3d) {
         const g = await ensureVolume();
         if (g) g.render();                              // size to the visible canvas + draw
@@ -120,10 +126,47 @@
     btn3d.addEventListener("click", () => setMode("3d"));
     window.addEventListener("resize", () => { if (mode === "3d" && vgpu) vgpu.render(); });
 
+    // projection mode (MIP / mean / additive) — 3D only
+    function setProj(p) {
+      curProj = p | 0;
+      if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) =>
+        x.classList.toggle("is-active", parseInt(x.getAttribute("data-proj"), 10) === curProj));
+      if (vgpu) vgpu.setMode(curProj);
+    }
+    if (projRow) {
+      projRow.querySelectorAll("[data-proj]").forEach((b) =>
+        b.addEventListener("click", () => setProj(parseInt(b.getAttribute("data-proj"), 10))));
+    }
+
+    // manual mask loader — native picker server-side, then rebuild the 3D bundle
+    async function loadMasks() {
+      const r = await fetch("/api/select_mask_file", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: cfg.sessionId }),
+      });
+      if (!r.ok) return false;
+      if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; window.__volumeGPU = null; }
+      loading = null;                                    // force a fresh bundle (now with mask)
+      if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }
+      return true;
+    }
+    if (loadMasksBtn) {
+      loadMasksBtn.addEventListener("click", async () => {
+        loadMasksBtn.disabled = true;
+        try { await loadMasks(); } catch (e) { console.error("[volume-mode] load masks failed", e); }
+        loadMasksBtn.disabled = false;
+      });
+    }
+
     // test/automation hook
     window.__volumeMode = {
       setMode, getMode: () => mode, gpu: () => vgpu,
-      showSlice, getSlice: () => slice,
+      showSlice, getSlice: () => slice, setProj, getProj: () => curProj,
+      reloadBundle: async () => {
+        if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; }
+        loading = null;
+        if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }
+      },
     };
   }
 

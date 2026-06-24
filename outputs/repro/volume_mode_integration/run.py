@@ -18,6 +18,7 @@ from playwright.sync_api import sync_playwright
 PORT = 8799
 BASE = f"http://127.0.0.1:{PORT}"
 VOL = "/tmp/volmode_integration_vol.tif"
+MASKS = "/tmp/volmode_integration_vol_masks.tif"  # *_masks sidecar → auto-loads
 
 
 def wait_up(timeout=40):
@@ -32,6 +33,12 @@ def wait_up(timeout=40):
 
 def main():
     tifffile.imwrite(VOL, (np.random.default_rng(0).random((20, 80, 80)) * 1000).astype(np.uint16))
+    # label volume (a few blobs) as a *_masks sidecar so it auto-loads
+    lab = np.zeros((20, 80, 80), np.uint8)
+    zz, yy, xx = np.mgrid[0:20, 0:80, 0:80]
+    lab[((xx - 25) ** 2 + (yy - 25) ** 2 + (zz - 10) ** 2) < 9 ** 2] = 1
+    lab[((xx - 55) ** 2 + (yy - 55) ** 2 + (zz - 10) ** 2) < 8 ** 2] = 2
+    tifffile.imwrite(MASKS, lab)
     srv = subprocess.Popen(
         [sys.executable, "-c",
          f"import uvicorn; uvicorn.run('ocdkit.viewer.app:create_app', factory=True, "
@@ -74,6 +81,13 @@ def main():
 
             gpu_ok = pg.evaluate("window.__volumeMode.gpu() !== null")
             canvas_shown = pg.eval_on_selector("#volumeViewer", "el => !el.hidden")
+            # masks auto-loaded from the sidecar → VolumeGPU shows labels
+            show_labels = pg.evaluate("window.__volumeMode.gpu().showLabels")
+            # projection switch (MIP→Mean)
+            pg.evaluate("window.__volumeMode.setProj(2)")
+            pg.wait_for_timeout(200)
+            proj = pg.evaluate("window.__volumeMode.getProj()")
+            print("masks shown (showLabels):", show_labels, "| projection after setProj(2):", proj)
             # non-blank render: sample the canvas
             shot = pg.query_selector("#volumeViewer").screenshot(path="/tmp/volmode_3d.png")
             from skimage import io as skio
@@ -84,7 +98,7 @@ def main():
             print("JS errors:", errs or "none")
 
             ok = (is_vol and bar_visible and slice_changed and gpu_ok and canvas_shown
-                  and nonblank > 1.0 and not errs)
+                  and show_labels == 1 and proj == 2 and nonblank > 1.0 and not errs)
             print("RESULT:", "PASS" if ok else "FAIL")
             ctx.close()
             return 0 if ok else 1
