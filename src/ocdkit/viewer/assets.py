@@ -34,6 +34,16 @@ PLUGIN_PANEL_JS = WEB_DIR / "js" / "plugin-panel.js"
 TOOLTIP_EDITOR_JS = WEB_DIR / "js" / "tooltip-editor.js"
 HDR_IMAGE_LAYER_JS = WEB_DIR / "js" / "hdr_image_layer.js"
 HDR_UI_JS = WEB_DIR / "js" / "hdr_ui.js"
+
+# 3D volume view (embedded WebGPU mode). Loaded after app.js; volume-mode.js is
+# a no-op unless the loaded image is a volume (CONFIG.isVolume).
+MAT4_JS = WEB_DIR / "js" / "mat4.js"
+VOLUME3D_JS = WEB_DIR / "js" / "volume3d.js"
+VOLUME3D_VIEW_JS = WEB_DIR / "js" / "volume3d-view.js"
+VOLUME3D_OVERLAYS_JS = WEB_DIR / "js" / "volume3d-overlays.js"
+VOLUME3D_OVERLAYS_GPU_JS = WEB_DIR / "js" / "volume3d-overlays-gpu.js"
+VOLUME3D_GPU_JS = WEB_DIR / "js" / "volume3d-gpu.js"
+VOLUME_MODE_JS = WEB_DIR / "js" / "volume-mode.js"
 # Shared HDR-colormap modules — canonical in plot/web (also used by the figure
 # pipeline); served at /hdr-static (see app.py mount).
 PLOT_WEB_DIR = (VIEWER_DIR.parent / "plot" / "web").resolve()
@@ -80,6 +90,13 @@ JS_FILES = [
     HDR_IMAGE_LAYER_JS,
     HDR_UI_JS,
     APP_JS,
+    MAT4_JS,
+    VOLUME3D_JS,
+    VOLUME3D_VIEW_JS,
+    VOLUME3D_OVERLAYS_JS,
+    VOLUME3D_OVERLAYS_GPU_JS,
+    VOLUME3D_GPU_JS,
+    VOLUME_MODE_JS,
 ]
 
 JS_STATIC_PATHS = (
@@ -101,6 +118,13 @@ JS_STATIC_PATHS = (
     "/static/js/hdr_image_layer.js",
     "/static/js/hdr_ui.js",
     "/static/app.js",
+    "/static/js/mat4.js",
+    "/static/js/volume3d.js",
+    "/static/js/volume3d-view.js",
+    "/static/js/volume3d-overlays.js",
+    "/static/js/volume3d-overlays-gpu.js",
+    "/static/js/volume3d-gpu.js",
+    "/static/js/volume-mode.js",
 )
 
 _INDEX_HTML_CACHE: dict[str, object] = {"content": "", "mtime": None}

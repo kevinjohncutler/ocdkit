@@ -83,3 +83,41 @@ canvas.histogram {
   cursor: crosshair;
   touch-action: none;
 }
+
+/* ── 3D volume view (embedded WebGPU mode) ───────────────────────────────── */
+#volumeViewer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;            /* above #canvas / #brushPreview */
+  background: #0b0d10;   /* dark canvas for the volume render */
+  touch-action: none;
+}
+#volumeViewer[hidden] { display: none; }
+
+#viewModeBar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 12;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(20, 22, 26, 0.72);
+  border-radius: 6px;
+}
+#viewModeBar[hidden] { display: none; }
+.view-mode-btn {
+  border: 0;
+  background: transparent;
+  color: #b8c0c8;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.view-mode-btn.is-active { background: #2d6cdf; color: #fff; }
+.view-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
