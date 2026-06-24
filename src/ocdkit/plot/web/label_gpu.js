@@ -194,9 +194,15 @@ fn fs(@location(0) v_uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     _configure() {
       const base = { device: this.device, format: 'rgba16float', colorSpace: 'display-p3', alphaMode: 'premultiplied' };
-      try { this.ctx.configure(Object.assign({}, base, { toneMapping: { mode: 'extended' } })); }
+      // HDR on → 'extended' (>1 blooms into the headroom). HDR off → 'standard',
+      // which CLAMPS >1 to SDR white — so the SAME boosted colours read as a bright
+      // SDR overlay, not the dim un-boosted colour the old "drop the boost" SDR path showed.
+      try { this.ctx.configure(Object.assign({}, base, { toneMapping: { mode: this.hdr === false ? 'standard' : 'extended' } })); }
       catch (e) { this.ctx.configure(base); }
     }
+    // Toggle the canvas tone-mapping (keeps the boosted colours; only the >1
+    // emit-vs-clamp behaviour changes), so SDR mode is a clamped-bright overlay.
+    setHdr(on) { this.hdr = !!on; this._configure(); this.requestRedraw(); }
 
     _mkTex(w, h, format) {
       return this.device.createTexture({

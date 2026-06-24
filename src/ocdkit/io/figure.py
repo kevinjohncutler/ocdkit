@@ -2693,9 +2693,11 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         }
         // Kick off the thumb→hi-res base upgrade (retries while the hi-res is 204).
         if (_hdrBaseUpgrade) { try { _hdrBaseUpgrade(r); } catch (e) {} }
-        // Apply the figure's current HDR-toggle state, then first paint.
-        try { r.setUniforms({ outlineHdrBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr,
-                              highlightBoost: overlay.classList.contains('ocd-sdr-mode') ? 1.0 : _cfgOutlineHdr }); } catch (_) {}
+        // Apply the figure's current HDR-toggle state, then first paint. Keep the
+        // boosts; SDR clamps via the canvas tone-mapping (setHdr) so it reads bright,
+        // not dim. (WebGL2 has no extended tone-mapping — it clamps natively.)
+        try { r.setUniforms({ outlineHdrBoost: _cfgOutlineHdr, highlightBoost: _cfgOutlineHdr });
+              if (r.setHdr) r.setHdr(!overlay.classList.contains('ocd-sdr-mode')); } catch (_) {}
         _dirty = true; redraw(lastState);
       }).catch(function (e) {
         console.warn('LabelGL popup:', e);
@@ -2715,8 +2717,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       function setSdr(sdr) {
         if (!r) return;   // renderer still resolving (openZoom races the async create);
                           // the createLabelRenderer .then applies the current SDR state.
-        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr,
-                        highlightBoost: sdr ? 1.0 : _cfgOutlineHdr });
+        r.setUniforms({ outlineHdrBoost: _cfgOutlineHdr, highlightBoost: _cfgOutlineHdr });
+        if (r.setHdr) r.setHdr(!sdr);   // SDR → standard tone-mapping clamps >1 to bright SDR (not dim)
         redraw(lastState);
       }
       let _cssW = 0, _cssH = 0, _dpr = 1, _dirty = true;
@@ -5368,10 +5370,13 @@ _LABEL_CONTROLLER_JS = r"""
       POOL.acquire(poolEntry);
       cv.__labelCfg = cfg;
       cv.__labelRender = render;
-      // HDR/SDR toggle (shell button): SDR drops boosts to 1.0; HDR uses configured.
+      // HDR/SDR toggle (shell button): keep the boosts; SDR clamps via the canvas
+      // tone-mapping (setHdr) so the overlay reads bright-SDR, not the dim un-boosted
+      // colour. (WebGL2 has no extended tone-mapping → it clamps natively.)
       cv.__labelSetSdr = function (sdr) {
         if (!r) return;
-        r.setUniforms({ outlineHdrBoost: sdr ? 1.0 : _cfgOutlineHdr, highlightBoost: sdr ? 1.0 : _cfgOutlineHdr });
+        r.setUniforms({ outlineHdrBoost: _cfgOutlineHdr, highlightBoost: _cfgOutlineHdr });
+        if (r.setHdr) r.setHdr(!sdr);
         render();
       };
       cv.addEventListener('pointermove', onMove);
