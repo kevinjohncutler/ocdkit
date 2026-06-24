@@ -325,17 +325,43 @@
       sliceBar.hidden = is3d;
       if (axisRow) axisRow.hidden = is3d;               // axis picker is a 2D control
       if (projRow) projRow.hidden = !is3d;
+      setStyleButtonsFor3D(is3d);
       if (is3d) {
+        // an outline-only mode can't render in 3D → fall back to solid (filled)
+        const m = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : "solid";
+        if ((m === "outlined" || m === "outline") && window.__viewerSetMaskDisplayMode) {
+          window.__viewerSetMaskDisplayMode("solid");
+        }
         if (mask3dStale && vgpu) {
           try { vgpu.destroy(); } catch (e) {}
           vgpu = null; window.__volumeGPU = null; loading = null;
         }
         mask3dStale = false;
         const g = await ensureVolume();
-        if (g) g.render();
+        if (g) { g.render(); applyLabelVisibilityToGpu(); }
         else { mode = "2d"; setMode("2d"); }
       }
     }
+
+    // Label style in 3D: only "solid" (filled labels) and "hidden" (null) apply —
+    // outline-based modes don't translate to the volume render, so grey them out.
+    function setStyleButtonsFor3D(is3d) {
+      document.querySelectorAll('#maskStyleToggle [data-mask-style]').forEach((b) => {
+        const m = b.getAttribute("data-mask-style");
+        const off = is3d && (m === "outlined" || m === "outline");
+        b.disabled = off;
+        b.classList.toggle("is-disabled", off);
+        b.style.opacity = off ? "0.3" : "";
+        b.style.pointerEvents = off ? "none" : "";
+      });
+    }
+    function applyLabelVisibilityToGpu() {
+      if (!vgpu || typeof vgpu.setShowLabels !== "function") return;
+      const m = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : "solid";
+      vgpu.setShowLabels(m === "hidden" ? 0 : 1);     // null selector turns labels off in 3D
+    }
+    // app.js calls this whenever the label-style slider changes.
+    window.__viewerVolumeOnMaskStyle = function () { applyLabelVisibilityToGpu(); };
 
     btn2d.addEventListener("click", () => setMode("2d"));
     btn3d.addEventListener("click", () => setMode("3d"));

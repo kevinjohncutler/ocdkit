@@ -3915,6 +3915,9 @@ function setMaskDisplayMode(nextMode, { silent = false } = {}) {
     }
   }
   updateMaskStyleControls();
+  if (typeof window.__viewerVolumeOnMaskStyle === 'function') {
+    try { window.__viewerVolumeOnMaskStyle(maskDisplayMode); } catch (e) {}   // toggle 3D labels
+  }
   if (isWebglPipelineActive()) {
     markMaskTextureFullDirty();
     markOutlineTextureFullDirty();
@@ -3926,6 +3929,8 @@ function setMaskDisplayMode(nextMode, { silent = false } = {}) {
     scheduleStateSave();
   }
 }
+window.__viewerMaskDisplayMode = function () { return maskDisplayMode; };
+window.__viewerSetMaskDisplayMode = function (m) { setMaskDisplayMode(m); };
 
 function setBrushKernelMode(nextMode) {
   const normalized = nextMode === BRUSH_KERNEL_MODES.SNAPPED

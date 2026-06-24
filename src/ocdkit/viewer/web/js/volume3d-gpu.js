@@ -194,9 +194,14 @@
         lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
       });
       c.addEventListener("pointerup", (e) => { drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
-      c.addEventListener("pointermove", (e) => {
-        if (!drag) return;
-        const dx = e.clientX - lx, dy = e.clientY - ly;
+      // Accumulate movement and apply ONCE per animation frame. Rendering on every
+      // raw pointermove makes trackpads (which fire a burst of high-frequency micro
+      // events per frame) jitter/oscillate; coalescing to the frame rate is smooth.
+      let pdx = 0, pdy = 0, raf = 0;
+      const applyDrag = () => {
+        raf = 0;
+        if (!drag || (pdx === 0 && pdy === 0)) return;
+        const dx = pdx, dy = pdy; pdx = 0; pdy = 0;
         const H = c.clientHeight || c.height || 1;
         const up = Mat4.quatRotate(self.orient, [0, 1, 0]);
         const right = Mat4.quatRotate(self.orient, [1, 0, 0]);
@@ -211,7 +216,13 @@
                          self.target[1] - right[1] * px + up[1] * py,
                          self.target[2] - right[2] * px + up[2] * py];
         }
-        lx = e.clientX; ly = e.clientY; self.render();
+        self.render();
+      };
+      c.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        pdx += e.clientX - lx; pdy += e.clientY - ly;
+        lx = e.clientX; ly = e.clientY;
+        if (!raf) raf = requestAnimationFrame(applyDrag);
       });
       c.addEventListener("wheel", (e) => {
         e.preventDefault();
