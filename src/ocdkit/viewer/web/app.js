@@ -3126,19 +3126,23 @@ function updateMaskLabel() {
 }
 
 function updateHistoryButtons() {
+  // In volume mode the SERVER owns the mask + its undo history; the buttons
+  // reflect the server's state, not the (unused) local client stack.
+  const vol = (typeof window.__viewerVolumeActive === 'function') && window.__viewerVolumeActive();
   if (undoButton) {
-    const count = (typeof ViewerHistory.getUndoCount === 'function')
-      ? ViewerHistory.getUndoCount()
-      : 0;
-    undoButton.disabled = count === 0;
+    const can = vol
+      ? !!(window.__viewerVolumeCanUndo && window.__viewerVolumeCanUndo())
+      : ((typeof ViewerHistory.getUndoCount === 'function') ? ViewerHistory.getUndoCount() : 0) > 0;
+    undoButton.disabled = !can;
   }
   if (redoButton) {
-    const count = (typeof ViewerHistory.getRedoCount === 'function')
-      ? ViewerHistory.getRedoCount()
-      : 0;
-    redoButton.disabled = count === 0;
+    const can = vol
+      ? !!(window.__viewerVolumeCanRedo && window.__viewerVolumeCanRedo())
+      : ((typeof ViewerHistory.getRedoCount === 'function') ? ViewerHistory.getRedoCount() : 0) > 0;
+    redoButton.disabled = !can;
   }
 }
+window.__viewerUpdateHistory = updateHistoryButtons;
 
 function updateLabelControls() {
   if (!labelValueInput) {
@@ -3603,7 +3607,11 @@ function setImageVisible(value, { silent = false } = {}) {
 }
 
 function pushHistory(indices, before, after) {
-  if (typeof ViewerHistory.push === 'function') {
+  // Volume mode: the server records the edit (via __onViewerStroke → paint_sphere),
+  // so DON'T also build a parallel local stack — that's the drift that let undone
+  // edits resurface. 2D mode: client owns the mask, keep local history.
+  const vol = (typeof window.__viewerVolumeActive === 'function') && window.__viewerVolumeActive();
+  if (!vol && typeof ViewerHistory.push === 'function') {
     ViewerHistory.push(indices, before, after);
   }
   window.__viewerMaskEdited = true;   // volume-mode persists edited slices back
@@ -3660,6 +3668,11 @@ function applyHistoryEntry(entry, useAfter) {
 }
 
 function undo() {
+  // Volume mode: undo is a server operation; the display refreshes from the server.
+  if ((typeof window.__viewerVolumeActive === 'function') && window.__viewerVolumeActive()) {
+    if (typeof window.__viewerVolumeUndo === 'function') window.__viewerVolumeUndo();
+    return;
+  }
   const entry = (typeof ViewerHistory.undo === 'function') ? ViewerHistory.undo() : null;
   if (!entry) {
     return;
@@ -3690,6 +3703,11 @@ function undo() {
 }
 
 function redo() {
+  // Volume mode: redo is a server operation; the display refreshes from the server.
+  if ((typeof window.__viewerVolumeActive === 'function') && window.__viewerVolumeActive()) {
+    if (typeof window.__viewerVolumeRedo === 'function') window.__viewerVolumeRedo();
+    return;
+  }
   const entry = (typeof ViewerHistory.redo === 'function') ? ViewerHistory.redo() : null;
   if (!entry) {
     return;

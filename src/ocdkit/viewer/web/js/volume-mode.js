@@ -154,12 +154,35 @@
       fetch("/api/paint_sphere/" + encodeURIComponent(cfg.sessionId) +
             "?z=" + slice + "&axis=" + curAxis + "&radius=" + radius + "&group=" + group, {
         method: "POST", headers: { "content-type": "application/octet-stream" }, body: fp.buffer,
-      }).then((r) => {
+      }).then(async (r) => {
         if (!r.ok) return;
+        try { const j = await r.json(); srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo; } catch (e) {}
         hasMask = true; mask3dStale = true; window.__viewerMaskEdited = false;
-        fetchNColorMap().then(() => updateMaskSlice(slice));   // reflect the edit (groups + palette)
+        await fetchNColorMap(); await updateMaskSlice(slice);   // reflect the edit (groups + palette)
+        if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
       }).catch(() => {});
     };
+
+    // ----- server-owned undo / redo (the mask volume is the source of truth) -----
+    let srvCanUndo = false, srvCanRedo = false;
+    window.__viewerVolumeActive = () => !!(cfg.isVolume && hasMask);
+    window.__viewerVolumeCanUndo = () => srvCanUndo;
+    window.__viewerVolumeCanRedo = () => srvCanRedo;
+    async function serverHistory(op) {
+      try {
+        const r = await fetch("/api/" + op + "/" + encodeURIComponent(cfg.sessionId), { method: "POST" });
+        if (!r.ok) return;
+        const j = await r.json();
+        srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
+        if (j.changed) {
+          mask3dStale = true;
+          await fetchNColorMap(); await updateMaskSlice(slice);   // pull the reverted state from the server
+        }
+        if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
+      } catch (e) { /* leave display as-is on transient error */ }
+    }
+    window.__viewerVolumeUndo = () => serverHistory("undo");
+    window.__viewerVolumeRedo = () => serverHistory("redo");
     function setBrushDim(d) {
       brushDim = d | 0;
       if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>

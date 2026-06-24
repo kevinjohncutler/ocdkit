@@ -92,6 +92,8 @@ class SessionState:
     current_mask_volume: Optional[np.ndarray] = None  # (Z, Y, X) label volume, if loaded
     current_ncolor_volume: Optional[np.ndarray] = None  # (Z, Y, X) ncolor group volume (cache)
     label_group: Optional[dict] = None  # stable label→group map (keeps colors fixed across edits)
+    undo_stack: Optional[list] = None  # diff-based mask edit history (server is the source of truth)
+    redo_stack: Optional[list] = None
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -259,6 +261,8 @@ class SessionManager:
         state.current_mask_volume = _narrow_labels(arr)
         state.current_ncolor_volume = None
         state.label_group = None   # fresh mask → fresh stable color map
+        state.undo_stack = None
+        state.redo_stack = None
 
     def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
         """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
@@ -280,6 +284,8 @@ class SessionManager:
         state.current_mask_volume = None
         state.current_ncolor_volume = None
         state.label_group = None
+        state.undo_stack = None
+        state.redo_stack = None
         if state.current_volume is None:
             return
         mp = self._auto_mask_path(state.current_path)
@@ -519,6 +525,9 @@ class SessionManager:
         if int(mv.max()) + 1 > int(np.iinfo(mv.dtype).max):
             mv = state.current_mask_volume = mv.astype(np.uint32)
 
+        before_mv = mv.copy()                          # snapshot for undo (diffed below)
+        before_lg = dict(lg)
+
         if group <= 0:
             target = 0
         else:
@@ -549,7 +558,66 @@ class SessionManager:
             plane[fk] = target
             mv[tuple(idx)] = plane
         state.current_ncolor_volume = None         # rebuild group volume (label_group kept)
+        self._record_edit(state, before_mv, before_lg)
         return int(target)
+
+    # ----- undo / redo (server is the single source of truth) -------------
+
+    UNDO_LIMIT = 100
+
+    def _record_edit(self, state: SessionState, before_mv: np.ndarray, before_lg: dict) -> None:
+        """Record a compact diff (changed voxels + label_group before/after) of the
+        edit that just mutated ``current_mask_volume``. Pushes onto the undo stack
+        and clears the redo stack (a new edit forks history)."""
+        after = state.current_mask_volume
+        changed = np.flatnonzero(before_mv.reshape(-1) != after.reshape(-1))
+        if changed.size == 0:
+            return                                  # no-op edit: don't pollute history
+        entry = {
+            "idx": changed,
+            "old": before_mv.reshape(-1)[changed].copy(),
+            "new": after.reshape(-1)[changed].copy(),
+            "lg_before": before_lg,
+            "lg_after": dict(state.label_group or {}),
+        }
+        if state.undo_stack is None:
+            state.undo_stack = []
+        state.undo_stack.append(entry)
+        if len(state.undo_stack) > self.UNDO_LIMIT:
+            state.undo_stack.pop(0)
+        state.redo_stack = []
+
+    def _apply_entry(self, state: SessionState, entry: dict, *, redo: bool) -> None:
+        flat = state.current_mask_volume.reshape(-1)
+        flat[entry["idx"]] = entry["new"] if redo else entry["old"]
+        state.label_group = dict(entry["lg_after"] if redo else entry["lg_before"])
+        state.current_ncolor_volume = None
+
+    def undo(self, state: SessionState) -> bool:
+        if not state.undo_stack:
+            return False
+        entry = state.undo_stack.pop()
+        self._apply_entry(state, entry, redo=False)
+        if state.redo_stack is None:
+            state.redo_stack = []
+        state.redo_stack.append(entry)
+        return True
+
+    def redo(self, state: SessionState) -> bool:
+        if not state.redo_stack:
+            return False
+        entry = state.redo_stack.pop()
+        self._apply_entry(state, entry, redo=True)
+        if state.undo_stack is None:
+            state.undo_stack = []
+        state.undo_stack.append(entry)
+        return True
+
+    def can_undo(self, state: SessionState) -> bool:
+        return bool(state.undo_stack)
+
+    def can_redo(self, state: SessionState) -> bool:
+        return bool(state.redo_stack)
 
     def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
         """Raw label bytes for mask slice ``z`` along ``axis`` →

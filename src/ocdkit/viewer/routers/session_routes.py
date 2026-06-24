@@ -307,7 +307,32 @@ async def api_paint_sphere(session_id: str, request: Request, z: int = 0, axis: 
         written = SESSION_MANAGER.paint_sphere(state, z, axis, group, radius, footprint)
     except ValueError as exc:
         raise BadRequest("paint_failed", detail=str(exc)) from exc
-    return {"ok": True, "label": written}
+    return {"ok": True, "label": written,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
+@router.post("/undo/{session_id}")
+def api_undo(session_id: str) -> dict:
+    """Undo the last volume mask edit (server-owned history)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    changed = SESSION_MANAGER.undo(state)
+    return {"ok": True, "changed": changed,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
+@router.post("/redo/{session_id}")
+def api_redo(session_id: str) -> dict:
+    """Redo the last undone volume mask edit (server-owned history)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    changed = SESSION_MANAGER.redo(state)
+    return {"ok": True, "changed": changed,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
 @router.get("/volume_bundle/{session_id}")
