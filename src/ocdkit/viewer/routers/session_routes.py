@@ -234,13 +234,14 @@ def api_select_mask_file(
 
 
 @router.get("/mask_slice/{session_id}")
-def api_mask_slice(session_id: str, z: int = 0, axis: int = 0) -> Response:
-    """Raw label bytes for mask slice ``z`` along ``axis`` (2D mask overlay)."""
+def api_mask_slice(session_id: str, z: int = 0, axis: int = 0, kind: str = "group") -> Response:
+    """Raw bytes for mask slice ``z`` along ``axis``. ``kind='group'`` → ncolor
+    group values (display); ``kind='instance'`` → identity labels."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
         raise UnknownSession() from exc
-    res = SESSION_MANAGER.mask_slice(state, z, axis)
+    res = SESSION_MANAGER.mask_slice(state, z, axis, kind)
     if res is None:
         raise NotFound("no_mask")
     data, width, height, dtype = res

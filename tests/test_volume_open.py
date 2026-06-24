@@ -107,7 +107,7 @@ def test_auto_mask_from_sidecar(tmp_path):
     m = bundle["mask"]
     arr = np.frombuffer(gzip.decompress(base64.b64decode(m["b64"])),
                         dtype=np.dtype(m["dtype"])).reshape(m["shape"])
-    assert arr.shape == (10, 24, 24) and int(arr.max()) == 3
+    assert arr.shape == (10, 24, 24) and int(arr.max()) >= 1   # bundle mask = ncolor groups
 
 
 def test_open_mask_route_and_shape_mismatch(tmp_path):
@@ -135,12 +135,15 @@ def test_mask_slice_route(tmp_path):
     tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
     state = SESSION_MANAGER.get_or_create(None)
     SESSION_MANAGER.set_image(state, vol)
-    resp = api_mask_slice(state.session_id, z=5)
-    assert resp.headers["X-Mask-Dtype"] == "uint8"
-    assert resp.headers["X-Mask-Width"] == "32" and resp.headers["X-Mask-Height"] == "32"
-    arr = np.frombuffer(resp.body, dtype=np.uint8).reshape(32, 32)
-    assert int(arr.max()) == 7
-    # config advertises the mask
+    # instance = identity labels
+    resp_i = api_mask_slice(state.session_id, z=5, kind="instance")
+    assert resp_i.headers["X-Mask-Width"] == "32" and resp_i.headers["X-Mask-Height"] == "32"
+    arr_i = np.frombuffer(resp_i.body, dtype=np.dtype(resp_i.headers["X-Mask-Dtype"])).reshape(32, 32)
+    assert int(arr_i.max()) == 7
+    # default (group) = ncolor groups for display
+    resp_g = api_mask_slice(state.session_id, z=5)
+    arr_g = np.frombuffer(resp_g.body, dtype=np.dtype(resp_g.headers["X-Mask-Dtype"])).reshape(32, 32)
+    assert int(arr_g.max()) >= 1
     cfg = SESSION_MANAGER.build_config(state, embed_image=False)
     assert cfg["hasVolumeMask"] is True
 
@@ -154,14 +157,14 @@ def test_set_mask_slice_roundtrip_and_create(tmp_path):
     labels[2:5, 2:5] = 9
     SESSION_MANAGER.set_mask_slice(state, 3, labels.tobytes(), "uint32")   # creates the volume
     assert state.current_mask_volume.shape == (6, 16, 16)
-    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 3)
+    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 3, kind="instance")
     back = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(h, w)
     assert int(back.max()) == 9
-    b = SESSION_MANAGER.encode_volume_bundle(state)        # bundle picks up the edit (narrowed)
+    b = SESSION_MANAGER.encode_volume_bundle(state)        # bundle = ncolor groups for the 3D render
     m = b["mask"]
     marr = np.frombuffer(gzip.decompress(base64.b64decode(m["b64"])),
                          dtype=np.dtype(m["dtype"])).reshape(m["shape"])
-    assert marr.shape == (6, 16, 16) and int(marr.max()) == 9
+    assert marr.shape == (6, 16, 16) and int(marr.max()) >= 1
 
 
 def test_orthogonal_slicing_dims(tmp_path):
@@ -189,7 +192,23 @@ def test_mask_slice_write_along_axis(tmp_path):
     labels = np.zeros((8, 16), np.uint32)               # Y-axis slice shape = (D, W)
     labels[1:4, 2:5] = 4
     SESSION_MANAGER.set_mask_slice(state, 7, labels.tobytes(), "uint32", axis=1)
-    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 7, axis=1)
+    data, w, h, dtype = SESSION_MANAGER.mask_slice(state, 7, axis=1, kind="instance")
     arr = np.frombuffer(data, dtype=np.dtype(dtype)).reshape(h, w)
     assert arr.shape == (8, 16) and int(arr.max()) == 4
     assert int(state.current_mask_volume[:, 7, :].max()) == 4   # landed at y=7
+
+
+def test_ncolor_groups_separate_adjacent_cells(tmp_path):
+    """Two touching cells must get different ncolor groups (no shared color)."""
+    vol = _write_volume(tmp_path, (5, 20, 20))   # depth>4 so it's read as a volume
+    masks = np.zeros((5, 20, 20), np.uint8)
+    masks[:, 4:10, 4:16] = 1          # cell 1
+    masks[:, 10:16, 4:16] = 2         # cell 2 (touches cell 1 along y=10)
+    tifffile.imwrite(str(tmp_path / "vol_masks.tif"), masks)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, vol)
+    g = SESSION_MANAGER.ensure_ncolor(state)
+    assert g is not None
+    g1 = int(np.unique(g[masks == 1])[0])
+    g2 = int(np.unique(g[masks == 2])[0])
+    assert g1 != g2 and g1 > 0 and g2 > 0     # adjacent cells → different groups

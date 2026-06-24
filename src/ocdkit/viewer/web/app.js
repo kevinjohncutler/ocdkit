@@ -7610,25 +7610,36 @@ window.__viewerSetSliceImage = function (url) {
 // null to clear. Renders with the current label palette + opacity, so volumetric
 // masks scrub in the 2D view just like a segmented/hand-drawn mask. (Outline
 // style + affinity-graph editing for loaded masks are a follow-up.)
-window.__viewerSetMaskSlice = function (labels) {
+// Show a volumetric mask slice. `groups` are ncolor group IDs (computed once on
+// the whole volume → adjacent cells differ + colors match the 3D render);
+// maskValues holds the groups so the N-color palette has no adjacent collisions
+// and the affinity/outline (group boundaries == cell boundaries) is reliable.
+// `instance` (identity labels) is kept separately for picking / persistence.
+window.__viewerSetMaskSlice = function (groups, instance) {
   let nz = false;
-  if (labels && labels.length === maskValues.length) {
-    maskValues.set(labels);
-    for (let i = 0; i < labels.length; i += 1) { if (labels[i]) { nz = true; break; } }
-    if (typeof updateMaxLabelFromMask === 'function') updateMaxLabelFromMask();
+  if (groups && groups.length === maskValues.length) {
+    maskValues.set(groups);
+    for (let i = 0; i < groups.length; i += 1) { if (groups[i]) { nz = true; break; } }
   } else {
     maskValues.fill(0);
   }
+  if (instance && instance.length === maskValues.length) {
+    if (!nColorInstanceMask || nColorInstanceMask.length !== instance.length) {
+      nColorInstanceMask = new Uint32Array(instance.length);
+    }
+    nColorInstanceMask.set(instance);
+    nColorActive = true;
+  } else {
+    nColorInstanceMask = null;
+  }
   maskHasNonZero = nz;
   window.__viewerMaskApplied = nz;   // test/automation hook
-  // Drop the previous slice's affinity graph + outline, then rebuild from the
-  // new mask. This makes the loaded slice render with the active style (filled
-  // OR semi-opaque outlines) and become an editable native mask (drawing edits
-  // the rebuilt affinity graph, exactly like a segmented mask).
+  if (typeof updateMaxLabelFromMask === 'function') updateMaxLabelFromMask();
   if (typeof clearAffinityGraphData === 'function') clearAffinityGraphData();
   maskTextureFullDirty = true;
   outlineTextureFullDirty = true;
   needsMaskRedraw = true;
+  paletteTextureDirty = true;
   applyMaskRedrawImmediate();
   draw();
   if (typeof scheduleAffinityRebuildIfStale === 'function') {
@@ -7636,9 +7647,16 @@ window.__viewerSetMaskSlice = function (labels) {
   }
 };
 
-// Return the current mask buffer (live Uint32Array of labels) so volume-mode can
-// persist an edited slice back to the volume.
-window.__viewerGetMask = function () { return maskValues; };
+// Identity labels for the current slice (for persisting edits to the volume).
+window.__viewerGetMask = function () { return nColorInstanceMask || maskValues; };
+
+// Override the N-color palette (e.g. with a golden-ratio HSV palette matching
+// the 3D shader, so 2D slices and the 3D volume use identical colors).
+window.__viewerSetNColorPalette = function (colors) {
+  if (typeof setNColorPaletteColors === 'function' && Array.isArray(colors) && colors.length) {
+    setNColorPaletteColors(colors, { render: true, schedule: false });
+  }
+};
 
 function computeHistogram() {
   if (!originalImageData) {

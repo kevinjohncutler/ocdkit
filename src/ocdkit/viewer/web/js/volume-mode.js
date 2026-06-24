@@ -33,6 +33,26 @@
     panel.hidden = false;
     sliceBar.hidden = false;
 
+    // golden-ratio HSV palette matching the 3D shader's labelColor, so 2D ncolor
+    // groups and the 3D volume render with identical colors.
+    (function setupNColorPalette() {
+      function hsvRgb(h, s, v) {
+        const i = Math.floor(h * 6), f = h * 6 - i;
+        const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+        const m = ((i % 6) + 6) % 6;
+        let r, g, b;
+        if (m === 0) { r = v; g = t; b = p; } else if (m === 1) { r = q; g = v; b = p; }
+        else if (m === 2) { r = p; g = v; b = t; } else if (m === 3) { r = p; g = q; b = v; }
+        else if (m === 4) { r = t; g = p; b = v; } else { r = v; g = p; b = q; }
+        return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+      }
+      const PHI = 0.61803398875, pal = [];
+      for (let i = 0; i < 32; i++) pal.push(hsvRgb(((i + 1) * PHI) % 1, 0.65, 1.0));
+      if (typeof window.__viewerSetNColorPalette === "function") {
+        window.__viewerSetNColorPalette(pal);
+      }
+    })();
+
     let mode = "2d";
     let vgpu = null;
     let loading = null;
@@ -60,22 +80,25 @@
     }
     paintLabel();
 
-    // overlay the volumetric mask for slice z (current axis) onto the 2D view
+    // overlay the volumetric mask for slice z (current axis) onto the 2D view:
+    // ncolor groups (display) + identity labels (instance), both for this slice
+    function _bufToU32(resp, buf) {
+      const dt = resp.headers.get("X-Mask-Dtype") || "uint8";
+      const raw = dt === "uint16" ? new Uint16Array(buf)
+                : dt === "uint32" ? new Uint32Array(buf)
+                : new Uint8Array(buf);
+      const u = new Uint32Array(raw.length); u.set(raw); return u;
+    }
     async function updateMaskSlice(z) {
       if (typeof window.__viewerSetMaskSlice !== "function") return;
-      if (!hasMask) { window.__viewerSetMaskSlice(null); return; }
+      if (!hasMask) { window.__viewerSetMaskSlice(null, null); return; }
       try {
-        const r = await fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
-                              "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now());
-        if (!r.ok) return;
-        const dtype = r.headers.get("X-Mask-Dtype") || "uint8";
-        const buf = await r.arrayBuffer();
-        const raw = dtype === "uint16" ? new Uint16Array(buf)
-                  : dtype === "uint32" ? new Uint32Array(buf)
-                  : new Uint8Array(buf);
-        const u32 = new Uint32Array(raw.length);
-        u32.set(raw);
-        window.__viewerSetMaskSlice(u32);
+        const base = "/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
+                     "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
+        const [gR, iR] = await Promise.all([fetch(base), fetch(base + "&kind=instance")]);
+        if (!gR.ok || !iR.ok) return;
+        const [gB, iB] = await Promise.all([gR.arrayBuffer(), iR.arrayBuffer()]);
+        window.__viewerSetMaskSlice(_bufToU32(gR, gB), _bufToU32(iR, iB));
       } catch (e) { /* leave current mask on transient error */ }
     }
 

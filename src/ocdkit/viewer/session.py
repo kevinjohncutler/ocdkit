@@ -90,6 +90,7 @@ class SessionState:
     current_volume: Optional[np.ndarray] = None  # (Z, Y, X) uint8 when a 3D stack is loaded
     volume_slice: int = 0  # index of the slice currently shown in the 2D view
     current_mask_volume: Optional[np.ndarray] = None  # (Z, Y, X) label volume, if loaded
+    current_ncolor_volume: Optional[np.ndarray] = None  # (Z, Y, X) ncolor group volume (cache)
     encoded_image: Optional[str] = None
     encoded_image_bytes: Optional[bytes] = None
     encoded_image_mime: str = "image/png"
@@ -255,6 +256,7 @@ class SessionManager:
                 f"volume shape {tuple(state.current_volume.shape)}"
             )
         state.current_mask_volume = _narrow_labels(arr)
+        state.current_ncolor_volume = None
 
     def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
         """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
@@ -274,6 +276,7 @@ class SessionManager:
     def _maybe_auto_mask(self, state: SessionState) -> None:
         """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort)."""
         state.current_mask_volume = None
+        state.current_ncolor_volume = None
         if state.current_volume is None:
             return
         mp = self._auto_mask_path(state.current_path)
@@ -393,15 +396,33 @@ class SessionManager:
         sl = np.ascontiguousarray(np.take(vol, z, axis=axis))
         return self._encode_image_bytes(sl, is_rgb=False)
 
-    def mask_slice(self, state: SessionState, z: int, axis: int = 0):
-        """Raw label bytes for mask slice ``z`` along ``axis`` →
-        ``(bytes, width, height, dtype)``. None if no mask volume is loaded."""
+    def ensure_ncolor(self, state: SessionState) -> Optional[np.ndarray]:
+        """Compute + cache the volume ncolor group volume (adjacent cells get
+        different small group IDs, computed once on the whole 3D volume so the
+        coloring is consistent across slices and matches the 3D render)."""
+        if state.current_ncolor_volume is not None:
+            return state.current_ncolor_volume
         mv = state.current_mask_volume
         if mv is None:
             return None
+        try:
+            import ncolor
+            g = _narrow_labels(np.asarray(ncolor.label(mv)))
+        except Exception:
+            g = _narrow_labels(mv)   # fallback: raw labels
+        state.current_ncolor_volume = g
+        return g
+
+    def mask_slice(self, state: SessionState, z: int, axis: int = 0, kind: str = "group"):
+        """Raw label bytes for mask slice ``z`` along ``axis`` →
+        ``(bytes, width, height, dtype)``. ``kind='group'`` returns the ncolor
+        group values (for display); ``kind='instance'`` returns identity labels."""
+        src = state.current_mask_volume if kind == "instance" else self.ensure_ncolor(state)
+        if src is None:
+            return None
         axis = int(axis) % 3
-        z = max(0, min(int(z), mv.shape[axis] - 1))
-        sl = np.ascontiguousarray(np.take(mv, z, axis=axis))
+        z = max(0, min(int(z), src.shape[axis] - 1))
+        sl = np.ascontiguousarray(np.take(src, z, axis=axis))
         return sl.tobytes(), int(sl.shape[1]), int(sl.shape[0]), str(sl.dtype)
 
     def set_mask_slice(self, state: SessionState, z: int, data: bytes, dtype: str,
@@ -425,6 +446,7 @@ class SessionManager:
         idx = [slice(None)] * 3
         idx[axis] = z
         mv[tuple(idx)] = incoming.astype(mv.dtype, copy=False)
+        state.current_ncolor_volume = None    # mask changed → recompute ncolor
 
     def encode_volume_bundle(self, state: SessionState) -> Optional[dict[str, Any]]:
         """Intensity-only 3D viewer bundle from the loaded volume, or None.
@@ -447,7 +469,10 @@ class SessionManager:
             "image": _encode_array(vol),
         }
         if state.current_mask_volume is not None:
-            bundle["mask"] = _encode_array(_narrow_labels(state.current_mask_volume))
+            # color the 3D volume by the same ncolor groups as the 2D slices
+            g = self.ensure_ncolor(state)
+            bundle["mask"] = _encode_array(g if g is not None
+                                           else _narrow_labels(state.current_mask_volume))
         return bundle
 
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:
