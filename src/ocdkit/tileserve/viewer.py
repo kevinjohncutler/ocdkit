@@ -1761,32 +1761,43 @@ function _syncHdrLabels(){
     try{ const c=document.createElement('canvas'); c.width=1; c.height=1; PANEL.renderHdrLabels(hdr,c,_lineBoost(),_sdrMode); }catch(_){}
     return;
   }
-  const ow=ovl.clientWidth||0; if(!ow) return;
+  const ow=ovl.clientWidth||0, oh=ovl.clientHeight||0; if(!ow||!oh) return;
   const pad=2; y0=Math.max(0,Math.floor(y0-pad)); y1=Math.ceil(y1+pad); const bandH=Math.max(1,y1-y0);
   hdr.style.left=(ovl.offsetLeft||0)+'px'; hdr.style.top=((ovl.offsetTop||0)+y0)+'px';   // band only, not whole plot → cheap raster
   hdr.style.width=ow+'px'; hdr.style.height=bandH+'px';
   const W=Math.max(1,Math.round(ow*dpr)), H=Math.max(1,Math.round(bandH*dpr));
   if(!_hdrLabSrc) _hdrLabSrc=document.createElement('canvas');
   _hdrLabSrc.width=W; _hdrLabSrc.height=H;
-  const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true}); ctx.clearRect(0,0,W,H);
-  ctx.textAlign='center'; ctx.textBaseline='alphabetic';   // sit on the glyph BASELINE (its ink bottom), not the em middle — 'middle' put the twin ~0.05em high
-  for(const a of act){ const er=a.er;
-    const cs=self.getComputedStyle(a.el), fam=cs.fontFamily||'sans-serif', wt=cs.fontWeight||'normal';
-    const ctm=a.el.getScreenCTM(), sc=ctm?Math.hypot(ctm.a,ctm.b):1;   // EXACT size: SVG font-size × on-screen scale
-    const fs=(parseFloat(cs.fontSize)||10)*sc*dpr;
-    ctx.font=wt+' '+fs+'px '+fam;
-    const cx=(er.left+er.width/2-oref.left)*dpr;
-    // vertical: centre the glyph's INK on the SVG label's box centre, using the
-    // canvas's OWN measured metrics — no SVG-text APIs. ('middle' baseline sat ~0.05em
-    // high because the em middle != the ink centre; bbox-bottom + getStartPositionOfChar
-    // overshot.) 'alphabetic' baseline = box centre + half the ink height.
-    const _m=ctx.measureText(a.el.textContent||''), _ia=(_m.actualBoundingBoxAscent||fs*0.7), _id=(_m.actualBoundingBoxDescent||0);
-    const cy=(er.top+er.height/2-oref.top-y0)*dpr + (_ia-_id)/2;
-    ctx.fillStyle=_refColors[a.ro]||'#bbb';
-    ctx.fillText(a.el.textContent||'', cx, cy);
-  }
-  const ok=PANEL.renderHdrLabels(hdr, _hdrLabSrc, _lineBoost(), _sdrMode);
-  for(const a of act) a.el.style.fillOpacity = ok ? '0' : '1';
+  const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true});
+  // SAME render path as the flat label: rasterise the ACTUAL SVG <text>. A Canvas2D
+  // re-draw uses a different text rasteriser and never aligns with the SVG glyph (the
+  // baseline/metric chase that kept nudging the twin up and down). Clone the overlay,
+  // keep only the active labels, render THAT svg into the band, then lift to HDR —
+  // identical glyph, identical position, because it IS the same render.
+  const clone=ovl.cloneNode(true), activeText={}; act.forEach(a=>{ activeText[a.el.textContent||'']=1; });
+  const cs0=self.getComputedStyle(act[0].el);
+  clone.querySelectorAll('*').forEach(el=>{ const t=(el.tagName||'').toLowerCase();
+    if(t==='svg'||t==='g'||t==='defs'||t==='style'||t==='clippath') return;        // structural — keep
+    if(t==='text'){ if(!activeText[el.textContent||'']){ el.setAttribute('display','none'); return; }
+      el.setAttribute('fill-opacity','1');                                          // ensure the glyph paints in the clone
+      if(!el.getAttribute('font-size')){ el.setAttribute('font-size',cs0.fontSize);  // inline inherited font (standalone svg has no doc CSS)
+        el.setAttribute('font-family',cs0.fontFamily); el.setAttribute('font-weight',cs0.fontWeight); }
+      return; }
+    el.setAttribute('display','none');                                             // lines / ticks / paths — hide so only labels remain
+  });
+  clone.setAttribute('width',ow); clone.setAttribute('height',oh);                  // pin intrinsic size so the svg-image renders at overlay px
+  if(clone.style){ clone.style.width=ow+'px'; clone.style.height=oh+'px'; }
+  const svgStr=new XMLSerializer().serializeToString(clone);
+  hdr.__seq=(hdr.__seq||0)+1; const myseq=hdr.__seq;
+  const img=new Image();
+  img.onload=()=>{ if(hdr.__seq!==myseq) return;                                    // a newer sync superseded this raster
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(img,0,-y0*dpr,ow*dpr,oh*dpr);                                     // overlay→band: shift up by the band top
+    const ok=PANEL.renderHdrLabels(hdr,_hdrLabSrc,_lineBoost(),_sdrMode);
+    for(const a of act) a.el.style.fillOpacity = ok ? '0' : '1';
+  };
+  img.onerror=()=>{ if(hdr.__seq===myseq){ for(const a of act) a.el.style.fillOpacity='1'; } };
+  img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svgStr);
 }
 function _refApplyAll(){ const seen={};
   Object.keys(_refPaths).forEach(r=>seen[r]=1); Object.keys(_refLabels).forEach(r=>seen[r]=1);
