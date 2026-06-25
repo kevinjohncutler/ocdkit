@@ -124,6 +124,7 @@
         size: [NX, NY, NZ], dimension: "3d", format: fmt,
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
+      this._labBpe = bpe; this._labCtor = Ctor;       // for in-place updateLabels
       device.queue.writeTexture({ texture: this.labTex }, lab.buffer,
         { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
     }
@@ -183,6 +184,24 @@
         Math.max(0.01, this.radius - diag * 1.2), this.radius + diag * 1.2);
       const viewProj = Mat4.multiply(proj, view);
       return { eye, viewProj, invViewProj: Mat4.invert(viewProj) };
+    }
+
+    /** Re-upload the label texture in place from raw ncolor-group bytes (uint8,
+     *  Z·Y·X order) after an edit — no destroy/recreate, so no flash. */
+    updateLabels(data) {
+      if (!this.labTex || !data) return;
+      const NX = this.NX, NY = this.NY, NZ = this.NZ, bpe = this._labBpe || 1;
+      let buf;
+      if (bpe === 1) {
+        buf = (data instanceof Uint8Array) ? data : new Uint8Array(data.buffer || data);
+      } else {
+        const C = this._labCtor || Uint16Array;
+        buf = new C(NX * NY * NZ);
+        buf.set(data.subarray ? data.subarray(0, buf.length) : data);
+      }
+      this.device.queue.writeTexture({ texture: this.labTex }, buf.buffer,
+        { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
+      this.render();
     }
 
     /** World-space pick ray for a canvas pixel — same math as the render shader

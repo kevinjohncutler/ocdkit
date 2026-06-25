@@ -2272,7 +2272,9 @@ if (savedViewerState) {
     flowThresholdSlider.value = Number(savedViewerState.flowThreshold).toFixed(1);
     updateNativeRangeFill(flowThresholdSlider);
   }
-  if (typeof savedViewerState.maskDisplayMode === 'string') {
+  if (typeof savedViewerState.maskDisplayMode === 'string' && !CONFIG.isVolume) {
+    // Volumes always start in 'outlined' — don't restore a persisted style (a
+    // prior force-solid bug poisoned saved state and hid the 2D outlines).
     maskDisplayMode = normalizeMaskDisplayMode(savedViewerState.maskDisplayMode);
     outlinesVisible = maskDisplayMode === MASK_DISPLAY_MODES.OUTLINED || maskDisplayMode === MASK_DISPLAY_MODES.OUTLINE;
   }
@@ -3929,6 +3931,11 @@ function setMaskDisplayMode(nextMode, { silent = false } = {}) {
     scheduleStateSave();
   }
 }
+window.__viewerDebugOutline = function () {
+  let n = 0; for (let i = 0; i < outlineState.length; i += 1) if (outlineState[i]) n += 1;
+  return { outlinePixels: n, steps: affinitySteps.length, webgl: isWebglPipelineActive(),
+           outlinesVisible: !!outlinesVisible, mode: maskDisplayMode };
+};
 window.__viewerMaskDisplayMode = function () { return maskDisplayMode; };
 window.__viewerSetMaskDisplayMode = function (m) { setMaskDisplayMode(m); };
 
@@ -4197,7 +4204,7 @@ function restoreViewerState(saved) {
       }
       updateMaskVisibilityLabel();
     }
-    if (typeof saved.maskDisplayMode === 'string') {
+    if (typeof saved.maskDisplayMode === 'string' && !CONFIG.isVolume) {
       maskDisplayMode = normalizeMaskDisplayMode(saved.maskDisplayMode);
       outlinesVisible = maskDisplayMode === MASK_DISPLAY_MODES.OUTLINED || maskDisplayMode === MASK_DISPLAY_MODES.OUTLINE;
       if (maskDisplayMode === MASK_DISPLAY_MODES.HIDDEN) {

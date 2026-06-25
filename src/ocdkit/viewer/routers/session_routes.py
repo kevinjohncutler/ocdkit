@@ -362,6 +362,24 @@ def api_fill_cell(session_id: str, z: int = 0, axis: int = 0, y: int = 0, x: int
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
+@router.get("/ncolor_volume/{session_id}")
+def api_ncolor_volume(session_id: str) -> Response:
+    """Raw ncolor group volume bytes (uint8, Z·Y·X order) for re-uploading the 3D
+    label texture in place after an edit — avoids a destroy/recreate flash."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    import numpy as _np
+    g = SESSION_MANAGER.ensure_ncolor(state)
+    if g is None:
+        raise NotFound("no_mask")
+    arr = _np.ascontiguousarray(g.astype(_np.uint8))     # ncolor groups are small
+    nz, ny, nx = arr.shape
+    return Response(content=arr.tobytes(), media_type="application/octet-stream",
+                    headers={"X-Shape": f"{nx},{ny},{nz}", "Cache-Control": "no-cache"})
+
+
 @router.post("/pick_ray/{session_id}")
 async def api_pick_ray(session_id: str, request: Request) -> dict:
     """3D pick: ray-march the label volume (body: ro, rd, boxMin, boxMax) and

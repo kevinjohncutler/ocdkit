@@ -70,13 +70,22 @@ def main():
             print(f"3D picker: picked colour {picked} == cell1 colour {g1} -> {'PASS' if t1 else 'FAIL'}")
             ok_all = ok_all and t1
 
-            # 2) erase-fill: delete the central cell under the cursor
+            # 1b) picker on empty space (ray that misses the volume) → zero marker
+            pg.evaluate("""async()=>{await window.__viewerVolume3DPick(
+                {ro:[9999,9999,9999],rd:[1,0,0],boxMin:[-40,-40,-40],boxMax:[40,40,40]},'picker');}""")
+            pg.wait_for_timeout(400)
+            t1b = pg.evaluate("window.__viewerCurrentLabel()") == 0
+            print(f"3D picker on empty → zero marker (currentLabel 0): {t1b} -> {'PASS' if t1b else 'FAIL'}")
+            ok_all = ok_all and t1b
+
+            # 2) erase-fill: delete the central cell under the cursor (in-place, no flash)
             pg.query_selector('.tool-stop[data-mode="fill"]').click(); pg.wait_for_timeout(150)
             pg.keyboard.down("e"); pg.wait_for_timeout(150)
             pg.mouse.click(*center); pg.wait_for_timeout(1500)
             pg.keyboard.up("e")
-            t2 = cnt(1) == 0 and cnt(2) > 0
-            print(f"3D erase-fill: cell1 deleted={cnt(1) == 0} cell2 kept={cnt(2) > 0} -> {'PASS' if t2 else 'FAIL'}")
+            mode_after = pg.evaluate("window.__volumeMode.getMode()")
+            t2 = cnt(1) == 0 and cnt(2) > 0 and mode_after == "3d"
+            print(f"3D erase-fill: cell1 deleted={cnt(1) == 0} cell2 kept={cnt(2) > 0} stayed-3d={mode_after=='3d'} -> {'PASS' if t2 else 'FAIL'}")
             ok_all = ok_all and t2
 
             # 3) undo restores the deleted cell (server-owned history)

@@ -200,10 +200,10 @@
     window.__viewerVolumeFill = function (wx, wy) {
       if (!cfg.isVolume || !hasMask) return false;
       const y = Math.floor(wy), x = Math.floor(wx);
-      const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive());
-      // erase → delete; a picked cell → identity-merge into it; otherwise fill with
-      // the current colour (colour-merge into a touching same-colour cell / recolour).
+      // erase OR the zero-marker (currentLabel 0) → delete; a picked cell →
+      // identity-merge; otherwise fill with the current colour.
       const group = (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 0) | 0;
+      const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive()) || group <= 0;
       const q = erasing ? "&erase=1"
               : (pickedLabel ? "&target=" + pickedLabel : "&group=" + group);
       fetch("/api/fill_cell/" + encodeURIComponent(cfg.sessionId) +
@@ -219,6 +219,17 @@
       return true;
     };
 
+    // Re-upload the 3D label texture in place from the server (no destroy/recreate,
+    // so no flash to a blank 2D frame mid-edit).
+    async function refresh3DLabels() {
+      if (mode !== "3d" || !vgpu || typeof vgpu.updateLabels !== "function") { mask3dStale = true; return; }
+      try {
+        const r = await fetch("/api/ncolor_volume/" + encodeURIComponent(cfg.sessionId));
+        if (!r.ok) { mask3dStale = true; return; }
+        vgpu.updateLabels(new Uint8Array(await r.arrayBuffer()));
+      } catch (e) { mask3dStale = true; }
+    }
+
     // ----- 3D-view picker / fill: click the cell under the cursor on the render --
     // The 3D canvas computes a world pick-ray; the server marches the label volume
     // (same math as the shader) to find the hit cell, then we pick or fill it.
@@ -230,15 +241,18 @@
         if (!pr.ok) return;
         const hit = await pr.json();
         const label = hit.label | 0;
-        if (!label) return;                               // clicked empty space
         if (toolMode === "picker") {
+          // empty space → pick the ZERO marker (currentLabel 0) so the next stroke/
+          // fill deletes; a cell → pick its colour.
           pickedLabel = label;
-          if (hit.group > 0 && window.__viewerSetCurrentColor) window.__viewerSetCurrentColor(hit.group);
+          if (window.__viewerSetCurrentColor) window.__viewerSetCurrentColor(label ? (hit.group | 0) : 0);
           return;
         }
-        // fill: erase → delete; picked cell → identity-merge; else current colour
-        const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive());
+        if (!label) return;                               // fill/erase on empty → nothing to fill
+        // fill: erase OR the zero-marker (currentLabel 0) → delete; a picked cell →
+        // identity-merge; otherwise the current colour.
         const group = (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 0) | 0;
+        const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive()) || group <= 0;
         const q = erasing ? "&erase=1"
                 : (pickedLabel ? "&target=" + pickedLabel : "&group=" + group);
         const fr = await fetch("/api/fill_label/" + encodeURIComponent(cfg.sessionId) +
@@ -247,9 +261,8 @@
         const j = await fr.json();
         srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
         await fetchNColorMap();
-        if (mode === "2d") await updateMaskSlice(slice);
-        mask3dStale = true;
-        if (mode === "3d") await setMode("3d");           // rebuild the 3D render with the edit
+        if (mode === "2d") { await updateMaskSlice(slice); mask3dStale = true; }
+        else await refresh3DLabels();                     // in-place texture update, no flash
         if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
       } catch (e) { /* transient */ }
     };
