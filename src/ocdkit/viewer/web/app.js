@@ -7686,6 +7686,7 @@ window.__viewerGetMask = function () { return maskValues; };
 window.__viewerBrushRadius = function () { return Math.max(1, Math.round(brushDiameter / 2)); };
 window.__viewerEraseActive = function () { return eraseActive; };
 window.__viewerActiveTool = function () { return getActiveToolMode(); };   // 'draw'|'erase'|'fill'|'picker'
+window.__viewerSpacePan = function () { return spacePan; };   // space held → orbit/pan override
 // Volume picker uses this to set the active paint colour to a picked cell's group.
 window.__viewerSetCurrentColor = function (g) { applyCurrentLabel(g | 0, { scheduleSave: false }); };
 window.__viewerCurrentLabel = function () { return currentLabel | 0; };

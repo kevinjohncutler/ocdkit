@@ -87,6 +87,24 @@ def test_fill_colour_recolours_isolated_cell(tmp_path):
     assert (state.current_mask_volume == 3).sum() > 0
 
 
+def test_fill_only_affects_contiguous_component(tmp_path):
+    """A label split into two disconnected blobs (e.g. a spacetime track): filling
+    one blob must NOT touch the other, even though they share the label."""
+    state = _session(tmp_path)
+    mv = state.current_mask_volume
+    mv[1:4, 0:3, 4:8] = 9          # blob A
+    mv[1:4, 0:3, 28:32] = 9        # blob B, disconnected, SAME label
+    state.current_ncolor_volume = None
+    state.label_group = None
+    out = SESSION_MANAGER.fill_cell(state, 2, 0, 1, 6, erase=True)   # click blob A → erase
+    assert out == 0
+    assert (state.current_mask_volume[1:4, 0:3, 4:8] == 9).sum() == 0     # blob A gone
+    assert (state.current_mask_volume[1:4, 0:3, 28:32] == 9).sum() > 0   # blob B KEPT (contiguous-only)
+    # fill_label (whole-label) still hits both, by contrast
+    SESSION_MANAGER.fill_label(state, 9, erase=True)
+    assert (state.current_mask_volume == 9).sum() == 0
+
+
 def test_fill_background_is_noop(tmp_path):
     state = _session(tmp_path)
     before = state.current_mask_volume.copy()

@@ -607,17 +607,85 @@ class SessionManager:
 
     def fill_cell(self, state: SessionState, z: int, axis: int, y: int, x: int,
                   group: int = -1, target_label: int = 0, erase: bool = False) -> int:
-        """Whole-cell 3D op from a 2D-slice click: resolve the label under the
-        cursor, then act on its whole 3D extent (see :meth:`fill_label`)."""
+        """Fill from a 2D-slice click — acts on the CONNECTED COMPONENT under the
+        cursor (the contiguous region), not every voxel that merely shares the
+        label (a spacetime label can span disconnected blobs across time)."""
         mv = state.current_mask_volume
         if mv is None:
             return 0
-        plane = np.take(mv, int(z), axis=int(axis) % 3)
-        H, W = plane.shape
-        if not (0 <= int(y) < H and 0 <= int(x) < W):
+        axis = int(axis) % 3
+        idx = [0, 0, 0]
+        idx[axis] = int(z)
+        others = [i for i in range(3) if i != axis]
+        idx[others[0]] = int(y)
+        idx[others[1]] = int(x)
+        return self._fill_component(state, tuple(idx), group=group,
+                                    target_label=target_label, erase=erase)
+
+    def fill_ray(self, state: SessionState, ro, rd, box_min, box_max,
+                 group: int = -1, target_label: int = 0, erase: bool = False) -> int:
+        """3D-view fill: ray-pick the cell under the cursor, then fill its connected
+        component (contiguous region only)."""
+        voxel = self._march_ray(state, ro, rd, box_min, box_max)
+        if voxel is None:
             return 0
-        L = int(plane[int(y), int(x)])
-        return self.fill_label(state, L, group=group, target_label=target_label, erase=erase)
+        return self._fill_component(state, voxel, group=group,
+                                    target_label=target_label, erase=erase)
+
+    def _fill_component(self, state: SessionState, voxel, group: int = -1,
+                        target_label: int = 0, erase: bool = False) -> int:
+        """Core op restricted to the connected component of the clicked label that
+        contains ``voxel`` = (vz, vy, vx). Only the contiguous region is deleted /
+        merged / recoloured. An isolated recolour splits the component into its own
+        new cell so other components of the label keep their identity."""
+        from scipy import ndimage
+        mv = state.current_mask_volume
+        if mv is None:
+            return 0
+        vz, vy, vx = int(voxel[0]), int(voxel[1]), int(voxel[2])
+        if not (0 <= vz < mv.shape[0] and 0 <= vy < mv.shape[1] and 0 <= vx < mv.shape[2]):
+            return 0
+        L = int(mv[vz, vy, vx])
+        if L <= 0:
+            return 0
+        self.ensure_ncolor(state)
+        lg = state.label_group if state.label_group is not None else {}
+        comp, _ = ndimage.label(mv == L, structure=np.ones((3, 3, 3), dtype=int))
+        cell = comp == comp[vz, vy, vx]                # the contiguous piece only
+        before_mv = mv.copy()
+        before_lg = dict(lg)
+        if erase:
+            target = 0
+        elif int(target_label) > 0 and int(target_label) != L:
+            target = int(target_label)                 # identity merge into the picked cell
+        else:
+            g = int(group)
+            if g <= 0:
+                return L
+            border = ndimage.binary_dilation(cell) & ~cell
+            adj = [int(n) for n in np.unique(mv[border]) if n > 0 and lg.get(int(n)) == g and int(n) != L]
+            if adj:
+                target = min(adj)                      # colour-merge into a touching same-colour cell
+            elif int(cell.sum()) == int((mv == L).sum()):
+                lg[L] = g                              # whole cell is this one component → recolour in place
+                state.label_group = lg
+                state.current_ncolor_volume = None
+                self._record_edit(state, before_mv, before_lg)
+                self.schedule_autosave(state)
+                return L
+            else:
+                target = int(mv.max()) + 1             # only a piece → split it into a new cell of that colour
+                lg[target] = g
+        mv[cell] = target
+        if not (mv == L).any():
+            lg.pop(L, None)                            # label fully consumed
+        if target > 0 and target not in lg:
+            lg[target] = int(group) if int(group) > 0 else 1
+        state.label_group = lg
+        state.current_ncolor_volume = None
+        self._record_edit(state, before_mv, before_lg)
+        self.schedule_autosave(state)
+        return target
 
     def fill_label(self, state: SessionState, label: int, group: int = -1,
                    target_label: int = 0, erase: bool = False) -> int:
@@ -667,22 +735,20 @@ class SessionManager:
         self.schedule_autosave(state)
         return target
 
-    def pick_ray(self, state: SessionState, ro, rd, box_min, box_max):
-        """3D pick: march a world-space ray (from the camera) exactly as the render
-        shader does (n = (p - boxMin)/span, sample mv[z,y,x]) and return the first
-        labelled voxel hit → ``(label, group, [x, y, z])`` (or 0s for a miss). The
-        identical coordinate math means the picked cell is the one drawn under the
-        cursor."""
+    def _march_ray(self, state: SessionState, ro, rd, box_min, box_max):
+        """March a world-space ray exactly as the render shader (n = (p-boxMin)/span,
+        sample mv[z,y,x]); return the first labelled voxel ``(vz, vy, vx)`` or None.
+        Identical coordinate math → the hit is the cell drawn under the cursor."""
         mv = state.current_mask_volume
         if mv is None:
-            return 0, 0, None
+            return None
         NZ, NY, NX = mv.shape
         dims = np.array([NX, NY, NZ], dtype=np.float64)
         ro = np.asarray(ro, dtype=np.float64)
         rd = np.asarray(rd, dtype=np.float64)
         n = np.linalg.norm(rd)
         if n == 0:
-            return 0, 0, None
+            return None
         rd = rd / n
         bmin = np.asarray(box_min, dtype=np.float64)
         bmax = np.asarray(box_max, dtype=np.float64)
@@ -693,22 +759,28 @@ class SessionManager:
         tnear = max(0.0, float(np.max(np.minimum(t1, t2))))
         tfar = float(np.min(np.maximum(t1, t2)))
         if tnear > tfar:
-            return 0, 0, None
+            return None
         nsteps = int(max(64, 2 * max(NX, NY, NZ)))
         dt = (tfar - tnear) / nsteps
-        self.ensure_ncolor(state)
-        lg = state.label_group or {}
         t = tnear + dt * 0.5
         for _ in range(nsteps):
             p = ro + rd * t
-            nrm = (p - bmin) / span
-            vc = np.floor(nrm * dims).astype(int)
-            vc = np.clip(vc, 0, dims.astype(int) - 1)
-            lab = int(mv[vc[2], vc[1], vc[0]])         # vc = (x, y, z) → mv[z, y, x]
-            if lab > 0:
-                return lab, int(lg.get(lab, 0)), [int(vc[0]), int(vc[1]), int(vc[2])]
+            vc = np.clip(np.floor(((p - bmin) / span) * dims).astype(int), 0, dims.astype(int) - 1)
+            if int(mv[vc[2], vc[1], vc[0]]) > 0:       # vc = (x, y, z) → mv[z, y, x]
+                return (int(vc[2]), int(vc[1]), int(vc[0]))
             t += dt
-        return 0, 0, None
+        return None
+
+    def pick_ray(self, state: SessionState, ro, rd, box_min, box_max):
+        """3D pick (read-only): the first labelled cell under the cursor →
+        ``(label, group, [x, y, z])`` (or 0s for a miss)."""
+        voxel = self._march_ray(state, ro, rd, box_min, box_max)
+        if voxel is None:
+            return 0, 0, None
+        self.ensure_ncolor(state)
+        vz, vy, vx = voxel
+        lab = int(state.current_mask_volume[vz, vy, vx])
+        return lab, int((state.label_group or {}).get(lab, 0)), [vx, vy, vz]
 
     # ----- undo / redo (server is the single source of truth) -------------
 

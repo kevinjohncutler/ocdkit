@@ -250,13 +250,14 @@
         }
         if (!label) return;                               // fill/erase on empty → nothing to fill
         // fill: erase OR the zero-marker (currentLabel 0) → delete; a picked cell →
-        // identity-merge; otherwise the current colour.
+        // identity-merge; otherwise the current colour. Fills the CONNECTED COMPONENT
+        // under the cursor (one ray call → server picks voxel + fills contiguous region).
         const group = (window.__viewerCurrentLabel ? window.__viewerCurrentLabel() : 0) | 0;
         const erasing = !!(window.__viewerEraseActive && window.__viewerEraseActive()) || group <= 0;
         const q = erasing ? "&erase=1"
                 : (pickedLabel ? "&target=" + pickedLabel : "&group=" + group);
-        const fr = await fetch("/api/fill_label/" + encodeURIComponent(cfg.sessionId) +
-                               "?label=" + label + q, { method: "POST" });
+        const fr = await fetch("/api/fill_ray/" + encodeURIComponent(cfg.sessionId) + "?" + q.slice(1),
+                               { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ray) });
         if (!fr.ok) return;
         const j = await fr.json();
         srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;

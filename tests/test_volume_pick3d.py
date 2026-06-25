@@ -56,6 +56,23 @@ def test_pick_ray_then_fill_label_deletes(tmp_path):
     assert (state.current_mask_volume == 7).sum() > 0    # other cell untouched
 
 
+def test_fill_ray_only_hits_contiguous_component(tmp_path):
+    """3D-view fill via a ray deletes only the contiguous component under the cursor,
+    not a disconnected blob that shares the label."""
+    state = _session(tmp_path)
+    mv = state.current_mask_volume
+    mv[mv == 5] = 0                                       # clear the central cell
+    mv[8:12, 8:12, 8:12] = 9                              # blob A (front, high z)
+    mv[8:12, 8:12, 0:3] = 9                               # blob B, disconnected, same label
+    state.current_ncolor_volume = None
+    state.label_group = None
+    # ray straight down +z through (x,y)=(10,10) hits blob A first
+    out = SESSION_MANAGER.fill_ray(state, [0, 0, 30], [0, 0, -1], BOX_MIN, BOX_MAX, erase=True)
+    assert out == 0
+    assert (state.current_mask_volume[8:12, 8:12, 8:12] == 9).sum() == 0   # blob A erased
+    assert (state.current_mask_volume[8:12, 8:12, 0:3] == 9).sum() > 0     # blob B kept
+
+
 def test_fill_label_identity_merge_and_undo(tmp_path):
     state = _session(tmp_path)
     n5 = int((state.current_mask_volume == 5).sum())

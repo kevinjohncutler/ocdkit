@@ -226,8 +226,10 @@
       c.addEventListener("contextmenu", (e) => e.preventDefault());
       c.addEventListener("pointerdown", (e) => {
         // picker / fill tool: click the cell under the cursor (ray-pick) instead
-        // of rotating. Left button only; other buttons still rotate/pan.
-        if (e.button === 0 && !e.shiftKey && typeof window.__viewerActiveTool === "function") {
+        // of rotating. Left button only; other buttons still rotate/pan. Holding
+        // space is the orbit/pan override, so it always rotates regardless of tool.
+        const spaceHeld = !!(window.__viewerSpacePan && window.__viewerSpacePan());
+        if (e.button === 0 && !e.shiftKey && !spaceHeld && typeof window.__viewerActiveTool === "function") {
           const t = window.__viewerActiveTool();      // 'picker' | 'fill' | 'erase' act on the cell
           if ((t === "picker" || t === "fill" || t === "erase") && typeof window.__viewerVolume3DPick === "function") {
             const r = c.getBoundingClientRect();

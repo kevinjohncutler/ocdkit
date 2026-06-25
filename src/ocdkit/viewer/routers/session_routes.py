@@ -394,6 +394,23 @@ async def api_pick_ray(session_id: str, request: Request) -> dict:
     return {"label": lab, "group": grp, "voxel": vc}
 
 
+@router.post("/fill_ray/{session_id}")
+async def api_fill_ray(session_id: str, request: Request, group: int = -1,
+                       target: int = 0, erase: int = 0) -> dict:
+    """3D-view fill: ray-pick the cell (body: ro, rd, boxMin, boxMax) and fill its
+    connected component (contiguous region only)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    body = await request.json()
+    lab = SESSION_MANAGER.fill_ray(state, body.get("ro"), body.get("rd"),
+                                   body.get("boxMin"), body.get("boxMax"),
+                                   group=group, target_label=target, erase=bool(erase))
+    return {"ok": True, "label": lab,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
 @router.post("/fill_label/{session_id}")
 def api_fill_label(session_id: str, label: int = 0, group: int = -1,
                    target: int = 0, erase: int = 0) -> dict:
