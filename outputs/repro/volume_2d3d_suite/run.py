@@ -76,7 +76,7 @@ def main():
             # ---------- 2D ----------
             print("2D view:")
             dbg = pg.evaluate("window.__viewerDebugOutline()")
-            check("2D default mode is outlined", dbg["mode"] == "outlined")
+            check("2D default mode is edges-only (outline)", dbg["mode"] == "outline")
             check("2D outline pixels render (>0)", dbg["outlinePixels"] > 0)
             W = pg.evaluate("window.__VIEWER_CONFIG__.width")
             H = pg.evaluate("window.__VIEWER_CONFIG__.height")
@@ -138,6 +138,12 @@ def main():
             check("3D erase-fill deletes the clicked cell", cnt(1) == 0)
             check("3D erase-fill keeps the neighbour", cnt(2) > 0)
             check("3D fill stays in 3D (no flash to 2D)", mode_after == "3d")
+
+            # undo / redo WHILE in 3D — must refresh the 3D render, not lag (the bug)
+            pg.keyboard.press("Control+z"); pg.wait_for_timeout(800)
+            check("3D undo restores cell (in 3D)", cnt(1) > 0 and pg.evaluate("window.__volumeMode.getMode()") == "3d")
+            pg.keyboard.press("Control+Shift+z"); pg.wait_for_timeout(800)
+            check("3D redo re-deletes cell (in 3D)", cnt(1) == 0)
 
             # ---------- cross-mode ----------
             print("cross-mode:")

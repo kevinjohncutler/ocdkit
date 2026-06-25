@@ -465,7 +465,10 @@ const MASK_DISPLAY_MODES = {
   OUTLINE: 'outline',
   HIDDEN: 'hidden',
 };
-let maskDisplayMode = MASK_DISPLAY_MODES.OUTLINED;
+// Volumes default to clean EDGES (outline-only); flat 2D images keep outline+fill.
+let maskDisplayMode = (typeof CONFIG !== 'undefined' && CONFIG && CONFIG.isVolume)
+  ? MASK_DISPLAY_MODES.OUTLINE
+  : MASK_DISPLAY_MODES.OUTLINED;
 let outlinesVisible = true; // derives from maskDisplayMode
 
 function normalizeMaskDisplayMode(value) {
@@ -2272,9 +2275,12 @@ if (savedViewerState) {
     flowThresholdSlider.value = Number(savedViewerState.flowThreshold).toFixed(1);
     updateNativeRangeFill(flowThresholdSlider);
   }
-  if (typeof savedViewerState.maskDisplayMode === 'string' && !CONFIG.isVolume) {
-    // Volumes always start in 'outlined' — don't restore a persisted style (a
-    // prior force-solid bug poisoned saved state and hid the 2D outlines).
+  if (CONFIG.isVolume) {
+    // Volumes default to clean EDGES (outline-only) — what's wanted for slices, and
+    // immune to the persisted-style poisoning that hid outlines under a solid fill.
+    maskDisplayMode = MASK_DISPLAY_MODES.OUTLINE;
+    outlinesVisible = true;
+  } else if (typeof savedViewerState.maskDisplayMode === 'string') {
     maskDisplayMode = normalizeMaskDisplayMode(savedViewerState.maskDisplayMode);
     outlinesVisible = maskDisplayMode === MASK_DISPLAY_MODES.OUTLINED || maskDisplayMode === MASK_DISPLAY_MODES.OUTLINE;
   }
@@ -4204,7 +4210,12 @@ function restoreViewerState(saved) {
       }
       updateMaskVisibilityLabel();
     }
-    if (typeof saved.maskDisplayMode === 'string' && !CONFIG.isVolume) {
+    if (CONFIG.isVolume) {
+      maskDisplayMode = MASK_DISPLAY_MODES.OUTLINE;   // volumes: clean edges only
+      outlinesVisible = true;
+      maskVisible = true;
+      setPanelCollapsed(labelStylePanel, false);
+    } else if (typeof saved.maskDisplayMode === 'string') {
       maskDisplayMode = normalizeMaskDisplayMode(saved.maskDisplayMode);
       outlinesVisible = maskDisplayMode === MASK_DISPLAY_MODES.OUTLINED || maskDisplayMode === MASK_DISPLAY_MODES.OUTLINE;
       if (maskDisplayMode === MASK_DISPLAY_MODES.HIDDEN) {

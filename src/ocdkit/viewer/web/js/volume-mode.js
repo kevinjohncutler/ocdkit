@@ -175,8 +175,9 @@
         const j = await r.json();
         srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
         if (j.changed) {
-          mask3dStale = true;
-          await fetchNColorMap(); await updateMaskSlice(slice);   // pull the reverted state from the server
+          await fetchNColorMap();
+          await updateMaskSlice(slice);   // refresh the 2D buffer
+          await refresh3DLabels();        // AND the 3D render in place (was missing → 3D undo looked dead)
         }
         if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
       } catch (e) { /* leave display as-is on transient error */ }
@@ -227,6 +228,7 @@
         const r = await fetch("/api/ncolor_volume/" + encodeURIComponent(cfg.sessionId));
         if (!r.ok) { mask3dStale = true; return; }
         vgpu.updateLabels(new Uint8Array(await r.arrayBuffer()));
+        mask3dStale = false;            // 3D texture now reflects the server volume
       } catch (e) { mask3dStale = true; }
     }
 
