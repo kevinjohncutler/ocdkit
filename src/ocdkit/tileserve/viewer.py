@@ -1779,7 +1779,7 @@ function _syncHdrLabels(){
   clone.querySelectorAll('*').forEach(el=>{ const t=(el.tagName||'').toLowerCase();
     if(t==='svg'||t==='g'||t==='defs'||t==='style'||t==='clippath') return;        // structural — keep
     if(t==='text'){ if(!activeText[el.textContent||'']){ el.setAttribute('display','none'); return; }
-      el.setAttribute('fill-opacity','1');                                          // ensure the glyph paints in the clone
+      el.style.fillOpacity='1'; el.removeAttribute('display');                      // OVERRIDE the inline fill-opacity:0 the live twin set on already-pinned labels — a setAttribute can't beat an inline style, so the first-pinned label stayed invisible in the clone and vanished when a second was pinned
       if(!el.getAttribute('font-size')){ el.setAttribute('font-size',cs0.fontSize);  // inline inherited font (standalone svg has no doc CSS)
         el.setAttribute('font-family',cs0.fontFamily); el.setAttribute('font-weight',cs0.fontWeight); }
       return; }
