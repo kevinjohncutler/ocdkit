@@ -1771,11 +1771,16 @@ function _syncHdrLabels(){
   const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true}); ctx.clearRect(0,0,W,H);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';   // sit on the glyph BASELINE (its ink bottom), not the em middle — 'middle' put the twin ~0.05em high
   for(const a of act){ const er=a.er;
-    const cx=(er.left+er.width/2-oref.left)*dpr, cy=(er.bottom-oref.top-y0)*dpr;
     const cs=self.getComputedStyle(a.el), fam=cs.fontFamily||'sans-serif', wt=cs.fontWeight||'normal';
-    const ctm=a.el.getScreenCTM(), sc=ctm?Math.hypot(ctm.a,ctm.b):1;   // EXACT: SVG font-size × on-screen scale (no bbox guessing)
+    const ctm=a.el.getScreenCTM(), sc=ctm?Math.hypot(ctm.a,ctm.b):1;   // EXACT size: SVG font-size × on-screen scale
     const fs=(parseFloat(cs.fontSize)||10)*sc*dpr;
     ctx.font=wt+' '+fs+'px '+fam;
+    const cx=(er.left+er.width/2-oref.left)*dpr;
+    // EXACT baseline: read the glyph's own char baseline from the SVG and map it to
+    // screen — the bbox top/centre/bottom all mis-sit the twin because the SVG bbox
+    // carries font ascent/descent metrics, not the true baseline.
+    let baseY=er.bottom; try{ if(ctm) baseY=a.el.getStartPositionOfChar(0).matrixTransform(ctm).y; }catch(_){}
+    const cy=(baseY-oref.top-y0)*dpr;
     ctx.fillStyle=_refColors[a.ro]||'#bbb';
     ctx.fillText(a.el.textContent||'', cx, cy);
   }
