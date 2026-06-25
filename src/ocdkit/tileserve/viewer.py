@@ -1776,11 +1776,12 @@ function _syncHdrLabels(){
     const fs=(parseFloat(cs.fontSize)||10)*sc*dpr;
     ctx.font=wt+' '+fs+'px '+fam;
     const cx=(er.left+er.width/2-oref.left)*dpr;
-    // EXACT baseline: read the glyph's own char baseline from the SVG and map it to
-    // screen — the bbox top/centre/bottom all mis-sit the twin because the SVG bbox
-    // carries font ascent/descent metrics, not the true baseline.
-    let baseY=er.bottom; try{ if(ctm) baseY=a.el.getStartPositionOfChar(0).matrixTransform(ctm).y; }catch(_){}
-    const cy=(baseY-oref.top-y0)*dpr;
+    // vertical: centre the glyph's INK on the SVG label's box centre, using the
+    // canvas's OWN measured metrics — no SVG-text APIs. ('middle' baseline sat ~0.05em
+    // high because the em middle != the ink centre; bbox-bottom + getStartPositionOfChar
+    // overshot.) 'alphabetic' baseline = box centre + half the ink height.
+    const _m=ctx.measureText(a.el.textContent||''), _ia=(_m.actualBoundingBoxAscent||fs*0.7), _id=(_m.actualBoundingBoxDescent||0);
+    const cy=(er.top+er.height/2-oref.top-y0)*dpr + (_ia-_id)/2;
     ctx.fillStyle=_refColors[a.ro]||'#bbb';
     ctx.fillText(a.el.textContent||'', cx, cy);
   }
