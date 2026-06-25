@@ -13,12 +13,35 @@ the host's job — so the same engine composes into any application.
 """
 from __future__ import annotations
 
+import gzip
 import threading
 import uuid
 
 import numpy as np
 
 from ._pyramid import image_pyramid, pyramid_dims
+
+
+# Raw label/instance matrices (uint16/int32) are the bulk of mask-tile bytes but
+# gzip ~30x (long runs of one id); float image tiles barely compress (~1.3x), and
+# gzipping a 32 MB tile to save nothing wastes ~0.5s. So a cheap 256 KiB probe
+# decides per tile, and the verdict is cached so retries don't recompress. This is
+# what keeps masks fast over a remote / forwarded link (e.g. VS Code Remote-SSH
+# port forward, ~30 MB/s) where the raw matrices would otherwise crawl.
+_ATTACH_GZIP_CACHE: dict = {}
+
+
+def _attach_gzip(key, blob: bytes):
+    cached = _ATTACH_GZIP_CACHE.get(key, 0)
+    if cached != 0:
+        return cached                       # gz bytes, or None (probed-incompressible)
+    sample = blob[:262144]
+    if len(gzip.compress(sample, 1)) > 0.7 * len(sample):
+        _ATTACH_GZIP_CACHE[key] = None      # float image tile — not worth it; send raw
+        return None
+    gz = gzip.compress(blob, 1)
+    _ATTACH_GZIP_CACHE[key] = gz if len(gz) < 0.9 * len(blob) else None
+    return _ATTACH_GZIP_CACHE[key]
 
 
 # ─────────────────────────────── source ─────────────────────────────────
@@ -377,7 +400,7 @@ _SERVER_LOCK = threading.Lock()
 
 def make_app():
     """Build the FastAPI app with the generic routes + host extensions."""
-    from fastapi import FastAPI
+    from fastapi import FastAPI, Header
     from fastapi.responses import JSONResponse, Response
     from fastapi.middleware.cors import CORSMiddleware
 
@@ -507,7 +530,7 @@ def make_app():
         })
 
     @app.get("/attach/{sid}/{name}")
-    async def attach_get(sid: str, name: str):
+    async def attach_get(sid: str, name: str, accept_encoding: str = Header(None)):
         src = get_source(sid)
         a = src.attachments.get(name) if src else None
         if a is None:
@@ -515,6 +538,14 @@ def make_app():
         blob, headers, media = a
         h = {"Cache-Control": "no-store"}
         h.update(headers or {})
+        # gzip compressible tiles (mask matrices ~30x) on a slow/forwarded link;
+        # the probe skips incompressible float image tiles (they'd just waste CPU).
+        if (len(blob) > 65536 and "Content-Encoding" not in h
+                and "gzip" in (accept_encoding or "")):
+            gz = _attach_gzip((sid, name, len(blob)), blob)
+            if gz is not None:
+                h["Content-Encoding"] = "gzip"
+                return Response(content=gz, media_type=media, headers=h)
         return Response(content=blob, media_type=media, headers=h)
 
     # ── generic viewer HTML (the zoomable colormap tile grid + LinkedPanel) ──
