@@ -1727,16 +1727,21 @@ function _refApply(ro){
   (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
   (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; l.style.fillOpacity='1'; });   // fillOpacity reset; _syncHdrLabels sets 0 when its HDR twin renders
 }
+let _hdrLabT=0;
+function _syncHdrLabelsSoon(){   // _refSyncGpu fires on EVERY pointer-move; the HDR label
+  if(_hdrLabT) clearTimeout(_hdrLabT);            // raster + getImageData readback + per-pixel
+  _hdrLabT=setTimeout(()=>{ _hdrLabT=0; try{_syncHdrLabels();}catch(_){} }, 45);  // f16 lift over the whole strip is FAR too heavy per move → coalesce to the settled frame (fixes laggy hover)
+}
 function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
   if(_specCfg){ _specCfg.lineBoost=_lineBoost(); _specCfg.sdr=_sdrMode; }   // gain + shared SDR-normalize flag
-  if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} try{ _syncHdrLabels(); }catch(_){} return; }
+  if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} _syncHdrLabelsSoon(); return; }
   const dpr=self.devicePixelRatio||1, refs=[];
   Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
     refs.push({segs:_refSegs[ro], color:_refRGB[ro]||[0.7,0.7,0.7], dash:[6*dpr,4*dpr]}); });
   try{ PANEL.setRefs(cv, ov, refs); }catch(_){}
-  try{ _syncHdrLabels(); }catch(_){}
+  _syncHdrLabelsSoon();
 }
 // HDR top-axis labels: glow the ACTIVE (pinned/hovered) readout labels onto a
 // WebGPU rgba16float canvas behind the SVG, lifted by the SAME _lineBoost() as
@@ -1759,7 +1764,7 @@ function _syncHdrLabels(){
   const W=Math.max(1,Math.round(ow*dpr)), H=Math.max(1,Math.round(oh*dpr));
   if(!_hdrLabSrc) _hdrLabSrc=document.createElement('canvas');
   _hdrLabSrc.width=W; _hdrLabSrc.height=H;
-  const ctx=_hdrLabSrc.getContext('2d'); ctx.clearRect(0,0,W,H);
+  const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true}); ctx.clearRect(0,0,W,H);
   ctx.textAlign='center'; ctx.textBaseline='middle';
   const oref=ovl.getBoundingClientRect();
   for(const a of act){
