@@ -1769,9 +1769,9 @@ function _syncHdrLabels(){
   if(!_hdrLabSrc) _hdrLabSrc=document.createElement('canvas');
   _hdrLabSrc.width=W; _hdrLabSrc.height=H;
   const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true}); ctx.clearRect(0,0,W,H);
-  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';   // sit on the glyph BASELINE (its ink bottom), not the em middle — 'middle' put the twin ~0.05em high
   for(const a of act){ const er=a.er;
-    const cx=(er.left+er.width/2-oref.left)*dpr, cy=(er.top+er.height/2-oref.top-y0)*dpr;
+    const cx=(er.left+er.width/2-oref.left)*dpr, cy=(er.bottom-oref.top-y0)*dpr;
     const cs=self.getComputedStyle(a.el), fam=cs.fontFamily||'sans-serif', wt=cs.fontWeight||'normal';
     const ctm=a.el.getScreenCTM(), sc=ctm?Math.hypot(ctm.a,ctm.b):1;   // EXACT: SVG font-size × on-screen scale (no bbox guessing)
     const fs=(parseFloat(cs.fontSize)||10)*sc*dpr;
