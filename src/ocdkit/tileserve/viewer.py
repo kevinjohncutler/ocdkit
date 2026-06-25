@@ -329,7 +329,7 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
  #acts #hdrbtn svg{width:auto;height:16px}    /* wide HDR pill: pin by height, keep aspect */
  #acts button.hdr-off{opacity:0.4}    /* HDR on = opaque, off (SDR) = translucent */
 </style></head><body>
-<div id="wrap"><canvas id="c"></canvas><canvas id="speccv" data-spectra-density="1"></canvas><canvas id="specovl" data-spectra-overlay="1"></canvas><svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg><div id="labs"></div></div><div id="hud">init…</div><div id="sgtip"></div><div id="acts"><button id="hdrbtn" title="HDR: on"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18"><mask id="hdrcut"><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="white"/><text x="14" y="12.3" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="9.5" fill="black">HDR</text></mask><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="currentColor" mask="url(#hdrcut)"/></svg></button><button id="savebtn" title="Save as PNG"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="currentColor" d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/></svg></button><button id="copybtn" title="Copy as PNG"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M4.75 3A1.75 1.75 0 003 4.75v9.5c0 .966.784 1.75 1.75 1.75h1.5a.75.75 0 000-1.5h-1.5a.25.25 0 01-.25-.25v-9.5a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v1.5a.75.75 0 001.5 0v-1.5A1.75 1.75 0 0014.25 3h-9.5zm5 5A1.75 1.75 0 008 9.75v9.5c0 .966.784 1.75 1.75 1.75h9.5A1.75 1.75 0 0021 19.25v-9.5A1.75 1.75 0 0019.25 8h-9.5zM9.5 9.75a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v9.5a.25.25 0 01-.25.25h-9.5a.25.25 0 01-.25-.25v-9.5z"/></svg></button></div>
+<div id="wrap"><canvas id="c"></canvas><canvas id="speccv" data-spectra-density="1"></canvas><canvas id="specovl" data-spectra-overlay="1"></canvas><canvas id="speclabhdr" style="position:absolute;left:0;top:0;pointer-events:none"></canvas><svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg><div id="labs"></div></div><div id="hud">init…</div><div id="sgtip"></div><div id="acts"><button id="hdrbtn" title="HDR: on"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18"><mask id="hdrcut"><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="white"/><text x="14" y="12.3" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="9.5" fill="black">HDR</text></mask><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="currentColor" mask="url(#hdrcut)"/></svg></button><button id="savebtn" title="Save as PNG"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="currentColor" d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/></svg></button><button id="copybtn" title="Copy as PNG"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M4.75 3A1.75 1.75 0 003 4.75v9.5c0 .966.784 1.75 1.75 1.75h1.5a.75.75 0 000-1.5h-1.5a.25.25 0 01-.25-.25v-9.5a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v1.5a.75.75 0 001.5 0v-1.5A1.75 1.75 0 0014.25 3h-9.5zm5 5A1.75 1.75 0 008 9.75v9.5c0 .966.784 1.75 1.75 1.75h9.5A1.75 1.75 0 0021 19.25v-9.5A1.75 1.75 0 0019.25 8h-9.5zM9.5 9.75a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v9.5a.25.25 0 01-.25.25h-9.5a.25.25 0 01-.25-.25v-9.5z"/></svg></button></div>
 <script>__SPECTRA_GL__</script>
 <script>__SCATTER_GL__</script>
 <script>
@@ -1725,23 +1725,63 @@ function _lineBoost(){ return Math.max(1, _HDRGAIN); }
 function _refApply(ro){
   const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refGpuOn();
   (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
-  (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; l.style.fillOpacity='1'; });   // recolour the EXISTING <text> in place (active = readout colour); no twin
+  (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; l.style.fillOpacity='1'; });   // recolour the EXISTING <text> (active = readout colour); _syncHdrLabels hides this flat copy ONLY in the live view where its HDR twin renders
 }
 function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
   if(_specCfg){ _specCfg.lineBoost=_lineBoost(); _specCfg.sdr=_sdrMode; }   // gain + shared SDR-normalize flag
-  if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} return; }
+  if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} try{ _syncHdrLabels(); }catch(_){} return; }
   const dpr=self.devicePixelRatio||1, refs=[];
   Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
     refs.push({segs:_refSegs[ro], color:_refRGB[ro]||[0.7,0.7,0.7], dash:[6*dpr,4*dpr]}); });
   try{ PANEL.setRefs(cv, ov, refs); }catch(_){}
+  try{ _syncHdrLabels(); }catch(_){}
 }
-// Active readout labels recolour their EXISTING SVG <text> in place (see _refApply
-// above — fill = the readout colour, fill-opacity 1). No HDR canvas twin: an SVG
-// element can't render into the display headroom, and a separate rasterized twin
-// drifted in size + drew over the real glyph. The label shares the line's HUE; the
-// >1 glow stays on the GPU line only.
+// HDR top-axis labels: the LIVE /grid view glows the active readout labels into the
+// display headroom on a WebGPU rgba16float canvas (an SVG <text> can't render >1),
+// matching the reference line's colour. The SVG <text> stays for hit-testing AND the
+// static export (a separate render — real editable text); fill-opacity:0 hides ONLY
+// the live flat glyph where its HDR twin sits. Two things kept it honest before:
+// (1) size is taken EXACTLY from the element's on-screen CTM scale — no bbox guess;
+// (2) the raster covers only the label BAND, not the whole plot, so it's cheap per
+// pointer-move (no debounce / no lag).
+let _hdrLabSrc=null;
+function _syncHdrLabels(){
+  const hdr=document.getElementById('speclabhdr'), ovl=document.getElementById('ovl');
+  if(!hdr||!ovl||!PANEL||!PANEL.renderHdrLabels) return;
+  const dpr=self.devicePixelRatio||1, oref=ovl.getBoundingClientRect();
+  const act=[]; let y0=1e9,y1=-1e9;
+  Object.keys(_refLabels).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
+    (_refLabels[ro]||[]).forEach(el=>{ const er=el.getBoundingClientRect(); if(!er.width) return;
+      act.push({el:el,ro:ro,er:er}); y0=Math.min(y0,er.top-oref.top); y1=Math.max(y1,er.bottom-oref.top); }); });
+  if(!act.length){   // nothing active → clear the twin, leave the flat SVG visible
+    Object.keys(_refLabels).forEach(ro=>(_refLabels[ro]||[]).forEach(el=>{ el.style.fillOpacity='1'; }));
+    hdr.style.width='0px'; hdr.style.height='0px';
+    try{ const c=document.createElement('canvas'); c.width=1; c.height=1; PANEL.renderHdrLabels(hdr,c,_lineBoost(),_sdrMode); }catch(_){}
+    return;
+  }
+  const ow=ovl.clientWidth||0; if(!ow) return;
+  const pad=2; y0=Math.max(0,Math.floor(y0-pad)); y1=Math.ceil(y1+pad); const bandH=Math.max(1,y1-y0);
+  hdr.style.left=(ovl.offsetLeft||0)+'px'; hdr.style.top=((ovl.offsetTop||0)+y0)+'px';   // band only, not whole plot → cheap raster
+  hdr.style.width=ow+'px'; hdr.style.height=bandH+'px';
+  const W=Math.max(1,Math.round(ow*dpr)), H=Math.max(1,Math.round(bandH*dpr));
+  if(!_hdrLabSrc) _hdrLabSrc=document.createElement('canvas');
+  _hdrLabSrc.width=W; _hdrLabSrc.height=H;
+  const ctx=_hdrLabSrc.getContext('2d',{willReadFrequently:true}); ctx.clearRect(0,0,W,H);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(const a of act){ const er=a.er;
+    const cx=(er.left+er.width/2-oref.left)*dpr, cy=(er.top+er.height/2-oref.top-y0)*dpr;
+    const cs=self.getComputedStyle(a.el), fam=cs.fontFamily||'sans-serif', wt=cs.fontWeight||'normal';
+    const ctm=a.el.getScreenCTM(), sc=ctm?Math.hypot(ctm.a,ctm.b):1;   // EXACT: SVG font-size × on-screen scale (no bbox guessing)
+    const fs=(parseFloat(cs.fontSize)||10)*sc*dpr;
+    ctx.font=wt+' '+fs+'px '+fam;
+    ctx.fillStyle=_refColors[a.ro]||'#bbb';
+    ctx.fillText(a.el.textContent||'', cx, cy);
+  }
+  const ok=PANEL.renderHdrLabels(hdr, _hdrLabSrc, _lineBoost(), _sdrMode);
+  for(const a of act) a.el.style.fillOpacity = ok ? '0' : '1';
+}
 function _refApplyAll(){ const seen={};
   Object.keys(_refPaths).forEach(r=>seen[r]=1); Object.keys(_refLabels).forEach(r=>seen[r]=1);
   Object.keys(seen).forEach(_refApply); _refSyncGpu(); }
