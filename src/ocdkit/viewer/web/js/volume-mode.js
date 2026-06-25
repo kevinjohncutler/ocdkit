@@ -71,6 +71,7 @@
     let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
     let hasMask = !!cfg.hasVolumeMask;
     let mask3dStale = false; // 2D edits not yet reflected in the 3D bundle
+    let saved2dMode = null, saved3dMode = null;   // remembered label style per view
 
     // axis: 0=Z, 1=Y, 2=X. volumeShape = [D, H, W].
     const AXES = ["Z", "Y", "X"];
@@ -121,17 +122,36 @@
     // maskValues holds group IDs, so we must NOT post it back as labels.
     async function persistIfEdited() { window.__viewerMaskEdited = false; }
 
-    // scrub within the current axis (dimensions unchanged → cheap image swap)
+    // scrub within the current axis (dimensions unchanged → cheap image swap).
+    // Preload the slice IMAGE and the MASK in parallel, then apply both in one
+    // synchronous block so the frame never shows a new image over the old mask.
+    let _scrubSeq = 0;
     async function showSlice(z) {
       await persistIfEdited();
       z = Math.max(0, Math.min(depthOf(curAxis) - 1, z | 0));
       slice = z;
       slider.value = String(z);
       paintLabel();
+      const seq = ++_scrubSeq;                          // ignore stale fetches if scrubbed again
       const url = "/api/volume_slice/" + encodeURIComponent(cfg.sessionId) +
                   "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
-      if (typeof window.__viewerSetSliceImage === "function") window.__viewerSetSliceImage(url);
-      updateMaskSlice(z);
+      const img = new Image();
+      const imgReady = new Promise((res) => { img.onload = res; img.onerror = res; img.src = url; });
+      let maskReady = Promise.resolve(null);
+      if (hasMask) {
+        if (labelGroups.length <= 1) await fetchNColorMap();
+        maskReady = fetch("/api/mask_slice/" + encodeURIComponent(cfg.sessionId) +
+                          "?z=" + z + "&axis=" + curAxis + "&kind=group&t=" + Date.now())
+          .then(async (r) => (r.ok ? { r, buf: await r.arrayBuffer() } : null)).catch(() => null);
+      }
+      const [, mask] = await Promise.all([imgReady, maskReady]);
+      if (seq !== _scrubSeq) return;                    // a newer scrub superseded us
+      if (typeof window.__viewerSetSliceImageEl === "function") window.__viewerSetSliceImageEl(img);
+      else if (typeof window.__viewerSetSliceImage === "function") window.__viewerSetSliceImage(url);
+      if (hasMask) {
+        if (mask) { applyNColorPalette(); window.__viewerSetMaskSlice(_bufToU32(mask.r, mask.buf)); }
+        else window.__viewerSetMaskSlice(null);
+      }
     }
     slider.addEventListener("input", () => showSlice(parseInt(slider.value, 10)));
     if (hasMask) { fetchNColorMap(); updateMaskSlice(slice); }   // initial palette + overlay
@@ -367,8 +387,13 @@
 
     async function setMode(next) {
       await persistIfEdited();
-      mode = next;
       const is3d = next === "3d";
+      // Per-view label-style memory: remember the style of the view we're leaving,
+      // restore the one we're entering. 3D only sensibly shows solid/hidden labels,
+      // so it defaults to 'solid'; 2D keeps whatever style you last used there.
+      const curStyle = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : null;
+      if (curStyle) { if (mode === "3d") saved3dMode = curStyle; else saved2dMode = curStyle; }
+      mode = next;
       btn2d.classList.toggle("is-active", !is3d);
       btn3d.classList.toggle("is-active", is3d);
       canvas2d.style.visibility = is3d ? "hidden" : "";
@@ -378,11 +403,11 @@
       if (axisRow) axisRow.hidden = is3d;               // axis picker is a 2D control
       if (projRow) projRow.hidden = !is3d;
       setStyleButtonsFor3D(is3d);
+      // 3D → solid (or the remembered 3D style); 2D → the remembered 2D style.
+      if (window.__viewerSetMaskDisplayMode) {
+        window.__viewerSetMaskDisplayMode(is3d ? (saved3dMode || "solid") : (saved2dMode || "outline"));
+      }
       if (is3d) {
-        // NOTE: do NOT change the global maskDisplayMode here — it drives the 2D
-        // outline rendering and is persisted. The 3D render only cares about
-        // show-vs-hide labels (applyLabelVisibilityToGpu), independent of the
-        // 2D outline/fill style. (Forcing 'solid' here wiped 2D outlines.)
         if (mask3dStale && vgpu) {
           try { vgpu.destroy(); } catch (e) {}
           vgpu = null; window.__volumeGPU = null; loading = null;

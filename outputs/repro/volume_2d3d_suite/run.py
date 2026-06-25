@@ -93,6 +93,9 @@ def main():
             print("3D view:")
             pg.eval_on_selector('[data-view="3d"]', "e=>e.click()")
             pg.wait_for_function("window.__volumeMode.gpu()!==null", timeout=20000); pg.wait_for_timeout(900)
+            check("3D auto-switches label style to solid", pg.evaluate("window.__viewerMaskDisplayMode()") == "solid")
+            check("3D greys out outline-style buttons",
+                  pg.evaluate("document.querySelector('#maskStyleToggle [data-mask-style=outline]').disabled"))
             box = pg.query_selector("#volumeViewer").bounding_box()
             cx, cy = box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5
 
@@ -148,9 +151,24 @@ def main():
             # ---------- cross-mode ----------
             print("cross-mode:")
             pg.eval_on_selector('[data-view="2d"]', "e=>e.click()"); pg.wait_for_timeout(700)
+            check("2D label style restored to outline (per-view memory)",
+                  pg.evaluate("window.__viewerMaskDisplayMode()") == "outline")
             check("3D edit reflected on the 2D slice", cnt(1) == 0)
             pg.keyboard.press("Control+z"); pg.wait_for_timeout(800)
-            check("undo restores the 3D-deleted cell (2D)", cnt(1) > 0)
+            check("undo restores the 3D-deleted cell (in 2D)", cnt(1) > 0)
+            pg.keyboard.press("Control+Shift+z"); pg.wait_for_timeout(800)
+            check("redo re-applies the 3D edit (in 2D, cross-mode)", cnt(1) == 0)
+            pg.keyboard.press("Control+z"); pg.wait_for_timeout(800)   # leave it restored
+
+            # per-view memory: 3D remembers 'hidden'; 2D stays 'outline'
+            print("per-view label memory:")
+            pg.eval_on_selector('[data-view="3d"]', "e=>e.click()"); pg.wait_for_timeout(500)
+            pg.evaluate("window.__viewerSetMaskDisplayMode('hidden')"); pg.wait_for_timeout(400)
+            check("3D hidden → labels off", pg.evaluate("window.__volumeGPU.showLabels") == 0)
+            pg.eval_on_selector('[data-view="2d"]', "e=>e.click()"); pg.wait_for_timeout(500)
+            check("2D still outline (not hidden)", pg.evaluate("window.__viewerMaskDisplayMode()") == "outline")
+            pg.eval_on_selector('[data-view="3d"]', "e=>e.click()"); pg.wait_for_timeout(500)
+            check("3D remembers hidden", pg.evaluate("window.__viewerMaskDisplayMode()") == "hidden")
 
             print("JS errors:", errs or "none")
             check("no JS errors", not errs)

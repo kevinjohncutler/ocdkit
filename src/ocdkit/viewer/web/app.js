@@ -7643,14 +7643,18 @@ function applyImageAdjustments() {
 // Swap only the displayed intensity image (same dimensions) without touching
 // masks, view, window/gamma or history. Used by volume-mode.js to scrub through
 // z-slices of a loaded volume (2.5D). Reuses the normal adjust→upload→draw path.
+// Apply an already-decoded slice image element synchronously (draws once). Lets the
+// caller preload the image and the mask, then apply both back-to-back so the 2.5D
+// view never paints a new image against the previous slice's mask.
+window.__viewerSetSliceImageEl = function (img) {
+  offCtx.drawImage(img, 0, 0);
+  originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
+  if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
+  applyImageAdjustments();   // re-applies current window/gamma → base texture + draw
+};
 window.__viewerSetSliceImage = function (url) {
   const img = new Image();
-  img.onload = function () {
-    offCtx.drawImage(img, 0, 0);
-    originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
-    if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
-    applyImageAdjustments();   // re-applies current window/gamma → base texture + draw
-  };
+  img.onload = function () { window.__viewerSetSliceImageEl(img); };
   img.src = url;
 };
 
