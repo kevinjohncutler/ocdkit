@@ -31,8 +31,11 @@ from jupyter_server.utils import url_path_join
 # numpy/the engine into the Jupyter server process).
 _ALLOWED_PORTS = {"8137", "8138", "8139", "8140"}
 
-# Engine response headers the viewer reads — forwarded verbatim.
-_FWD_HEADERS = ("Content-Type", "Cache-Control")
+# Engine response headers the viewer reads — forwarded verbatim. Content-Encoding
+# is essential: the engine gzips compressible tiles (mask matrices ~30x), and the
+# browser only inflates them if this hop both asks for gzip upstream (see the
+# request below) AND passes the encoding header through.
+_FWD_HEADERS = ("Content-Type", "Cache-Control", "Content-Encoding", "Vary")
 _FWD_PREFIX = "X-"   # X-Level-Width, X-Mode, X-Lo/Hi, X-Downsample, X-Map-W …
 
 
@@ -89,6 +92,12 @@ class TileProxyHandler(JupyterHandler):
         req = tornado.httpclient.HTTPRequest(
             url, method="GET", header_callback=lambda ln: hdr_lines.append(ln),
             streaming_callback=_on_chunk, decompress_response=False,
+            # Ask the engine to gzip (mask matrices ~30x) and stream the compressed
+            # bytes through unchanged (decompress_response=False) — the browser
+            # inflates. Forward the browser's own Accept-Encoding so we never request
+            # an encoding the client can't read.
+            headers={"Accept-Encoding":
+                     self.request.headers.get("Accept-Encoding", "")},
             connect_timeout=5, request_timeout=120)
         client = tornado.httpclient.AsyncHTTPClient()
         try:
