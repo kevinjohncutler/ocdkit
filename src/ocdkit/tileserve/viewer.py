@@ -1770,8 +1770,15 @@ function _syncHdrLabels(){
   for(const a of act){
     const er=a.el.getBoundingClientRect(); if(!er.width) continue;
     const cx=(er.left+er.width/2-oref.left)*dpr, cy=(er.top+er.height/2-oref.top)*dpr;
-    const cs=self.getComputedStyle(a.el), fs=(parseFloat(cs.fontSize)||(er.height*0.8))*dpr;
-    ctx.font='bold '+fs+'px '+(cs.fontFamily||'sans-serif');
+    const cs=self.getComputedStyle(a.el), fam=cs.fontFamily||'sans-serif', wt=cs.fontWeight||'normal';
+    // Match the flat gray SVG <text> EXACTLY so the HDR/SDR twin never changes size:
+    // (1) its real weight, NOT a forced 'bold' (which was wider/heavier than the SVG);
+    // (2) size by measuring a trial render and scaling so the glyph bbox height ==
+    // er.height*dpr — robust to the SVG's ``rx`` render-scale that cs.fontSize ignored.
+    let fs=(parseFloat(cs.fontSize)||(er.height*0.8))*dpr;
+    ctx.font=wt+' '+fs+'px '+fam;
+    const _m=ctx.measureText(a.el.textContent||''), _gh=(_m.actualBoundingBoxAscent||0)+(_m.actualBoundingBoxDescent||0);
+    if(_gh>0){ fs=fs*er.height*dpr/_gh; ctx.font=wt+' '+fs+'px '+fam; }
     ctx.fillStyle=_refColors[a.ro]||'#bbb';
     ctx.fillText(a.el.textContent||'', cx, cy);
   }
