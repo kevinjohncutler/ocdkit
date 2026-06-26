@@ -91,8 +91,8 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
    overflow:hidden;text-overflow:ellipsis;pointer-events:none}
  /* HDR/save/copy action buttons (icons), bottom-right; mirrors ocdkit's
     .ocd-svgfig-actions styling. Outside #wrap → excluded from the capture. */
- #acts{position:fixed;right:10px;bottom:10px;display:flex;gap:8px;justify-content:flex-end;
-   opacity:0.8;transition:opacity .15s;z-index:30}
+ #acts{position:fixed;right:10px;top:6px;display:flex;gap:8px;justify-content:flex-end;
+   opacity:0.8;transition:opacity .15s;z-index:30}   /* top-right, over the control row's empty right side — NOT the bottom edge, where the panel's x-axis (C4/C5) labels sit */
  #acts:hover{opacity:1}
  #acts button{background:none;border:none;cursor:pointer;padding:0;color:#9a9a9a;
    transition:transform .15s ease,color .15s ease}
