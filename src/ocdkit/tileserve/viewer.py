@@ -1405,7 +1405,7 @@ function layout(){
           'font-size':(TA.font_px*k).toFixed(2),'text-anchor':'middle','dominant-baseline':'central',
           'font-weight':'bold','class':'rlabel','data-ro':L.ro});
         lab.style.cursor='pointer'; lab.style.userSelect='none'; lab.style.pointerEvents='auto';  // #ovl is none
-        lab.addEventListener('click', ()=>{ _refPinned[L.ro]=!_refPinned[L.ro]; _refApply(L.ro); _refSyncGpu(); });
+        lab.addEventListener('click', ()=>{ _refPinned[L.ro]=!_refPinned[L.ro]; _refCommit([L.ro]); });
         (_refLabels[L.ro]||(_refLabels[L.ro]=[])).push(lab);
       });
     }
@@ -1708,7 +1708,6 @@ let _refPinned={}, _refTemp={}, _refPaths={}, _refLabels={}, _refColors={}, _ref
 // with the data) and the SVG dashed paths are hidden; in SDR (or HDR toggled
 // off) the SVG paths show and the GPU overlay refs are cleared. SVG stays the
 // source of truth for PPTX/PNG export, which never uses the GPU overlay.
-function _refHdrOn(){ return !!(_specCfg && _specCfg.hdr && !_sdrMode); }
 // HDR-CAPABLE figures (spectra with an HDR LUT) ALWAYS draw the reference line on
 // the WebGPU overlay — in BOTH the HDR and SDR-toggle states — so the line never
 // jumps renderers (SVG↔GPU) or dash positions when you toggle HDR or drag the
@@ -1742,10 +1741,10 @@ function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-c
 // display headroom on a WebGPU rgba16float canvas (an SVG <text> can't render >1),
 // matching the reference line's colour. The SVG <text> stays for hit-testing AND the
 // static export (a separate render — real editable text); fill-opacity:0 hides ONLY
-// the live flat glyph where its HDR twin sits. Two things kept it honest before:
-// (1) size is taken EXACTLY from the element's on-screen CTM scale — no bbox guess;
-// (2) the raster covers only the label BAND, not the whole plot, so it's cheap per
-// pointer-move (no debounce / no lag).
+// the live flat glyph where its HDR twin sits. The twin is the SAME render: clone the
+// overlay, keep only the active labels, rasterise THAT svg into the band canvas, then
+// lift it into the headroom — so the glyph is identical to the flat one (no Canvas2D
+// redraw, no baseline/metric guessing). Band-only raster keeps it cheap per pointer-move.
 let _hdrLabSrc=null;
 function _syncHdrLabels(){
   const hdr=document.getElementById('speclabhdr'), ovl=document.getElementById('ovl');
@@ -1754,7 +1753,7 @@ function _syncHdrLabels(){
   const act=[]; let y0=1e9,y1=-1e9;
   Object.keys(_refLabels).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
     (_refLabels[ro]||[]).forEach(el=>{ const er=el.getBoundingClientRect(); if(!er.width) return;
-      act.push({el:el,ro:ro,er:er}); y0=Math.min(y0,er.top-oref.top); y1=Math.max(y1,er.bottom-oref.top); }); });
+      act.push({el:el,ro:ro}); y0=Math.min(y0,er.top-oref.top); y1=Math.max(y1,er.bottom-oref.top); }); });
   if(!act.length){   // nothing active → clear the twin, leave the flat SVG visible
     Object.keys(_refLabels).forEach(ro=>(_refLabels[ro]||[]).forEach(el=>{ el.style.fillOpacity='1'; }));
     hdr.style.width='0px'; hdr.style.height='0px';
@@ -1799,13 +1798,16 @@ function _syncHdrLabels(){
   img.onerror=()=>{ if(hdr.__seq===myseq){ for(const a of act) a.el.style.fillOpacity='1'; } };
   img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svgStr);
 }
+// single commit path for every ref-state change: re-apply the changed readouts to the
+// SVG, then push the active set to the GPU line overlay + HDR label twin.
+function _refCommit(keys){ keys.forEach(_refApply); _refSyncGpu(); }
 function _refApplyAll(){ const seen={};
   Object.keys(_refPaths).forEach(r=>seen[r]=1); Object.keys(_refLabels).forEach(r=>seen[r]=1);
-  Object.keys(seen).forEach(_refApply); _refSyncGpu(); }
+  _refCommit(Object.keys(seen)); }
 function refSetTemp(roList){ const next={}; (roList||[]).forEach(r=>{ next[r]=true; });
   const ch={}; Object.keys(_refTemp).forEach(r=>ch[r]=1); Object.keys(next).forEach(r=>ch[r]=1);
-  _refTemp=next; Object.keys(ch).forEach(_refApply); _refSyncGpu(); }
-function refClearTemp(){ const old=_refTemp; _refTemp={}; Object.keys(old).forEach(_refApply); _refSyncGpu(); }
+  _refTemp=next; _refCommit(Object.keys(ch)); }
+function refClearTemp(){ const old=_refTemp; _refTemp={}; _refCommit(Object.keys(old)); }
 async function loadSpectra(){
   const cv=document.getElementById('speccv'); if(!cv) return;
   const r=await fetch(VBASE+'attach/'+SID+'/'+PANEL_KIND);
