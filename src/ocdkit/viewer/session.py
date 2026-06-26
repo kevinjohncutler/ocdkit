@@ -283,7 +283,8 @@ class SessionManager:
         return source.with_name(source.stem + "_edited" + source.suffix)
 
     def _auto_mask_path(self, image_path: Optional[Path]) -> Optional[Path]:
-        """Find a default mask: env override, else a ``*_masks`` / ``*_cp_masks`` sidecar."""
+        """Find a default mask next to the image: env override, else a sibling named
+        ``<stem>_masks_edited`` / ``_masks`` / ``_cp_masks`` (prefers the edited one)."""
         env = _os.environ.get("OCDKIT_VIEWER_SAMPLE_MASKS")
         if env:
             p = Path(env).expanduser()
@@ -291,11 +292,31 @@ class SessionManager:
                 return p
         if image_path is None:
             return None
-        for suffix in ("_masks", "_cp_masks"):
+        # Prefer the BASE mask (so it stays the source + _maybe_auto_mask resumes
+        # from its *_edited sibling); fall back to a standalone *_edited only when
+        # no base exists.
+        for suffix in ("_masks", "_cp_masks", "_masks_edited", "_cp_masks_edited"):
             cand = image_path.with_name(image_path.stem + suffix + image_path.suffix)
             if cand.is_file():
                 return cand
         return None
+
+    def try_auto_mask(self, state: SessionState) -> Optional[str]:
+        """Attach an auto-detected sibling mask now (load-masks button). Prefers the
+        ``*_edited`` variant. Returns the loaded path, or None if none found / failed."""
+        if state.current_volume is None:
+            return None
+        mp = self._auto_mask_path(state.current_path)
+        if mp is None:
+            return None
+        # if the detected file is the base mask, prefer its *_edited sibling
+        edited = self._edited_mask_path(mp)
+        load = edited if edited.exists() else mp
+        try:
+            self.set_mask(state, load, source_path=mp)
+            return str(load)
+        except Exception:
+            return None
 
     def _maybe_auto_mask(self, state: SessionState) -> None:
         """Auto-attach a sidecar/env mask to a freshly loaded volume (best effort).

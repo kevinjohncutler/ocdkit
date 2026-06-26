@@ -33,10 +33,11 @@ _UPLOAD_DIR = Path(tempfile.mkdtemp(prefix="ocdkit_upload_"))
 # ----- helpers ------------------------------------------------------------
 
 
-def _native_picker(kind: str) -> Optional[str]:
-    """Open the OS-native file/folder picker. Returns the selected path or None."""
+def _native_picker(kind: str, default_location: Optional[str] = None) -> Optional[str]:
+    """Open the OS-native file/folder picker (at ``default_location`` if given).
+    Returns the selected path or None."""
     if sys.platform == "darwin":
-        return _choose_path_osascript(kind)
+        return _choose_path_osascript(kind, default_location)
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -53,14 +54,15 @@ def _native_picker(kind: str) -> Optional[str]:
             pass
         if kind == "file":
             return filedialog.askopenfilename(
-                title="Select image",
+                title="Select mask file",
+                initialdir=default_location or None,
                 filetypes=[
                     ("Images", "*.tif *.tiff *.png *.jpg *.jpeg *.bmp"),
                     ("All files", "*.*"),
                 ],
                 parent=root,
             ) or None
-        return filedialog.askdirectory(parent=root) or None
+        return filedialog.askdirectory(initialdir=default_location or None, parent=root) or None
     finally:
         if root is not None:
             try:
@@ -215,13 +217,25 @@ def api_open_mask(
     return {"ok": True}
 
 
+@router.post("/auto_mask")
+def api_auto_mask(
+    payload: SessionPayload,
+    state: SessionState = Depends(get_session_state),
+) -> dict:
+    """Auto-detect + attach a ``*_masks`` / ``*_masks_edited`` / ``*_cp_masks``
+    sibling of the current image (prefers the edited one). No dialog."""
+    path = SESSION_MANAGER.try_auto_mask(state)
+    return {"loaded": path is not None, "path": path}
+
+
 @router.post("/select_mask_file")
 def api_select_mask_file(
     payload: SessionPayload,
     state: SessionState = Depends(get_session_state),
 ) -> dict:
-    """Native file picker → attach the chosen label volume."""
-    file_path = _native_picker("file")
+    """Native file picker (opened at the source image's folder) → attach the mask."""
+    src_dir = str(state.current_path.parent) if state.current_path else None
+    file_path = _native_picker("file", default_location=src_dir)
     if not file_path:
         raise BadRequest("cancelled")
     try:

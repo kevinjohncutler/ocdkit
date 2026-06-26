@@ -455,16 +455,23 @@
     }
 
     async function loadMasks() {
-      const r = await fetch("/api/select_mask_file", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: cfg.sessionId }),
-      });
-      if (!r.ok) return false;
+      const body = JSON.stringify({ sessionId: cfg.sessionId });
+      const post = (u) => fetch(u, { method: "POST", headers: { "content-type": "application/json" }, body });
+      // 1) auto-detect a *_masks / *_masks_edited sibling of the source image
+      let loaded = false;
+      try { const a = await post("/api/auto_mask"); if (a.ok) loaded = !!(await a.json()).loaded; } catch (e) {}
+      // 2) otherwise open the native picker AT the source image's folder
+      if (!loaded) {
+        const r = await post("/api/select_mask_file");
+        if (!r.ok) return false;
+      }
       hasMask = true;
-      updateMaskSlice(slice);
+      mask3dStale = true;
+      await fetchNColorMap();
+      await updateMaskSlice(slice);
       if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; window.__volumeGPU = null; }
       loading = null;
-      if (mode === "3d") { const g = await ensureVolume(); if (g) g.render(); }
+      if (mode === "3d") { const g = await ensureVolume(); if (g) { g.render(); applyLabelVisibilityToGpu(); } }
       return true;
     }
     if (loadMasksBtn) {

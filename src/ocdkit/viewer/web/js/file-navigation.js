@@ -28,8 +28,20 @@
   }
 
   function handleNavigationResult(result) {
+    if (result && result.ok && result.config) {
+      // A volume (3D stack) on either side needs a full reload so volume-mode
+      // (3D view, slice slider, hooks) initialises for the new image — the
+      // in-place swap only sets up the 2D canvas. The session persists via the
+      // cookie, so the just-opened image is preserved across the reload.
+      var newIsVol = !!result.config.isVolume;
+      var curIsVol = !!(typeof window !== 'undefined' && window.__VIEWER_CONFIG__ && window.__VIEWER_CONFIG__.isVolume);
+      if ((newIsVol || curIsVol) && typeof window !== 'undefined') {
+        transitionReload();
+        return;
+      }
+    }
     if (result && result.ok && result.config && typeof _onReinitialize === 'function') {
-      // In-place swap — no reload needed
+      // In-place swap — no reload needed (flat 2D → flat 2D)
       try {
         _onReinitialize(result.config);
       } catch (err) {

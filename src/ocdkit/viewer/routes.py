@@ -188,15 +188,20 @@ class DebugAPI:
         }
 
 
-def _choose_path_osascript(kind: str) -> Optional[str]:
+def _choose_path_osascript(kind: str, default_location: Optional[str] = None) -> Optional[str]:
     try:
         import subprocess
     except Exception:
         return None
+    loc = ""
+    if default_location:
+        # open the dialog at this folder (e.g. the source image's directory)
+        safe = str(default_location).replace('"', '\\"')
+        loc = f' default location (POSIX file "{safe}")'
     script = (
-        'POSIX path of (choose file with prompt "Select image")'
+        f'POSIX path of (choose file with prompt "Select mask file"{loc})'
         if kind == "file"
-        else 'POSIX path of (choose folder with prompt "Select image folder")'
+        else f'POSIX path of (choose folder with prompt "Select image folder"{loc})'
     )
     result = subprocess.run(
         ["osascript", "-e", script], capture_output=True, text=True
