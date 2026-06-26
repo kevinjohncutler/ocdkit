@@ -51,7 +51,7 @@ coupling entirely.
 
 ## Phase 0 findings — host extensions + the RPC surface (also done)
 4. **The child needs host route extensions.** `make_app()` carries the generic
-   routes (`/info /tile /attach /grid /view /viewgl`), but hosts mount more via
+   routes (`/info /tile /attach /grid`), but hosts mount more via
    `register_extension(fn)` — e.g. hostpkg's `serve/tiles.py:140`
    `register_extension(_hostpkg_routes)` adds `/spectra/{sid}/{row}`. The child must
    register the SAME extensions, so the spawn handshake passes the kernel's list of
