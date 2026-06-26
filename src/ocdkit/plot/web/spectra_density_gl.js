@@ -609,8 +609,8 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
   // lands at the same fractional index as colorize()'s uint8-sRGB basis (the LUT
   // here is linear-P3; the display pass applies the sRGB OETF). AA: carry the
   // ext-based coverage alpha (per mode) so HDR edges feather like the SDR path.
-  function colorizeF(counts, ext, n, lut, mode) {
-    mode = mode || 'alpha';
+  function colorizeF(counts, ext, n, lut, mode, boost) {
+    mode = mode || 'alpha'; boost = boost || 1;   // boost scales the HDR colour (the gain slider); 1 = the LUT's native lift
     var maxC = 0, nz = 0, i;
     for (i = 0; i < n; i++) { var c = counts[i]; if (c > 0) { nz++; if (c > maxC) maxC = c; } }
     var out = new Float32Array(n * 4);
@@ -646,7 +646,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
       ev = coreFloor + Math.max(0, ev) * (1 - coreFloor);
       ev = Math.max(ev, edgeFloor);
       var idx = Math.min(255, Math.max(0, (ev * 255.0) | 0)) * 4, o = i * 4;
-      out[o] = lut[idx]; out[o + 1] = lut[idx + 1]; out[o + 2] = lut[idx + 2];
+      out[o] = lut[idx] * boost; out[o + 1] = lut[idx + 1] * boost; out[o + 2] = lut[idx + 2] * boost;   // RGB lifted; alpha is coverage, never boosted
       out[o + 3] = alpha * lut[idx + 3];      // straight coverage alpha (× LUT's own alpha)
     }
     return out;
@@ -857,7 +857,7 @@ fn oetf(v:vec3f)->vec3f{let a=max(v,vec3f(0.0));return select(12.92*a,1.055*pow(
       // canvas is WebGPU here (never 2D), so no context conflict.
       if (!g.dispPipe || typeof Float16Array === 'undefined' || !cfg.lut) return false;
       try {
-        var fc = colorizeF(counts, ext, W * H, cfg.lut, cfg.aa);
+        var fc = colorizeF(counts, ext, W * H, cfg.lut, cfg.aa, (cfg.densBoost || 1));
         var half = new Float16Array(fc.length);
         for (var k = 0; k < fc.length; k++) half[k] = fc[k];
         var ctxg = cv.getContext('webgpu'); if (!ctxg) return false;

@@ -158,6 +158,7 @@ let HRMANUAL=__HRGAIN__;
 // (HRMANUAL stays the RGB-tile control; this is the line's continuous gain.)
 const _LINE_BOOST_DEFAULT=2.5;
 let _HDRGAIN=(HRMANUAL>1?HRMANUAL:_LINE_BOOST_DEFAULT);
+let _gainDensRAF=0;   // coalesce density re-lifts during a slider drag (one per frame)
 let AUTOHR=1, HRSRC='?';   // last auto headroom reading + which signal gave it
 const texCache=new Map(); const _filled=new Set();
 // Masks-tile ncolor toggle: click the "Masks" label to swap the underlying tile
@@ -1271,7 +1272,9 @@ function buildControls(){
       HRMANUAL=(+sld.value<=1.0001)?0:+sld.value;          // RGB-tile gain (1 → auto)
       gv.textContent=(+sld.value).toFixed(1)+'×';
       HEADROOM=-1; /* force pollHeadroom to re-apply */
-      if(typeof _refSyncGpu==='function') _refSyncGpu();    // re-push refs at the new boost
+      if(typeof _refSyncGpu==='function') _refSyncGpu();    // re-push refs/labels at the new boost
+      if(typeof drawSpectra==='function' && !_gainDensRAF)  // re-lift the density too (rAF-coalesced: colorizeF is per-pixel)
+        _gainDensRAF=requestAnimationFrame(()=>{ _gainDensRAF=0; try{ drawSpectra(); }catch(_){} });
       if(typeof window.__poll==='function') window.__poll(); render(); };
     bar.appendChild(gl); bar.appendChild(sld); bar.appendChild(gv);
   }
@@ -1495,6 +1498,11 @@ function _refGpuOn(){ return !!(_specCfg && _specCfg.hdr && PANEL && PANEL.setRe
 // shared SDR normalize (_rgb01ToP3's `sdr` arg, driven by _sdrMode) brings >1 back
 // to SDR keeping the hue, matching the label-overlay u_sdr rule.
 function _lineBoost(){ return Math.max(1, _HDRGAIN); }
+// Density HDR lift = the gain RELATIVE to the LUT's native peak (_LINE_BOOST_DEFAULT):
+// 1 at the default gain, scaling with the slider; 1 in SDR (the SDR LUT is already
+// peak-1 and the HDR toggle owns on/off). So every HDR element — tiles, lines, labels,
+// AND the density — tracks the one gain slider.
+function _densBoost(){ return _sdrMode ? 1 : Math.max(1,_HDRGAIN)/_LINE_BOOST_DEFAULT; }
 function _refApply(ro){
   const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refGpuOn();
   (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
@@ -1503,7 +1511,7 @@ function _refApply(ro){
 function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv||!ov||!PANEL||!PANEL.setRefs||!cv.__sgState) return;
-  if(_specCfg){ _specCfg.lineBoost=_lineBoost(); _specCfg.sdr=_sdrMode; }   // gain + shared SDR-normalize flag
+  if(_specCfg){ _specCfg.lineBoost=_lineBoost(); _specCfg.densBoost=_densBoost(); _specCfg.sdr=_sdrMode; }   // gain (lines + density) + shared SDR-normalize flag
   if(!_refGpuOn()){ try{ PANEL.setRefs(cv, ov, []); }catch(_){} try{ _syncHdrLabels(); }catch(_){} return; }
   const dpr=self.devicePixelRatio||1, refs=[];
   Object.keys(_refSegs).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
@@ -1621,6 +1629,7 @@ function drawSpectra(){
   if(ov){ ov.style.left=x+'px'; ov.style.top=y+'px'; ov.style.width=w+'px'; ov.style.height=h+'px';
           try{ PANEL.clearHighlight(ov); }catch(_){} }   // drop stale highlight on re-render
   if(w<2 || h<2) return;
+  _specCfg.densBoost=_densBoost();   // keep the density's HDR lift in sync with the gain slider on every render
   Promise.resolve(PANEL.render(cv, _specCfg, w, h))
     .then(ok=>{ if(ok===false) console.warn('SpectraGL: WebGPU unavailable (iframe needs allow="webgpu")'); })
     .catch(e=>console.warn('spectra render:', e));
@@ -1848,6 +1857,7 @@ async function compositeFigure(){
     hb.title = _sdrMode ? 'HDR: off (SDR)' : 'HDR: on';
     if(_specCfg && _specCfg.hdr && _specLutHdr && _specRect && PANEL){
       _specCfg.lut = (_sdrMode && _specLutSdr) ? _specLutSdr : _specLutHdr;
+      _specCfg.densBoost = _densBoost();   // SDR→1 (toggle owns on/off); this render is inline (before _refApplyAll), so set it here
       try{ await PANEL.render(document.getElementById('speccv'), _specCfg,
                                        _specRect[2], _specRect[3]); }catch(e){}
     }
