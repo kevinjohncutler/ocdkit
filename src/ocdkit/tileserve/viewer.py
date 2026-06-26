@@ -92,7 +92,7 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
  /* HDR/save/copy action buttons (icons), bottom-right; mirrors ocdkit's
     .ocd-svgfig-actions styling. Outside #wrap → excluded from the capture. */
  #acts{position:fixed;right:10px;top:6px;display:flex;gap:8px;justify-content:flex-end;
-   opacity:0.8;transition:opacity .15s;z-index:30}   /* top-right, over the control row's empty right side — NOT the bottom edge, where the panel's x-axis (C4/C5) labels sit */
+   opacity:0.8;transition:opacity .15s;z-index:30}   /* top:6px is a pre-layout fallback; _sizeBars() parks #acts in the footer row (below the plot), right side, every layout */
  #acts:hover{opacity:1}
  #acts button{background:none;border:none;cursor:pointer;padding:0;color:#9a9a9a;
    transition:transform .15s ease,color .15s ease}
@@ -207,6 +207,15 @@ function _sizeBars(){
   const t=document.getElementById('figtitle');
   if(t){ const h=(TITLE_H0*_kNow)+'px'; t.style.height=h; t.style.lineHeight=h;
          t.style.fontSize=Math.max(11,16*_kNow)+'px'; }
+  // Park the action buttons in the FOOTER row (the hud strip, just below the plot),
+  // right side — computed from the hud's ACTUAL position (set after #wrap is sized at
+  // the _sizeBars call site) so they never sit over the plot, its edge labels, or the
+  // next figure. hud text is set via textContent, so #acts must stay a sibling, not a
+  // hud child.
+  const acts=document.getElementById('acts');
+  if(acts){ const hr=hud.getBoundingClientRect();
+    acts.style.top=hr.top+'px'; acts.style.bottom='auto';
+    acts.style.height=(HUD_H0*_kNow)+'px'; acts.style.alignItems='center'; }
 }
 // Tile / plot-box corner radius (CSS px), exposed via ?rx=. The tile DATA is
 // clipped to this radius with a CSS mask (rounded white rects over the canvas),
