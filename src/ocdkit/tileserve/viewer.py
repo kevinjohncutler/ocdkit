@@ -1838,6 +1838,7 @@ async function loadSpectra(){
   _renderNormLabel();
   applySpecCmap(CMAP);   // start on the currently-selected cmap (follows the picker), then draw
 }
+const HL_STROKE='rgba(255,80,80,0.95)';   // cell-spectrum highlight stroke (hover + click), single source
 function drawSpectra(){
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv || !_specReady || !_specCfg || !_specRect || !PANEL) return;
@@ -1875,7 +1876,7 @@ function sgTipHide(){
     const st=cv.__sgState; if(!st || !PANEL) return;
     const r=ov.getBoundingClientRect(); if(r.width<2 || r.height<2) return;
     const mx=(e.clientX-r.left)/r.width*st.W, my=(e.clientY-r.top)/r.height*st.H;
-    let line=-1; try{ line=PANEL.highlight(cv, ov, mx, my, 'rgba(255,80,80,0.95)'); }catch(_){}
+    let line=-1; try{ line=PANEL.highlight(cv, ov, mx, my, HL_STROKE); }catch(_){}
     const cfg=_specCfg;
     if(line>=0 && cfg && cfg.cellIds){
       const lab=(cfg.cellLabels && cfg.cellLabels[line]) || '';
@@ -1996,7 +1997,7 @@ function strokeSpectrumById(id){
   // to 2D and break the HDR glow).
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
   if(!cv || !ov || !_specReady || !PANEL) return -1;
-  try{ return PANEL.highlightById(cv, ov, id, 'rgba(255,80,80,0.95)'); }catch(_){ return -1; }
+  try{ return PANEL.highlightById(cv, ov, id, HL_STROKE); }catch(_){ return -1; }
 }
 function clearCellSpectrum(){
   const ov=document.getElementById('specovl');
@@ -2015,7 +2016,7 @@ function hoverCellSpectrum(cell, e){
   const mx=Math.min(_idW-1,(u*_idW)|0), my=Math.min(_idH-1,(v*_idH)|0);
   const id=_idMap[my*_idW+mx];
   if(!(id>0)){ clearCellSpectrum(); return; }
-  const line=PANEL.highlightById(document.getElementById('speccv'),document.getElementById('specovl'),id,'rgba(255,80,80,0.95)');
+  const line=strokeSpectrumById(id);   // wrapper: _specReady/PANEL guards + single SpectraGL render path
   const lab=(line>=0 && _specCfg && _specCfg.cellLabels && _specCfg.cellLabels[line])||'';
   sgTipShow('Cell '+id+(lab?'<br>'+lab:''), e.clientX, e.clientY);
   refSetTemp(refTokens(lab));
