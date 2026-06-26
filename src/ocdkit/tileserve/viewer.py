@@ -329,7 +329,7 @@ _GRID_HTML = r"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>key sli
  #acts #hdrbtn svg{width:auto;height:16px}    /* wide HDR pill: pin by height, keep aspect */
  #acts button.hdr-off{opacity:0.4}    /* HDR on = opaque, off (SDR) = translucent */
 </style></head><body>
-<div id="wrap"><canvas id="c"></canvas><canvas id="speccv" data-spectra-density="1"></canvas><canvas id="specovl" data-spectra-overlay="1"></canvas><canvas id="speclabhdr" style="position:absolute;left:0;top:0;pointer-events:none"></canvas><svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg><div id="labs"></div></div><div id="hud">init…</div><div id="sgtip"></div><div id="acts"><button id="hdrbtn" title="HDR: on"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18"><mask id="hdrcut"><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="white"/><text x="14" y="12.3" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="9.5" fill="black">HDR</text></mask><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="currentColor" mask="url(#hdrcut)"/></svg></button><button id="savebtn" title="Save as PNG"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="currentColor" d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/></svg></button><button id="copybtn" title="Copy as PNG"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M4.75 3A1.75 1.75 0 003 4.75v9.5c0 .966.784 1.75 1.75 1.75h1.5a.75.75 0 000-1.5h-1.5a.25.25 0 01-.25-.25v-9.5a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v1.5a.75.75 0 001.5 0v-1.5A1.75 1.75 0 0014.25 3h-9.5zm5 5A1.75 1.75 0 008 9.75v9.5c0 .966.784 1.75 1.75 1.75h9.5A1.75 1.75 0 0021 19.25v-9.5A1.75 1.75 0 0019.25 8h-9.5zM9.5 9.75a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v9.5a.25.25 0 01-.25.25h-9.5a.25.25 0 01-.25-.25v-9.5z"/></svg></button></div>
+<div id="wrap"><canvas id="c"></canvas><canvas id="speccv" data-spectra-density="1"></canvas><canvas id="specovl" data-spectra-overlay="1"></canvas><svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg><canvas id="speclabhdr" style="position:absolute;left:0;top:0;pointer-events:none"></canvas><div id="labs"></div></div><div id="hud">init…</div><div id="sgtip"></div><div id="acts"><button id="hdrbtn" title="HDR: on"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 18"><mask id="hdrcut"><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="white"/><text x="14" y="12.3" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="9.5" fill="black">HDR</text></mask><rect x="1.5" y="1.5" width="25" height="15" rx="3" ry="3" fill="currentColor" mask="url(#hdrcut)"/></svg></button><button id="savebtn" title="Save as PNG"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="currentColor" d="M160 144C151.2 144 144 151.2 144 160L144 480C144 488.8 151.2 496 160 496L480 496C488.8 496 496 488.8 496 480L496 237.3C496 233.1 494.3 229 491.3 226L416 150.6L416 240C416 257.7 401.7 272 384 272L224 272C206.3 272 192 257.7 192 240L192 144L160 144zM240 144L240 224L368 224L368 144L240 144zM96 160C96 124.7 124.7 96 160 96L402.7 96C419.7 96 436 102.7 448 114.7L525.3 192C537.3 204 544 220.3 544 237.3L544 480C544 515.3 515.3 544 480 544L160 544C124.7 544 96 515.3 96 480L96 160zM256 384C256 348.7 284.7 320 320 320C355.3 320 384 348.7 384 384C384 419.3 355.3 448 320 448C284.7 448 256 419.3 256 384z"/></svg></button><button id="copybtn" title="Copy as PNG"><svg width="20" height="20" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M4.75 3A1.75 1.75 0 003 4.75v9.5c0 .966.784 1.75 1.75 1.75h1.5a.75.75 0 000-1.5h-1.5a.25.25 0 01-.25-.25v-9.5a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v1.5a.75.75 0 001.5 0v-1.5A1.75 1.75 0 0014.25 3h-9.5zm5 5A1.75 1.75 0 008 9.75v9.5c0 .966.784 1.75 1.75 1.75h9.5A1.75 1.75 0 0021 19.25v-9.5A1.75 1.75 0 0019.25 8h-9.5zM9.5 9.75a.25.25 0 01.25-.25h9.5a.25.25 0 01.25.25v9.5a.25.25 0 01-.25.25h-9.5a.25.25 0 01-.25-.25v-9.5z"/></svg></button></div>
 <script>__SPECTRA_GL__</script>
 <script>__SCATTER_GL__</script>
 <script>
@@ -1724,7 +1724,7 @@ function _lineBoost(){ return Math.max(1, _HDRGAIN); }
 function _refApply(ro){
   const on=!!(_refPinned[ro]||_refTemp[ro]), svg=on && !_refGpuOn();
   (_refPaths[ro]||[]).forEach(p=>{ p.style.display=svg?'':'none'; });   // SVG only when no GPU overlay
-  (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; l.style.fillOpacity='1'; });   // recolour the EXISTING <text> (active = readout colour); _syncHdrLabels hides this flat copy ONLY in the live view where its HDR twin renders
+  (_refLabels[ro]||[]).forEach(l=>{ l.style.fill=on?(_refColors[ro]||'#bbb'):'#666'; });   // recolour the EXISTING <text> only (active = readout colour). The flat glyph stays fully visible; its HDR twin canvas sits ON TOP and covers it with the glow — no fill-opacity hole to keep in sync.
 }
 function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-capable figures, both modes)
   const cv=document.getElementById('speccv'), ov=document.getElementById('specovl');
@@ -1739,12 +1739,12 @@ function _refSyncGpu(){   // push the active refs to the GPU overlay line (HDR-c
 }
 // HDR top-axis labels: the LIVE /grid view glows the active readout labels into the
 // display headroom on a WebGPU rgba16float canvas (an SVG <text> can't render >1),
-// matching the reference line's colour. The SVG <text> stays for hit-testing AND the
-// static export (a separate render — real editable text); fill-opacity:0 hides ONLY
-// the live flat glyph where its HDR twin sits. The twin is the SAME render: clone the
-// overlay, keep only the active labels, rasterise THAT svg into the band canvas, then
-// lift it into the headroom — so the glyph is identical to the flat one (no Canvas2D
-// redraw, no baseline/metric guessing). Band-only raster keeps it cheap per pointer-move.
+// matching the reference line's colour. The twin canvas is layered ON TOP of #ovl, so
+// it COVERS the flat <text> with the glow — the flat glyph stays fully visible (it is
+// the hit-test target + export source) and its opacity is never touched. The twin is
+// the SAME render: clone the overlay, keep only the active labels, rasterise THAT svg
+// into the band canvas, then lift it into the headroom — identical glyph, identical
+// position (no Canvas2D redraw, no baseline guessing). Band-only raster keeps it cheap.
 let _hdrLabSrc=null;
 function _syncHdrLabels(){
   const hdr=document.getElementById('speclabhdr'), ovl=document.getElementById('ovl');
@@ -1754,9 +1754,8 @@ function _syncHdrLabels(){
   Object.keys(_refLabels).forEach(ro=>{ if(_refPinned[ro]||_refTemp[ro])
     (_refLabels[ro]||[]).forEach(el=>{ const er=el.getBoundingClientRect(); if(!er.width) return;
       act.push({el:el,ro:ro}); y0=Math.min(y0,er.top-oref.top); y1=Math.max(y1,er.bottom-oref.top); }); });
-  if(!act.length){   // nothing active → clear the twin, leave the flat SVG visible
-    Object.keys(_refLabels).forEach(ro=>(_refLabels[ro]||[]).forEach(el=>{ el.style.fillOpacity='1'; }));
-    hdr.style.width='0px'; hdr.style.height='0px';
+  if(!act.length){   // nothing active → clear the twin (flat labels are always visible underneath)
+    hdr.style.width='0px'; hdr.style.height='0px'; hdr.__seq=(hdr.__seq||0)+1;   // bump seq so any in-flight raster's onload is dropped
     try{ const c=document.createElement('canvas'); c.width=1; c.height=1; PANEL.renderHdrLabels(hdr,c,_lineBoost(),_sdrMode); }catch(_){}
     return;
   }
@@ -1778,10 +1777,9 @@ function _syncHdrLabels(){
   clone.querySelectorAll('*').forEach(el=>{ const t=(el.tagName||'').toLowerCase();
     if(t==='svg'||t==='g'||t==='defs'||t==='style'||t==='clippath') return;        // structural — keep
     if(t==='text'){ if(!activeText[el.textContent||'']){ el.setAttribute('display','none'); return; }
-      el.style.fillOpacity='1'; el.removeAttribute('display');                      // OVERRIDE the inline fill-opacity:0 the live twin set on already-pinned labels — a setAttribute can't beat an inline style, so the first-pinned label stayed invisible in the clone and vanished when a second was pinned
       if(!el.getAttribute('font-size')){ el.setAttribute('font-size',cs0.fontSize);  // inline inherited font (standalone svg has no doc CSS)
         el.setAttribute('font-family',cs0.fontFamily); el.setAttribute('font-weight',cs0.fontWeight); }
-      return; }
+      return; }                                                                     // flat label is always opacity 1 now, so the clone inherits a painting glyph — no override needed
     el.setAttribute('display','none');                                             // lines / ticks / paths — hide so only labels remain
   });
   clone.setAttribute('width',ow); clone.setAttribute('height',oh);                  // pin intrinsic size so the svg-image renders at overlay px
@@ -1792,10 +1790,10 @@ function _syncHdrLabels(){
   img.onload=()=>{ if(hdr.__seq!==myseq) return;                                    // a newer sync superseded this raster
     ctx.clearRect(0,0,W,H);
     ctx.drawImage(img,0,-y0*dpr,ow*dpr,oh*dpr);                                     // overlay→band: shift up by the band top
-    const ok=PANEL.renderHdrLabels(hdr,_hdrLabSrc,_lineBoost(),_sdrMode);
-    for(const a of act) a.el.style.fillOpacity = ok ? '0' : '1';
+    PANEL.renderHdrLabels(hdr,_hdrLabSrc,_lineBoost(),_sdrMode);                    // glow paints over the flat glyph; if it fails, the flat (visible) is the fallback
   };
-  img.onerror=()=>{ if(hdr.__seq===myseq){ for(const a of act) a.el.style.fillOpacity='1'; } };
+  img.onerror=()=>{ if(hdr.__seq!==myseq) return;                                   // raster failed → clear the twin; flat labels remain as the SDR fallback
+    try{ ctx.clearRect(0,0,W,H); PANEL.renderHdrLabels(hdr,_hdrLabSrc,_lineBoost(),_sdrMode); }catch(_){} };
   img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svgStr);
 }
 // single commit path for every ref-state change: re-apply the changed readouts to the
