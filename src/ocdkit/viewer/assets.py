@@ -230,21 +230,24 @@ RESTORE_ACCENT_SCRIPT = """<script>
 })();
 </script>"""
 
-# Inline at the very top of <head> so the browser's FIRST paint is already dark —
-# eliminates the white flash on refresh before the external CSS bundles load. The
-# app is dark-themed, so we paint a dark background immediately rather than the
-# OS ``Canvas`` system colour (which is WHITE in light mode → the flash). In the
-# desktop (pywebview) shell we paint transparent instead, so the native window
-# vibrancy shows through from the first frame.
-_EARLY_BG_DARK = "#0b0d10"
+# The app is ADAPTIVE (dark/light follow the OS — see the prefers-color-scheme
+# blocks in layout.css). To avoid the white flash on refresh we (1) declare the
+# supported schemes via <meta name="color-scheme"> (COLOR_SCHEME_META below) so the
+# browser paints the correct backdrop DURING navigation, and (2) inline an early
+# <style> using the CSS system colours ``Canvas``/``CanvasText`` so the first paint
+# matches the OS appearance (dark backdrop in dark mode → no white). The desktop
+# (pywebview) shell paints transparent so native window vibrancy shows through.
+#
+# Reference: https://web.dev/articles/color-scheme + CSS system colors.
+COLOR_SCHEME_META = '<meta name="color-scheme" content="light dark">'
 
 
 def early_background_style(ui_mode: str = "browser") -> str:
-    bg = "transparent" if ui_mode == "desktop" else _EARLY_BG_DARK
+    bg = "transparent" if ui_mode == "desktop" else "Canvas"
     return (
         '<style id="early-bg">\n'
-        "  :root { color-scheme: dark; }\n"
-        f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: #c8ccd2; }}\n"
+        "  :root { color-scheme: light dark; }\n"
+        f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: CanvasText; }}\n"
         "</style>"
     )
 
@@ -589,7 +592,7 @@ def render_index(
     # the FOUC flash before the external CSS bundles arrive.
     html = html.replace(
         "<head>",
-        f"<head>\n    {early_background_style(ui_mode)}",
+        f"<head>\n    {COLOR_SCHEME_META}\n    {early_background_style(ui_mode)}",
         1,
     )
     # Trust install banner. The probe-origins <script> MUST come BEFORE the

@@ -33,20 +33,22 @@ def client():
 
 
 def test_index_inlines_early_background_style(client):
-    """A DARK background is set via an inline <style> at the top of <head>, BEFORE
-    the external CSS link, so the browser's first paint on refresh is dark instead
-    of flashing white (the app is dark-themed)."""
+    """Adaptive first paint with no refresh flash: a <meta name=color-scheme> + an
+    inline early <style> (using the OS-native ``Canvas`` system colour) appear at
+    the top of <head>, BEFORE the external CSS — so the browser paints the correct
+    light/dark backdrop during navigation instead of flashing white."""
     r = client.get("/")
     assert r.status_code == 200
     text = r.text
-    # The early-bg style block must appear before the external CSS link.
+    meta_pos = text.find('name="color-scheme"')
     early_pos = text.find('id="early-bg"')
     css_pos = text.find('href="/static/css/layout.css')
+    assert meta_pos > 0, "color-scheme meta not found"
     assert early_pos > 0, "early-bg <style> not found"
     assert css_pos > 0, "external CSS link not found"
-    assert early_pos < css_pos, "early-bg must appear BEFORE external CSS link"
-    # Browser shell: dark first paint (NOT the white-in-light-mode 'Canvas').
-    assert "#0b0d10" in text and "background: Canvas" not in text
+    assert meta_pos < early_pos < css_pos, "meta + early-bg must precede external CSS"
+    # Browser shell: adaptive OS background (dark in dark mode → no white flash).
+    assert "background: Canvas" in text
 
 
 def test_desktop_early_background_is_transparent(client):
@@ -91,12 +93,12 @@ def test_ui_mode_in_embedded_config(client):
 # -- Background style adapts to OS dark/light mode (regression guard) ----
 
 
-def test_early_bg_is_dark_scheme(client):
-    """The inline early-bg style forces a dark color-scheme (the app is dark),
-    so the browser never paints the light/white default on refresh."""
+def test_early_bg_declares_adaptive_color_scheme(client):
+    """The page declares it supports BOTH schemes (adaptive), via the meta tag and
+    color-scheme, so the browser uses the OS-appropriate backdrop on refresh."""
     text = client.get("/").text
-    assert "color-scheme: dark" in text
-    assert "background: Canvas" not in text
+    assert '<meta name="color-scheme" content="light dark">' in text
+    assert "color-scheme: light dark" in text
 
 
 # -- Identifier rename smoke test ------------------------------------------

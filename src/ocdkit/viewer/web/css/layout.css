@@ -101,11 +101,11 @@ html,
 body {
   margin: 0;
   height: 100%;
-  /* The app is dark-themed, so paint a dark background — NOT the OS ``Canvas``
-     system colour, which is WHITE in light mode and caused the white refresh
-     flash. Matches the inline early-paint background (assets.py). */
-  background: #0b0d10;
-  color: #c8ccd2;
+  /* OS-native window background + text colors — adaptive (dark in dark mode,
+     light in light mode). The white refresh flash is avoided by the early-paint
+     <style> + <meta name="color-scheme"> (assets.py), not by forcing a colour. */
+  background: Canvas;
+  color: CanvasText;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   touch-action: none;
 }
