@@ -47,8 +47,8 @@ def test_index_inlines_early_background_style(client):
     assert early_pos > 0, "early-bg <style> not found"
     assert css_pos > 0, "external CSS link not found"
     assert meta_pos < early_pos < css_pos, "meta + early-bg must precede external CSS"
-    # Browser shell: adaptive OS background (dark in dark mode → no white flash).
-    assert "background: Canvas" in text
+    # Browser shell: adaptive light/dark via light-dark() (NOT the too-dark Canvas).
+    assert "light-dark(" in text and "background: Canvas" not in text
 
 
 def test_desktop_early_background_is_transparent(client):

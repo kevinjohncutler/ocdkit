@@ -87,6 +87,7 @@
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
+      this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
       this.uniform = device_buf(this.device, 44 * 4);
@@ -153,21 +154,25 @@
     // current up/right), right-/shift-drag pan, wheel dolly.
     _initCamera(opts) {
       this.target = [0, 0, 0];
+      // Default 3/4 view with the volume's +Z (for a spacetime stack, the LAST
+      // frame) UP: yaw for the 3/4 azimuth, then pitch so Z is vertical and we
+      // look slightly down. (Verified: max-z projects above min-z, axis vertical.)
       this.orient = Mat4.quatNormalize(Mat4.quatMul(
-        Mat4.quatFromAxisAngle([1, 0, 0], -0.5),
-        Mat4.quatFromAxisAngle([0, 1, 0], 0.6)));            // initial 3/4 view
+        Mat4.quatFromAxisAngle([0, 0, 1], 0.6),
+        Mat4.quatFromAxisAngle([1, 0, 0], Math.PI / 2 - 0.5)));
       this.fovy = ((opts.fovy != null ? opts.fovy : 45)) * Math.PI / 180;
       this.radius = Math.hypot(this.NX, this.NY, this.NZ * this.zScale) * 1.5;
       this._home = { orient: this.orient.slice(), radius: this.radius, target: this.target.slice() };
       this._attachInput();
     }
 
-    /** Reset rotation / pan / zoom to the initial home view. */
+    /** Reset rotation / pan / zoom to the initial home view (H key). */
     resetView() {
       this.orient = this._home.orient.slice();
       this.radius = this._home.radius;
       this.target = this._home.target.slice();
       this.render();
+      if (this._onCam) this._onCam();   // persist the reset so a refresh shows the default too
     }
 
     _eye() {
@@ -264,6 +269,7 @@
                          self.target[2] - right[2] * px + up[2] * py];
         }
         self.render();
+        if (self._onCam) self._onCam();              // persist rotation/pan
       };
       c.addEventListener("pointermove", (e) => {
         if (!drag) return;
@@ -276,7 +282,20 @@
         const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
         self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * (e.deltaY > 0 ? 1 / 0.9 : 0.9)));
         self.render();
+        if (self._onCam) self._onCam();              // persist zoom
       }, { passive: false });
+    }
+
+    /** Serializable camera state (for persistence across refresh). */
+    getCamera() {
+      return { orient: Array.from(this.orient), radius: this.radius, target: Array.from(this.target) };
+    }
+    setCamera(c) {
+      if (!c) return;
+      if (Array.isArray(c.orient) && c.orient.length === 4) this.orient = c.orient.slice();
+      if (typeof c.radius === "number") this.radius = c.radius;
+      if (Array.isArray(c.target) && c.target.length === 3) this.target = c.target.slice();
+      this.render();
     }
 
     _writeUniform(cam) {

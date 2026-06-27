@@ -101,11 +101,11 @@ html,
 body {
   margin: 0;
   height: 100%;
-  /* OS-native window background + text colors — adaptive (dark in dark mode,
-     light in light mode). The white refresh flash is avoided by the early-paint
-     <style> + <meta name="color-scheme"> (assets.py), not by forcing a colour. */
-  background: Canvas;
-  color: CanvasText;
+  /* Adaptive (dark/light) app surface — matches the early-paint background in
+     assets.py. NOT the OS ``Canvas`` system colour, which Chrome renders near-black
+     in dark mode (much darker than the chrome → jarring). */
+  background: light-dark(#f6f6f6, #262626);
+  color: light-dark(#1a1a1a, #f0f0f0);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   touch-action: none;
 }

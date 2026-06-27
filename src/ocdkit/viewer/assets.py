@@ -241,13 +241,20 @@ RESTORE_ACCENT_SCRIPT = """<script>
 # Reference: https://web.dev/articles/color-scheme + CSS system colors.
 COLOR_SCHEME_META = '<meta name="color-scheme" content="light dark">'
 
+# Adaptive light/dark via light-dark(). We DON'T use the ``Canvas`` system colour
+# because Chrome resolves it to near-black (rgb 18) in dark mode — much darker than
+# the app's actual chrome (panels ~rgb 48), so it read as a jarring near-black flash.
+# These grays match the app surfaces (light/dark) so the first paint blends in.
+_BG = "light-dark(#f6f6f6, #262626)"
+_FG = "light-dark(#1a1a1a, #f0f0f0)"
+
 
 def early_background_style(ui_mode: str = "browser") -> str:
-    bg = "transparent" if ui_mode == "desktop" else "Canvas"
+    bg = "transparent" if ui_mode == "desktop" else _BG
     return (
         '<style id="early-bg">\n'
         "  :root { color-scheme: light dark; }\n"
-        f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: CanvasText; }}\n"
+        f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: {_FG}; }}\n"
         "</style>"
     )
 

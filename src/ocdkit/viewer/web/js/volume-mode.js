@@ -92,11 +92,13 @@
     }
     function saveVolState() {
       try {
+        const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera }));
       } catch (e) {}
     }
     const _vs = loadVolState();
+    let camState = _vs.camera || null;   // remembered 3D rotation/zoom/pan
     if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
     if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
 
@@ -400,8 +402,10 @@
           shaderUrl: "/static/js/raymarch.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
           mode: curProj,
+          onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
         });
         vgpu.setOverlay("axes", false);
+        if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom
         window.__volumeGPU = vgpu;
         return vgpu;
       })();
