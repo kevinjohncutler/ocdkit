@@ -84,7 +84,24 @@
       return { height: rest[0], width: rest[1] };
     }
 
-    let slice = (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depthOf(0) >> 1);
+    // ── persisted per-volume view state (survives refresh): view mode, axis,
+    // slice, and the label style per view (2D vs 3D). Keyed by image path.
+    function volStateKey() { return "OCDKIT_VOL:" + (cfg.imagePath || cfg.imageName || "vol"); }
+    function loadVolState() {
+      try { return JSON.parse(localStorage.getItem(volStateKey()) || "null") || {}; } catch (e) { return {}; }
+    }
+    function saveVolState() {
+      try {
+        localStorage.setItem(volStateKey(), JSON.stringify(
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode }));
+      } catch (e) {}
+    }
+    const _vs = loadVolState();
+    if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
+    if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
+
+    let slice = (typeof _vs.slice === "number") ? _vs.slice
+              : (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depthOf(0) >> 1);
     slider.min = "0";
     slider.max = String(Math.max(0, depthOf(curAxis) - 1));
     slider.value = String(slice);
@@ -115,8 +132,10 @@
       } catch (e) { /* leave current mask on transient error */ }
     }
 
-    // reload the mask whenever the 2D image (re)loads (initial + axis switch)
-    window.__onViewerImageReady = function () { if (hasMask) updateMaskSlice(slice); };
+    // reload the mask whenever the 2D image (re)loads (axis switch). Skipped during
+    // the initial restore, which loads image+mask together in lockstep.
+    let _restoring = true;
+    window.__onViewerImageReady = function () { if (!_restoring && hasMask) updateMaskSlice(slice); };
 
     // Edits persist via __onViewerStroke (which writes LABELS to the volume).
     // maskValues holds group IDs, so we must NOT post it back as labels.
@@ -132,6 +151,7 @@
       slice = z;
       slider.value = String(z);
       paintLabel();
+      saveVolState();
       const seq = ++_scrubSeq;                          // ignore stale fetches if scrubbed again
       const url = "/api/volume_slice/" + encodeURIComponent(cfg.sessionId) +
                   "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
@@ -154,7 +174,6 @@
       }
     }
     slider.addEventListener("input", () => showSlice(parseInt(slider.value, 10)));
-    if (hasMask) { fetchNColorMap(); updateMaskSlice(slice); }   // initial palette + overlay
 
     // ── 2D / 3D brush ────────────────────────────────────────────────────────
     // 2D brush = paint the current slice only. 3D brush = extrude the stroke into
@@ -328,6 +347,7 @@
         });
         // mask reloads via __onViewerImageReady once the new image is decoded
       }
+      saveVolState();
     }
     if (axisRow) {
       axisRow.querySelectorAll("[data-axis]").forEach((b) =>
@@ -417,6 +437,7 @@
         if (g) { g.render(); applyLabelVisibilityToGpu(); }
         else { mode = "2d"; setMode("2d"); }
       }
+      saveVolState();
     }
 
     // Label style in 3D: only "solid" (filled labels) and "hidden" (null) apply —
@@ -436,8 +457,14 @@
       const m = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : "solid";
       vgpu.setShowLabels(m === "hidden" ? 0 : 1);     // null selector turns labels off in 3D
     }
-    // app.js calls this whenever the label-style slider changes.
-    window.__viewerVolumeOnMaskStyle = function () { applyLabelVisibilityToGpu(); };
+    // app.js calls this whenever the label-style slider changes → record the
+    // style for the CURRENT view and persist it.
+    window.__viewerVolumeOnMaskStyle = function () {
+      const s = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : null;
+      if (s) { if (mode === "3d") saved3dMode = s; else saved2dMode = s; }
+      applyLabelVisibilityToGpu();
+      saveVolState();
+    };
 
     btn2d.addEventListener("click", () => setMode("2d"));
     btn3d.addEventListener("click", () => setMode("3d"));
@@ -488,7 +515,27 @@
       showSlice, getSlice: () => slice, setProj, getProj: () => curProj,
       setAxis, getAxis: () => curAxis,
       setBrushDim, getBrushDim: () => brushDim,
+      _dbg: () => ({ mode, saved2dMode, saved3dMode, vs: _vs }),
     };
+
+    // ── restore persisted view state on load: 2D label style, axis, slice (image+
+    // mask in lockstep), then the view mode (2D vs 3D) we left off on.
+    (async function restoreView() {
+      try {
+        if (hasMask) await fetchNColorMap();
+        // load image+mask at the restored axis/slice FIRST (reinit/showSlice can
+        // reset maskDisplayMode), THEN apply the remembered styles + view mode.
+        if (typeof _vs.axis === "number" && _vs.axis !== curAxis && _vs.axis >= 0 && _vs.axis < 3) {
+          await setAxis(_vs.axis);
+          await showSlice(typeof _vs.slice === "number" ? _vs.slice : slice);  // setAxis reset slice → restore
+        } else {
+          await showSlice(slice);   // load image+mask together at the restored slice (fixes mismatch)
+        }
+        if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved2dMode || "outline");
+        if (_vs.mode === "3d") await setMode("3d");     // saves the (correct) 2D style, applies the 3D style
+      } catch (e) { /* fall back to defaults */ }
+      _restoring = false;
+    })();
   }
 
   if (document.readyState === "loading") {
