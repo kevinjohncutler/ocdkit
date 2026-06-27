@@ -33,9 +33,9 @@ def client():
 
 
 def test_index_inlines_early_background_style(client):
-    """The OS-native background is set via an inline <style> at the top of
-    <head>, BEFORE the external CSS link, so the browser's first paint
-    matches the OS appearance instead of flashing white."""
+    """A DARK background is set via an inline <style> at the top of <head>, BEFORE
+    the external CSS link, so the browser's first paint on refresh is dark instead
+    of flashing white (the app is dark-themed)."""
     r = client.get("/")
     assert r.status_code == 200
     text = r.text
@@ -45,8 +45,15 @@ def test_index_inlines_early_background_style(client):
     assert early_pos > 0, "early-bg <style> not found"
     assert css_pos > 0, "external CSS link not found"
     assert early_pos < css_pos, "early-bg must appear BEFORE external CSS link"
-    # The body must be painted with the OS-native window background color.
-    assert "background: Canvas" in text
+    # Browser shell: dark first paint (NOT the white-in-light-mode 'Canvas').
+    assert "#0b0d10" in text and "background: Canvas" not in text
+
+
+def test_desktop_early_background_is_transparent(client):
+    """Desktop shell paints transparent so pywebview's native vibrancy shows."""
+    text = client.get("/?ui=desktop").text
+    early = text[text.find('id="early-bg"'):text.find('id="early-bg"') + 200]
+    assert "background: transparent" in early
 
 
 # -- ?ui=desktop activates the translucent path ---------------------------
@@ -84,15 +91,12 @@ def test_ui_mode_in_embedded_config(client):
 # -- Background style adapts to OS dark/light mode (regression guard) ----
 
 
-def test_early_bg_uses_system_colors(client):
-    """The inline early-bg style uses CSS system colors (``Canvas``,
-    ``CanvasText``) with ``color-scheme: light dark``, so the OS's native
-    window chrome colors are used (not hardcoded black/white)."""
-    r = client.get("/?ui=desktop")
-    text = r.text
-    assert "color-scheme: light dark" in text
-    assert "background: Canvas" in text
-    assert "color: CanvasText" in text
+def test_early_bg_is_dark_scheme(client):
+    """The inline early-bg style forces a dark color-scheme (the app is dark),
+    so the browser never paints the light/white default on refresh."""
+    text = client.get("/").text
+    assert "color-scheme: dark" in text
+    assert "background: Canvas" not in text
 
 
 # -- Identifier rename smoke test ------------------------------------------

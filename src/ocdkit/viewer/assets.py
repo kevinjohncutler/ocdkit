@@ -230,18 +230,26 @@ RESTORE_ACCENT_SCRIPT = """<script>
 })();
 </script>"""
 
-# Inline at the very top of <head> so the browser's first paint matches the
-# OS appearance — eliminates the FOUC flash before the external CSS bundles
-# load. Uses the CSS system colors ``Canvas`` and ``CanvasText`` (resolved by
-# the browser at runtime to the OS's native window background and text
-# colors). ``color-scheme: light dark`` tells the WebView the page supports
-# both modes so those system colors resolve to the correct variant.
-#
-# Reference: https://www.w3.org/TR/css-color-4/#css-system-colors
-EARLY_BACKGROUND_STYLE = """<style id="early-bg">
-  :root { color-scheme: light dark; }
-  html, body { margin: 0; height: 100%; background: Canvas; color: CanvasText; }
-</style>"""
+# Inline at the very top of <head> so the browser's FIRST paint is already dark —
+# eliminates the white flash on refresh before the external CSS bundles load. The
+# app is dark-themed, so we paint a dark background immediately rather than the
+# OS ``Canvas`` system colour (which is WHITE in light mode → the flash). In the
+# desktop (pywebview) shell we paint transparent instead, so the native window
+# vibrancy shows through from the first frame.
+_EARLY_BG_DARK = "#0b0d10"
+
+
+def early_background_style(ui_mode: str = "browser") -> str:
+    bg = "transparent" if ui_mode == "desktop" else _EARLY_BG_DARK
+    return (
+        '<style id="early-bg">\n'
+        "  :root { color-scheme: dark; }\n"
+        f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: #c8ccd2; }}\n"
+        "</style>"
+    )
+
+
+EARLY_BACKGROUND_STYLE = early_background_style("browser")  # back-compat default
 
 
 _PROBE_ORIGINS: list[str] = []
@@ -581,7 +589,7 @@ def render_index(
     # the FOUC flash before the external CSS bundles arrive.
     html = html.replace(
         "<head>",
-        f"<head>\n    {EARLY_BACKGROUND_STYLE}",
+        f"<head>\n    {early_background_style(ui_mode)}",
         1,
     )
     # Trust install banner. The probe-origins <script> MUST come BEFORE the
