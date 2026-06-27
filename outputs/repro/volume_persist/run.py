@@ -60,6 +60,9 @@ def main():
             pg.wait_for_function("window.__volumeMode.getMode() === '3d'", timeout=8000) if False else pg.wait_for_timeout(2500)
 
             check("view mode (3D) persisted across refresh", pg.evaluate("window.__volumeMode.getMode()") == "3d")
+            # no 2D flash: restoring to 3D keeps the 2D canvas hidden (never shown)
+            check("no 2D flash on 3D restore (2D canvas hidden)",
+                  pg.evaluate("getComputedStyle(document.getElementById('canvas')).visibility") == "hidden")
             check("3D label style (hidden) persisted", pg.evaluate("window.__viewerMaskDisplayMode()") == "hidden")
             # back to 2D → its remembered style + slice
             pg.eval_on_selector('[data-view="2d"]', "e=>e.click()"); pg.wait_for_timeout(700)

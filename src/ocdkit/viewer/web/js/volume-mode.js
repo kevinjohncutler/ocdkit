@@ -100,6 +100,17 @@
     if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
     if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
 
+    // If we left off in 3D, hide the 2D view SYNCHRONOUSLY now (before the first
+    // paint) and switch the panel to 3D, so the restore never flashes the 2D slice.
+    const _startIn3D = (_vs.mode === "3d") && !!(navigator.gpu && window.VolumeGPU && window.decodeBundle);
+    if (_startIn3D) {
+      mode = "3d";
+      canvas2d.style.visibility = "hidden";
+      if (brush) brush.style.visibility = "hidden";
+      vcanvas.hidden = false;
+      sliceBar.hidden = true;
+    }
+
     let slice = (typeof _vs.slice === "number") ? _vs.slice
               : (typeof cfg.currentSlice === "number") ? cfg.currentSlice : (depthOf(0) >> 1);
     slider.min = "0";
@@ -523,16 +534,40 @@
     (async function restoreView() {
       try {
         if (hasMask) await fetchNColorMap();
-        // load image+mask at the restored axis/slice FIRST (reinit/showSlice can
-        // reset maskDisplayMode), THEN apply the remembered styles + view mode.
-        if (typeof _vs.axis === "number" && _vs.axis !== curAxis && _vs.axis >= 0 && _vs.axis < 3) {
-          await setAxis(_vs.axis);
-          await showSlice(typeof _vs.slice === "number" ? _vs.slice : slice);  // setAxis reset slice → restore
+        if (_startIn3D) {
+          // 2D already hidden synchronously → go straight to 3D, no 2D-slice flash.
+          btn2d.classList.toggle("is-active", false);
+          btn3d.classList.toggle("is-active", true);
+          if (axisRow) axisRow.hidden = true;
+          if (projRow) projRow.hidden = false;
+          setStyleButtonsFor3D(true);
+          if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved3dMode || "solid");
+          mask3dStale = false;
+          const g = await ensureVolume();
+          if (g) {
+            g.render(); applyLabelVisibilityToGpu();
+            await showSlice(slice);     // prep the hidden 2D view so switching back is instant + matched
+          } else {                      // WebGPU unavailable → fall back to 2D
+            mode = "2d";
+            canvas2d.style.visibility = ""; if (brush) brush.style.visibility = "";
+            vcanvas.hidden = true; sliceBar.hidden = false;
+            btn2d.classList.toggle("is-active", true); btn3d.classList.toggle("is-active", false);
+            if (axisRow) axisRow.hidden = false; if (projRow) projRow.hidden = true;
+            setStyleButtonsFor3D(false);
+            await showSlice(slice);
+            if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved2dMode || "outline");
+          }
         } else {
-          await showSlice(slice);   // load image+mask together at the restored slice (fixes mismatch)
+          // 2D restore: load image+mask at the restored axis/slice, THEN apply the
+          // remembered 2D style (showSlice/reinit can reset the display mode).
+          if (typeof _vs.axis === "number" && _vs.axis !== curAxis && _vs.axis >= 0 && _vs.axis < 3) {
+            await setAxis(_vs.axis);
+            await showSlice(typeof _vs.slice === "number" ? _vs.slice : slice);
+          } else {
+            await showSlice(slice);
+          }
+          if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved2dMode || "outline");
         }
-        if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved2dMode || "outline");
-        if (_vs.mode === "3d") await setMode("3d");     // saves the (correct) 2D style, applies the 3D style
       } catch (e) { /* fall back to defaults */ }
       _restoring = false;
     })();
