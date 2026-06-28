@@ -1912,7 +1912,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         ubuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         ready = true;
         if (_pendingTex) { const p = _pendingTex; _pendingTex = null;
-          if (p.entry) _activateEntry(p.entry, p.onLoaded); else _ingest(p.raw, p.key, p.onLoaded); }
+          if (p.entry) { if (!p.key || _wantUrl === p.key) _activateEntry(p.entry, p.onLoaded); }
+          else _ingest(p.raw, p.key, p.onLoaded); }
         if (_pendingDraw) { const s = _pendingDraw; _pendingDraw = null; redraw(s); }
       })();
 
@@ -1962,7 +1963,13 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         }
         device.queue.submit([enc.finish()]);
       }
-      // Upload a RAW float16 tile {data,w,h} into a GPU texture, cache it, activate it.
+      // The url the popup currently wants shown (+ its callback) and the in-flight
+      // fetches: an async fetch — including a neighbour PREFETCH — only ACTIVATES if
+      // it's still wanted, so a stale fetch from a tile you've arrowed away from can't
+      // flash, and a prefetch you DO navigate to mid-fetch paints the moment it lands.
+      let _wantUrl = null, _wantCb = null; const _inflight = new Set();
+      // Upload a RAW float16 tile {data,w,h} into a GPU texture, cache it, activate it
+      // (only if still wanted).
       function _ingest(raw, key, onLoaded) {
         const w = raw.w, h = raw.h;
         const levels = Math.floor(Math.log2(Math.max(w, h))) + 1;
@@ -1973,20 +1980,15 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         // rgba16f = 8 B/px; ~1.33× for the mip chain in the byte budget.
         const entry = { tex: t, w: w, h: h, bytes: Math.round(w * h * 8 * 1.34) };
         if (key) { _hpc.map.set(key, entry); _hpc.bytes += entry.bytes; _evictHpc(); }
-        _activateEntry(entry, onLoaded);
+        if (!key || _wantUrl === key) { const cb = onLoaded || _wantCb; _wantCb = null; _activateEntry(entry, cb); }
       }
-      function loadImage(url, onLoaded) {
-        const key = url;   // bare-url key → revisits hit regardless of ?_r= buster
-        const hit = _hpc.map.get(key);
-        if (hit) {
-          // Already decoded → rebind instantly (defer one frame if the device is
-          // still configuring). No re-fetch, no re-decode — this is the "remember".
-          if (ready) _activateEntry(hit, onLoaded);
-          else _pendingTex = { entry: hit, key, onLoaded };
-          return;
-        }
-        let u = url;
-        try { if (window.__ocdResolveTileUrl) u = window.__ocdResolveTileUrl(url); } catch (e) {}
+      // Fetch + decode + ingest a raw f16 tile. _ingest only PAINTS it if it's still
+      // wanted (so a prefetch caches silently, and a stale fetch never flashes).
+      function _fetchTile(key, onLoaded) {
+        if (_inflight.has(key)) return;   // an in-flight fetch already covers it
+        _inflight.add(key);
+        let u = key;
+        try { if (window.__ocdResolveTileUrl) u = window.__ocdResolveTileUrl(key); } catch (e) {}
         let attempt = 0;
         const tryFetch = () => {
           // 204 = the numpy hi-res is still background-encoding → retry rather than
@@ -1996,14 +1998,36 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
             .then(buf => {   // _RawF16Source: 8-byte (w,h) header + float16 RGBA
               const hdr = new Uint32Array(buf, 0, 2);
               const raw = { data: new Uint16Array(buf, 8), w: hdr[0], h: hdr[1] };
+              _inflight.delete(key);
               if (viewer.disposed) return;
               if (ready) _ingest(raw, key, onLoaded); else _pendingTex = { raw, key, onLoaded }; })
             .catch(e => {
               if (attempt < 20) { attempt++; setTimeout(tryFetch, 250); }
-              else console.warn('SvgFigure WebGPU-HDR: image load failed:', url, e);
+              else { _inflight.delete(key); console.warn('SvgFigure WebGPU-HDR: image load failed:', key, e); }
             });
         };
         tryFetch();
+      }
+      function loadImage(url, onLoaded) {
+        const key = url;   // bare-url key → revisits hit regardless of ?_r= buster
+        _wantUrl = key; _wantCb = onLoaded || null;   // this tile is now the wanted one
+        const hit = _hpc.map.get(key);
+        if (hit) {
+          // Already decoded → rebind instantly (defer one frame if the device is
+          // still configuring). No re-fetch, no re-decode — this is the "remember".
+          _wantCb = null;
+          if (ready) _activateEntry(hit, onLoaded);
+          else _pendingTex = { entry: hit, key, onLoaded };
+          return;
+        }
+        _fetchTile(key, onLoaded);
+      }
+      // Warm the cache for a tile we MIGHT arrow to (its decimated disp tier), so the
+      // switch is an instant cache hit — no blank, no network fetch. Never activates on
+      // its own; if you navigate to it mid-fetch, _ingest sees _wantUrl and paints.
+      function prefetch(url) {
+        if (!url || _hpc.map.has(url) || _inflight.has(url)) return;
+        _fetchTile(url, null);
       }
       function redraw(s) {
         _lastState = s;
@@ -2048,7 +2072,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         _sdr = !!sdr; N = _sdr ? 1.0 : _hdrN;
         if (_lastState && ready && textureLoaded) redraw(_lastState);
       }
-      const viewer = { canvas, redraw, loadImage, isPointInImage, dispose, clearActive, setHeadroom, setSdr,
+      const viewer = { canvas, redraw, loadImage, prefetch, isPointInImage, dispose, clearActive, setHeadroom, setSdr,
         get textureLoaded() { return textureLoaded; }, disposed: false, isHdr: true };
       return viewer;
     }
@@ -2072,7 +2096,16 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // routed through the remote proxy when needed. Used to warm neighbours for arrow nav.
     function tileThumbHref_(t) {
       if (!t || !t.getAttribute) return null;
-      let h = t.getAttribute('data-thumb-href')
+      let isHdr = !!(t.querySelector && t.querySelector('image[data-hdr="1"]'));
+      if (!isHdr && t.getElementsByTagName) {
+        const ims = t.getElementsByTagName('image');
+        for (let i = 0; i < ims.length; i++) { if (ims[i].getAttribute('data-hdr') === '1') { isHdr = true; break; } }
+      }
+      // Match what loadImage will request for this tile so the prefetch caches under the
+      // SAME key: HDR tile → the WebGPU viewer's raw f16 disp tier (data-raw-disp-href);
+      // else the PNG thumb (or the inline <image> href).
+      let h = (isHdr && t.getAttribute('data-raw-disp-href'))
+            || t.getAttribute('data-thumb-href')
             || (t.querySelector('image') && t.querySelector('image').getAttribute('href'));
       if (h && window.__ocdResolveTileUrl) h = window.__ocdResolveTileUrl(h);
       return h;
