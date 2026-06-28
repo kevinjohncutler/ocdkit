@@ -275,57 +275,72 @@
         lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
       });
       c.addEventListener("pointerup", (e) => { drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
-      // Accumulate movement and apply ONCE per animation frame. Rendering on every
-      // raw pointermove makes trackpads (which fire a burst of high-frequency micro
-      // events per frame) jitter/oscillate; coalescing to the frame rate is smooth.
-      let pdx = 0, pdy = 0, raf = 0;
-      const applyDrag = () => {
-        raf = 0;
-        if (!drag || (pdx === 0 && pdy === 0)) return;
-        const dx = pdx, dy = pdy; pdx = 0; pdy = 0;
+
+      // ── Smoothed input loop (orbit / pan / zoom) ──────────────────────────
+      // A single rAF loop drives all camera motion. Raw pointer + wheel deltas
+      // accumulate into this-frame inputs; each frame we EMA-smooth a velocity
+      // toward that input — a low-pass that rejects the high-frequency trackpad
+      // micro-jitter — and once the gesture ends we let the velocity decay
+      // (light momentum) so motion eases to rest instead of snapping on a noisy
+      // frame. Coalescing alone (the previous approach) removed the discrete
+      // chunking but still mapped every vibration straight to the camera.
+      let pdx = 0, pdy = 0, ppx = 0, ppy = 0, pz = 0;   // raw input this frame
+      let vrx = 0, vry = 0, vpx = 0, vpy = 0, vz = 0;   // smoothed velocities
+      let anim = 0;
+      const SMOOTH = 0.35;    // EMA weight toward live input (lower = smoother, more lag)
+      const DECAY = 0.8;      // momentum decay per frame after the gesture stops
+      const EPS = 1e-3;
+      const ema = (v, x, active) => active ? v * (1 - SMOOTH) + x * SMOOTH : v * DECAY;
+      const step = () => {
+        anim = 0;
         const H = c.clientHeight || c.height || 1;
+        const ix = pdx, iy = pdy, qx = ppx, qy = ppy, iz = pz;
+        pdx = 0; pdy = 0; ppx = 0; ppy = 0; pz = 0;
+        vrx = ema(vrx, ix, drag === 1); vry = ema(vry, iy, drag === 1);
+        vpx = ema(vpx, qx, drag === 2); vpy = ema(vpy, qy, drag === 2);
+        vz = ema(vz, iz, iz !== 0);
+
         const up = Mat4.quatRotate(self.orient, [0, 1, 0]);
         const right = Mat4.quatRotate(self.orient, [1, 0, 0]);
-        if (drag === 1) {                       // arcball rotate (free, no poles)
+        let changed = false;
+        if (Math.abs(vrx) > EPS || Math.abs(vry) > EPS) {     // arcball rotate (no poles)
           const S = (Math.PI * 1.4) / H;
-          const q = Mat4.quatMul(Mat4.quatFromAxisAngle(up, -dx * S), Mat4.quatFromAxisAngle(right, -dy * S));
+          const q = Mat4.quatMul(Mat4.quatFromAxisAngle(up, -vrx * S), Mat4.quatFromAxisAngle(right, -vry * S));
           self.orient = Mat4.quatNormalize(Mat4.quatMul(q, self.orient));
-        } else {                                // pan target in screen plane
+          changed = true;
+        }
+        if (Math.abs(vpx) > EPS || Math.abs(vpy) > EPS) {     // pan target in screen plane
           const td = self.radius * Math.tan(self.fovy / 2);
-          const px = (2 * dx * td) / H, py = (2 * dy * td) / H;
+          const px = (2 * vpx * td) / H, py = (2 * vpy * td) / H;
           self.target = [self.target[0] - right[0] * px + up[0] * py,
                          self.target[1] - right[1] * px + up[1] * py,
                          self.target[2] - right[2] * px + up[2] * py];
+          changed = true;
         }
-        self.render();
-        if (self._onCam) self._onCam();              // persist rotation/pan
+        if (Math.abs(vz) > EPS) {                             // dolly (radius *= exp(k·v))
+          const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
+          self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * Math.exp(vz * 0.0015)));
+          changed = true;
+        }
+        if (changed) { self.render(); if (self._onCam) self._onCam(); }
+        if (drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
+            Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS) {
+          anim = requestAnimationFrame(step);
+        }
       };
+      const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
+
       c.addEventListener("pointermove", (e) => {
         if (!drag) return;
-        pdx += e.clientX - lx; pdy += e.clientY - ly;
+        const dx = e.clientX - lx, dy = e.clientY - ly;
         lx = e.clientX; ly = e.clientY;
-        if (!raf) raf = requestAnimationFrame(applyDrag);
+        if (drag === 2) { ppx += dx; ppy += dy; } else { pdx += dx; pdy += dy; }
+        ensureAnim();
       });
-      // Zoom: accumulate wheel deltas and apply ONCE per animation frame with a
-      // CONTINUOUS exponential factor (radius *= exp(k·Σdelta)). Applying a fixed
-      // 0.9 step per raw wheel event made trackpads (which fire a burst of events
-      // per frame) jump in coarse discrete chunks; coalescing + exp makes it as
-      // smooth as the orbit/pan drag.
-      let wheelAccum = 0, wraf = 0;
-      const applyWheel = () => {
-        wraf = 0;
-        if (wheelAccum === 0) return;
-        const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
-        const factor = Math.exp(wheelAccum * 0.0015);   // +delta (scroll down) => zoom out
-        wheelAccum = 0;
-        self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * factor));
-        self.render();
-        if (self._onCam) self._onCam();              // persist zoom
-      };
       c.addEventListener("wheel", (e) => {
         e.preventDefault();
-        wheelAccum += e.deltaY;
-        if (!wraf) wraf = requestAnimationFrame(applyWheel);
+        pz += e.deltaY;
+        ensureAnim();
       }, { passive: false });
     }
 
