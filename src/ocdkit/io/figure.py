@@ -2068,6 +2068,15 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // find its neighbours among the grid's siblings.
     let currentTile = null;
 
+    // The low-res thumb URL for a tile (data-thumb-href, else its inline <image> href),
+    // routed through the remote proxy when needed. Used to warm neighbours for arrow nav.
+    function tileThumbHref_(t) {
+      if (!t || !t.getAttribute) return null;
+      let h = t.getAttribute('data-thumb-href')
+            || (t.querySelector('image') && t.querySelector('image').getAttribute('href'));
+      if (h && window.__ocdResolveTileUrl) h = window.__ocdResolveTileUrl(h);
+      return h;
+    }
     function openZoom(tile) {
       // Wipe the recycled viewer's current contents BEFORE we kick off
       // the new tile's load chain. Without this, the popup briefly
@@ -2316,6 +2325,25 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       // ``invisible click`` interval if a load fails silently.
       setTimeout(showPopup, 1000);
 
+      // Warm the adjacent tiles' thumbs so the NEXT arrow-key step is an instant cache
+      // hit — the low-res shows immediately and upgrades, instead of a blank/decode gap.
+      if (viewerAtOpen && viewerAtOpen.prefetch && wrapper) {
+        try {
+          const allT = Array.from(wrapper.querySelectorAll('.fig-tile'));
+          const ci = allT.indexOf(tile);
+          if (ci >= 0) {
+            const isvg2 = wrapper.querySelector('svg');
+            const nc = isvg2 ? (parseInt(isvg2.getAttribute('data-ncol'), 10) || 0) : 0;
+            [ci - 1, ci + 1, ci - nc, ci + nc].forEach((ni) => {
+              if (ni >= 0 && ni < allT.length && ni !== ci) {
+                const th = tileThumbHref_(allT[ni]);
+                if (th) viewerAtOpen.prefetch(th);
+              }
+            });
+          }
+        } catch (_) {}
+      }
+
       resetTransform();
       // (Gestures attached once on first build — canvas is recycled.)
 
@@ -2386,6 +2414,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       let img = null;     // currently visible <img>
       let imgW = 0, imgH = 0;
       let textureLoaded = false;
+      let _wantUrl = null, _wantCb = null;   // the tile the popup currently wants shown
 
       function setActiveImg_(url, entry) {
         if (img && img !== entry.el) {
@@ -2482,28 +2511,28 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           + c + ',' + f + ',0,1)';
       }
 
-      function loadImage(url, onLoaded) {
-        // LRU hit: instant swap, no fetch, no decode. Keyed on the BARE url so a
-        // revisit always hits regardless of any ``?_r=`` retry cache-buster used
-        // below — that's what makes a re-zoom open instantly instead of "forgetting".
-        const cached = imgLRU.get(url);
-        if (cached) {
-          setActiveImg_(url, cached);
-          if (onLoaded) onLoaded();
-          return;
+      // A load (or a neighbour prefetch) only PAINTS when it lands if its url is STILL
+      // wanted (_wantUrl) — so a slow in-flight load from a PREVIOUS tile (its hi-res
+      // arriving after you've arrowed away) can't flash the wrong image, and a
+      // prefetched neighbour you DO navigate to paints + continues the thumb->hires
+      // chain the instant it arrives.
+      function _deliver(url, entry, onLoaded) {
+        imgLRU.set(url, entry);   // cache (bare-url key) even if no longer wanted
+        evictIfFull_();
+        if (_wantUrl === url) {
+          setActiveImg_(url, entry);
+          const cb = onLoaded || _wantCb; _wantCb = null;
+          if (cb) cb();
         }
-        // Already loading this URL — let the in-flight load finish.
-        // (No callback chaining: openZoom's chain serializes thumb -> hires,
-        //  it never re-enters for the same URL within one popup session.)
-        if (inFlight.has(url)) return;
+      }
+      // A numpy array's hi-res is encoded off the critical path, so the tileserve
+      // attachment returns HTTP 204 (→ <img> error) until the encode lands ~0.1-0.5s
+      // later. Retry with backoff + a cache-buster (mirrors the inline hover-prefetch
+      // at the 20×250ms poll) so the popup UPGRADES the moment the hi-res is ready. A
+      // scene's on-disk hi-res is ready on the first try, so this loop no-ops for it.
+      function _startLoad(url, onLoaded) {
+        if (inFlight.has(url)) return;   // an in-flight load already covers it; its _deliver checks _wantUrl
         inFlight.add(url);
-
-        // A numpy array's hi-res is encoded off the critical path, so the tileserve
-        // attachment returns HTTP 204 (→ <img> error) until the encode lands ~0.1-0.5s
-        // later. Retry with backoff + a cache-buster (mirrors the inline hover-prefetch
-        // at the 20×250ms poll) so the popup UPGRADES the moment the hi-res is ready,
-        // instead of silently giving up and staying on the low-res thumb. A scene's
-        // on-disk hi-res is ready on the first try, so this loop no-ops for it.
         let attempt = 0;
         const tryLoad = () => {
           const newImg = document.createElement('img');
@@ -2512,31 +2541,33 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           wrap.appendChild(newImg);
           newImg.addEventListener('load', () => {
             inFlight.delete(url);
-            const entry = {
-              el: newImg,
-              w: newImg.naturalWidth || 0,
-              h: newImg.naturalHeight || 0,
-            };
-            imgLRU.set(url, entry);   // canonical (bare-url) key
-            setActiveImg_(url, entry);
-            evictIfFull_();
-            if (onLoaded) onLoaded();
+            _deliver(url, { el: newImg, w: newImg.naturalWidth || 0, h: newImg.naturalHeight || 0 }, onLoaded);
           });
           newImg.addEventListener('error', (e) => {
             if (newImg.parentElement) newImg.parentElement.removeChild(newImg);
-            if (attempt < 20) {
-              attempt++;
-              setTimeout(tryLoad, 250);
-            } else {
-              inFlight.delete(url);
-              console.warn('SvgFigure CSS-img viewer image load failed', url, e);
-            }
+            if (attempt < 20) { attempt++; setTimeout(tryLoad, 250); }
+            else { inFlight.delete(url); console.warn('SvgFigure CSS-img viewer image load failed', url, e); }
           });
-          // Cache-buster on the SRC only (never the LRU key) so a cached 204 can't
-          // mask the eventual 200, while revisits still hit the bare-url entry.
+          // Cache-buster on the SRC only (never the LRU key) so a cached 204 can't mask
+          // the eventual 200, while revisits still hit the bare-url entry.
           newImg.src = url + (attempt ? ((url.indexOf('?') >= 0 ? '&' : '?') + '_r=' + attempt) : '');
         };
         tryLoad();
+      }
+      function loadImage(url, onLoaded) {
+        _wantUrl = url; _wantCb = onLoaded || null;   // this tile is now the wanted one
+        // LRU hit: instant swap, no fetch, no decode. Keyed on the BARE url so a revisit
+        // always hits regardless of any ``?_r=`` retry cache-buster.
+        const cached = imgLRU.get(url);
+        if (cached) { setActiveImg_(url, cached); _wantCb = null; if (onLoaded) onLoaded(); return; }
+        _startLoad(url, onLoaded);
+      }
+      // Warm the LRU for a tile we MIGHT arrow to, so the switch is an instant cache hit
+      // (no blank, no decode gap). Never paints on its own — only if you navigate to it
+      // (then its _deliver sees _wantUrl match and paints + continues the chain).
+      function prefetch(url) {
+        if (!url || imgLRU.has(url) || inFlight.has(url)) return;
+        _startLoad(url, null);
       }
 
       function isPointInImage(clientX, clientY) {
@@ -2549,7 +2580,7 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         if (wrap.parentElement) wrap.parentElement.removeChild(wrap);
       }
 
-      return { redraw, loadImage, isPointInImage, dispose, clearActive,
+      return { redraw, loadImage, prefetch, isPointInImage, dispose, clearActive,
                get textureLoaded() { return textureLoaded; },
                get imgW() { return imgW; }, get imgH() { return imgH; } };
     }
