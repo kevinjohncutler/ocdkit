@@ -99,6 +99,13 @@
     }
     const _vs = loadVolState();
     let camState = _vs.camera || null;   // remembered 3D rotation/zoom/pan
+
+    // The image colormap the 2D view is using (grayscale default). The 3D volume
+    // colour-maps its intensity through the SAME LUT so both views match.
+    function currentImageColormap() {
+      const s = document.getElementById("imageCmapSelect");
+      return (s && s.value) || "gray";
+    }
     if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
     if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
 
@@ -402,6 +409,7 @@
           shaderUrl: "/static/js/raymarch.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
           mode: curProj,
+          colormap: currentImageColormap(),
           onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
         });
         vgpu.setOverlay("axes", false);
@@ -484,6 +492,11 @@
     btn2d.addEventListener("click", () => setMode("2d"));
     btn3d.addEventListener("click", () => setMode("3d"));
     window.addEventListener("resize", () => { if (mode === "3d" && vgpu) vgpu.render(); });
+
+    // Apply the 2D view's selected image colormap to the 3D volume too, and keep
+    // them in sync when the user changes it (the dropdown dispatches `change`).
+    const cmapSel = document.getElementById("imageCmapSelect");
+    if (cmapSel) cmapSel.addEventListener("change", () => { if (vgpu) vgpu.setColormap(currentImageColormap()); });
 
     function setProj(p) {
       curProj = p | 0;

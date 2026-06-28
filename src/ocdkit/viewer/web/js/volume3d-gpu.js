@@ -54,6 +54,7 @@
           { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
           { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
           { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "uint", viewDimension: "3d" } },
+          { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
         ],
       });
       self.pipeline = device.createRenderPipeline({
@@ -91,7 +92,34 @@
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
       this.uniform = device_buf(this.device, 44 * 4);
+      // Intensity colormap LUT (256x1 RGBA) — same image colormap as the 2D view.
+      this.lutTex = this.device.createTexture({
+        size: [256, 1, 1], format: "rgba8unorm",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      this.colormap = opts.colormap || "gray";
+      this._uploadLut(this.colormap);
     }
+
+    /** Upload the 256-entry image colormap LUT (grayscale = identity ramp). */
+    _uploadLut(name) {
+      let data = null;
+      try {
+        if (typeof window !== "undefined" && window.ViewerColormap &&
+            window.ViewerColormap.generateImageCmapLut) {
+          data = window.ViewerColormap.generateImageCmapLut(name);
+        }
+      } catch (e) { data = null; }
+      if (!data || data.length < 256 * 4) {           // fallback: grayscale ramp
+        data = new Uint8Array(256 * 4);
+        for (let i = 0; i < 256; i = i + 1) { data[i * 4] = i; data[i * 4 + 1] = i; data[i * 4 + 2] = i; data[i * 4 + 3] = 255; }
+      }
+      this.device.queue.writeTexture({ texture: this.lutTex }, data,
+        { bytesPerRow: 256 * 4, rowsPerImage: 1 }, [256, 1, 1]);
+    }
+
+    /** Switch the intensity colormap (e.g. when the 2D view's selector changes). */
+    setColormap(name) { this.colormap = name; this._uploadLut(name); this.render(); }
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
@@ -137,6 +165,7 @@
           { binding: 0, resource: { buffer: this.uniform } },
           { binding: 1, resource: this.volTex.createView() },
           { binding: 2, resource: this.labTex.createView() },
+          { binding: 3, resource: this.lutTex.createView() },
         ],
       });
     }
@@ -277,12 +306,26 @@
         lx = e.clientX; ly = e.clientY;
         if (!raf) raf = requestAnimationFrame(applyDrag);
       });
-      c.addEventListener("wheel", (e) => {
-        e.preventDefault();
+      // Zoom: accumulate wheel deltas and apply ONCE per animation frame with a
+      // CONTINUOUS exponential factor (radius *= exp(k·Σdelta)). Applying a fixed
+      // 0.9 step per raw wheel event made trackpads (which fire a burst of events
+      // per frame) jump in coarse discrete chunks; coalescing + exp makes it as
+      // smooth as the orbit/pan drag.
+      let wheelAccum = 0, wraf = 0;
+      const applyWheel = () => {
+        wraf = 0;
+        if (wheelAccum === 0) return;
         const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
-        self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * (e.deltaY > 0 ? 1 / 0.9 : 0.9)));
+        const factor = Math.exp(wheelAccum * 0.0015);   // +delta (scroll down) => zoom out
+        wheelAccum = 0;
+        self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * factor));
         self.render();
         if (self._onCam) self._onCam();              // persist zoom
+      };
+      c.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        wheelAccum += e.deltaY;
+        if (!wraf) wraf = requestAnimationFrame(applyWheel);
       }, { passive: false });
     }
 

@@ -26,6 +26,10 @@ struct U {
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
 @group(0) @binding(2) var labTex : texture_3d<u32>;
+// Intensity colormap LUT (256x1 RGBA). Maps the scalar volume value -> colour,
+// so the 3D volume uses the SAME image colormap the 2D view selected (grayscale
+// is the identity ramp, so it round-trips exactly). Sampled with linear interp.
+@group(0) @binding(3) var lutTex : texture_2d<f32>;
 
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 
@@ -52,6 +56,17 @@ fn hsv(h : f32, s : f32, v : f32) -> vec3<f32> {
   if (m == 3) { return vec3<f32>(p, q, v); }
   if (m == 4) { return vec3<f32>(t, p, v); }
   return vec3<f32>(v, p, q);
+}
+// Colormap the scalar intensity v in [0,1] via the 256-entry LUT (linear
+// interp). For the grayscale LUT (entry i = i/255) this returns exactly v.
+fn lutColor(v : f32) -> vec3<f32> {
+  let f = clamp(v, 0.0, 1.0) * 255.0;
+  let i0 = i32(floor(f));
+  let i1 = min(i0 + 1, 255);
+  let fr = f - f32(i0);
+  let c0 = textureLoad(lutTex, vec2<i32>(i0, 0), 0).rgb;
+  let c1 = textureLoad(lutTex, vec2<i32>(i1, 0), 0).rgb;
+  return mix(c0, c1, fr);
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
@@ -116,65 +131,88 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   // headlight follows the camera (-rd); otherwise a fixed world light
   let lightDir = select(normalize(vec3<f32>(0.4, 0.7, 0.6)), -rd, headlight > 0.5);
 
+  // ── Image layer: fixed-step volumetric (MIP / mean / additive) ────────────
+  // The intensity scalar is colour-mapped through the LUT (grayscale = identity).
   let dt = (tfar - tnear) / f32(nsteps);
   var t = tnear + dt * 0.5;
-
-  // Two independent layers accumulated along the ray; the label layer is
-  // composited OVER the image layer at the end (labels always on top).
   var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
-  var labHit = 0.0; var labMipW = -1.0; var labMipCol = vec3<f32>(0.0);
-  var labSum = vec3<f32>(0.0); var labCnt = 0.0; var labAcc = vec4<f32>(0.0);
-
   for (var i = 0; i < nsteps; i = i + 1) {
     let pwld = ro + rd * t;
     let n = (pwld - u.boxMin.xyz) / span;            // [0,1] in box
     var vc = vec3<i32>(floor(n * vec3<f32>(u.dims.xyz)));
     vc = clamp(vc, vec3<i32>(0), dims - vec3<i32>(1));
     let s = textureLoad(volTex, vc, 0).r * iscale;
-    let lab = textureLoad(labTex, vc, 0).r;
-
     imgMip = max(imgMip, s);
     imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
     let a = clamp(s * density, 0.0, 1.0);
     let om = 1.0 - imgAcc.w;
-    imgAcc = vec4<f32>(imgAcc.rgb + vec3<f32>(s) * a * om, imgAcc.w + a * om);
-
-    if (lab > 0u) {
-      var lc = labelColor(lab);
-      if (shadeLabels > 0.5) {
-        let nrm = labelNormal(vc, lab, dims);
-        if (dot(nrm, nrm) > 0.25) {                      // shade only at surfaces
-          let diff = max(dot(nrm, lightDir), 0.0);
-          lc = lc * (ambient + (1.0 - ambient) * diff);  // ambient + diffuse
-          if (specular > 0.0) {                          // Blinn-Phong highlight
-            let h = normalize(lightDir - rd);            // viewDir = -rd
-            lc = lc + vec3<f32>(specular * pow(max(dot(nrm, h), 0.0), shininess));
-          }
-        }
-      }
-      labHit = 1.0;
-      if (labMipW < 0.0) { labMipW = 1.0; labMipCol = lc; }   // nearest label surface (front-to-back)
-      labSum = labSum + lc; labCnt = labCnt + 1.0;
-      let la = clamp(labelOpacity * density, 0.0, 1.0);
-      let lom = 1.0 - labAcc.w;
-      labAcc = vec4<f32>(labAcc.rgb + lc * la * lom, labAcc.w + la * lom);
-    }
+    imgAcc = vec4<f32>(imgAcc.rgb + lutColor(s) * a * om, imgAcc.w + a * om);
     t = t + dt;
   }
-
-  // each layer as premultiplied (colour*alpha, alpha)
+  // each layer as premultiplied (colour, alpha). lutColor already encodes the
+  // brightness, so the premultiplied colour IS lutColor(value) (grayscale ->
+  // vec3(value), matching the old white-times-alpha behaviour exactly).
   var imgPC = vec3<f32>(0.0); var imgA = 0.0;
   if (showImage > 0.5) {
-    if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = vec3<f32>(imgMip); }
-    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = vec3<f32>(m); }
+    if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = lutColor(imgMip); }
+    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
+
+  // ── Label layer: Amanatides-Woo DDA first-hit ─────────────────────────────
+  // Visit EXACTLY the voxels the ray crosses (no fixed-step oversampling) and
+  // render the nearest opaque label as a crisp voxel cube, flat-shaded on the
+  // entered face. This is the hostpkg mask-render optimisation — no doubled /
+  // fuzzy surfaces from re-sampling the same voxel at multiple ray steps.
   var labPC = vec3<f32>(0.0); var labA = 0.0;
-  if (showLabels > 0.5 && labHit > 0.5) {
-    if (mode == 1) { labA = clamp(labelOpacity, 0.0, 1.0); labPC = labMipCol * labA; }
-    else if (mode == 2) { let lm = labSum / max(labCnt, 1.0); labA = clamp(labelOpacity, 0.0, 1.0); labPC = lm * labA; }
-    else { labPC = labAcc.rgb; labA = labAcc.w; }
+  if (showLabels > 0.5) {
+    let res = vec3<f32>(u.dims.xyz);
+    let dv0 = rd / span * res;                        // ray dir in voxel space
+    // Guard zero components (axis-aligned rays) so that axis simply never steps.
+    let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
+    let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;   // entry in voxel coords
+    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
+    let stp = sign(dv);
+    let tDelta = abs(1.0 / dv);
+    var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
+    var face = -rd;        // axis-aligned face the ray entered the hit voxel by
+    var found = 0u;
+    var hitVox = vec3<i32>(0);
+    let maxIter = dims.x + dims.y + dims.z + 3;
+    for (var g = 0; g < maxIter; g = g + 1) {
+      let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
+      let lab = textureLoad(labTex, ci, 0).r;
+      if (lab > 0u) { found = lab; hitVox = ci; break; }
+      if (tMax.x < tMax.y && tMax.x < tMax.z) {
+        vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x; face = vec3<f32>(-stp.x, 0.0, 0.0);
+        if (vox.x < 0.0 || vox.x >= res.x) { break; }
+      } else if (tMax.y < tMax.z) {
+        vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y; face = vec3<f32>(0.0, -stp.y, 0.0);
+        if (vox.y < 0.0 || vox.y >= res.y) { break; }
+      } else {
+        vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z; face = vec3<f32>(0.0, 0.0, -stp.z);
+        if (vox.z < 0.0 || vox.z >= res.z) { break; }
+      }
+    }
+    if (found > 0u) {
+      var lc = labelColor(found);
+      if (shadeLabels > 0.5) {
+        // Smooth surface normal from the label's occupancy gradient (nicer than
+        // the faceted cube face), falling back to the entered face if degenerate.
+        var nrm = labelNormal(hitVox, found, dims);
+        if (dot(nrm, nrm) < 0.25) { nrm = face; }
+        let diff = max(dot(nrm, lightDir), 0.0);
+        lc = lc * (ambient + (1.0 - ambient) * diff);
+        if (specular > 0.0) {
+          let h = normalize(lightDir - rd);
+          lc = lc + vec3<f32>(specular * pow(max(dot(nrm, h), 0.0), shininess));
+        }
+      }
+      labA = clamp(labelOpacity, 0.0, 1.0);
+      labPC = lc * labA;
+    }
   }
+
   // label OVER image (premultiplied)
   return vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA));
 }

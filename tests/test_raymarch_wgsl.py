@@ -19,16 +19,14 @@ pytestmark = pytest.mark.skipif(not os.path.exists(WGSL_PATH), reason="raymarch.
 
 
 def _label_color(lab):
-    """numpy mirror of raymarch.wgsl labelColor / volume3d-view.js labelColor."""
+    """numpy mirror of raymarch.wgsl labelColor / volume-mode.js labelColor: the
+    sinebow palette (matches the 2D ncolor outlines), sinebow(fract(lab·φ))."""
     if lab == 0:
         return np.zeros(3, np.float32)
-    h = (lab * 0.61803398875) % 1.0
-    s, v = 0.65, 1.0
-    i = math.floor(h * 6.0)
-    f = h * 6.0 - i
-    p = v * (1 - s); q = v * (1 - f * s); t = v * (1 - (1 - f) * s)
-    table = [(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)]
-    return np.array(table[i % 6], np.float32)
+    a = 2.0 * math.pi * ((lab * 0.61803398875) % 1.0)
+    return np.array([math.sin(a) * 0.5 + 0.5,
+                     math.sin(a + 2.09439510239) * 0.5 + 0.5,
+                     math.sin(a + 4.18879020479) * 0.5 + 0.5], np.float32)
 
 
 def _ortho_inv_vp(NX, NY, NZ, BIG=1000.0):
@@ -54,6 +52,23 @@ class Harness:
                       "targets": [{"format": wgpu.TextureFormat.rgba16float}]},
             primitive={"topology": wgpu.PrimitiveTopology.triangle_list},
         )
+
+    def _lut_gray(self):
+        """Grayscale identity colormap LUT (256x1 RGBA): entry i = (i,i,i). With
+        the shader's linear-interp lutColor this maps value -> value exactly, so
+        the image-intensity assertions are unaffected by the colormap layer."""
+        data = np.zeros((256, 4), np.uint8)
+        ramp = np.arange(256, dtype=np.uint8)
+        data[:, 0] = ramp; data[:, 1] = ramp; data[:, 2] = ramp; data[:, 3] = 255
+        tex = self.dev.create_texture(
+            size=(256, 1, 1), dimension=wgpu.TextureDimension.d2,
+            format=wgpu.TextureFormat.rgba8unorm,
+            usage=wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST)
+        self.dev.queue.write_texture(
+            {"texture": tex, "mip_level": 0, "origin": (0, 0, 0)},
+            data.tobytes(), {"offset": 0, "bytes_per_row": 256 * 4, "rows_per_image": 1},
+            (256, 1, 1))
+        return tex.create_view()
 
     def _tex3d(self, data, fmt, bytes_per_elem):
         NZ, NY, NX = data.shape
@@ -98,7 +113,8 @@ class Harness:
             layout=self.pipe.get_bind_group_layout(0),
             entries=[{"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": u.nbytes}},
                      {"binding": 1, "resource": volv},
-                     {"binding": 2, "resource": labv}])
+                     {"binding": 2, "resource": labv},
+                     {"binding": 3, "resource": self._lut_gray()}])
         enc = self.dev.create_command_encoder()
         rp = enc.begin_render_pass(color_attachments=[{
             "view": target.create_view(), "clear_value": (0, 0, 0, 0),
