@@ -2111,15 +2111,13 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       return h;
     }
     function openZoom(tile) {
-      // Wipe the recycled viewer's current contents BEFORE we kick off
-      // the new tile's load chain. Without this, the popup briefly
-      // shows the previous tile (or whatever was last clicked) until
-      // the new tile's first loadImage completes -- a stale-content
-      // flash because the viewer is reused across openZoom calls.
-      const isTileSwitch = (currentTile !== null && currentTile !== tile);
-      if (isTileSwitch && webglViewer && webglViewer.clearActive) {
-        try { webglViewer.clearActive(); } catch (_) {}
-      }
+      // Do NOT blank the recycled viewer on a tile switch: the new tile's thumb is a
+      // tileserve fetch that can lag (off-screen neighbour not browser-cached + the
+      // in-kernel server is GIL-bound), and blanking turns that lag into a flash to the
+      // empty backdrop. Instead keep the current image up until the new one is ready —
+      // setActiveImg_ swaps atomically, and the wanted-url guard means a stale in-flight
+      // load from the tile we left can't paint. Cache hits (incl. prefetched neighbours)
+      // still swap in the same frame, so warm tiles are instant.
       currentTile = tile;
       let hiresHref = tile.getAttribute('data-hires-href');
       // Remote pages: route a baked-loopback hi-res URL (e.g. a tileserve
