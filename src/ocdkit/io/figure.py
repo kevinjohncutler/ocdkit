@@ -777,8 +777,8 @@ _SHELL_HDR_ICON = (
 
 
 _SHELL_JS = r"""
-  (function() {
-    const wrapper = document.querySelector('.ocd-svgfig[data-uid="__UID__"]');
+  window.__ocdInitFig = function(OCD_UID) {
+    const wrapper = document.querySelector('.ocd-svgfig[data-uid="' + OCD_UID + '"]');
     if (!wrapper) return;
     // ─── self-pruning window listeners ─────────────────────────────────
     // Per-display ``window`` resize/scroll/keydown handlers would
@@ -800,7 +800,7 @@ _SHELL_JS = r"""
     };
     const svg = wrapper.querySelector('svg');
     const tiles = wrapper.querySelectorAll('.fig-tile');
-    const overlay = document.querySelector('.ocd-zoom-overlay[data-uid="__UID__"]');
+    const overlay = document.querySelector('.ocd-zoom-overlay[data-uid="' + OCD_UID + '"]');
     const overlayInner = overlay && overlay.querySelector('.ocd-zoom-inner');
     // Remember where the overlay started so we can restore it on close.
     const overlayHome = overlay && overlay.parentElement;
@@ -5268,7 +5268,7 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
         btn.disabled = false;
       }
     });
-  })();
+  };
 """.strip()
 
 
@@ -6495,11 +6495,22 @@ def _luts_json() -> str:
     return _LUTS_JSON_CACHE
 
 
+def _base_shell_js() -> str:
+    """The parameterized base shell as a standalone ``<script>`` body: it
+    defines ``window.__ocdInitFig(uid)`` (the per-figure controller, formerly an
+    immediately-invoked IIFE). A multi-figure grid emits this **once** and then
+    gives each cell only ``window.__ocdInitFig('<uid>')`` via
+    ``interactive_shell(..., include_base_shell=False)`` — so N figures share one
+    ~242 KB definition instead of carrying N copies."""
+    return _SHELL_JS.replace("__OCD_GL_POOL_IIFE__", _GL_POOL_IIFE)
+
+
 def interactive_shell(content_html: str, *,
                        save_button: bool = True,
                        copy_button: bool = True,
                        hdr_button: bool = True,
                        wrapper_style: str = '',
+                       include_base_shell: bool = True,
                        center: bool = True) -> str:
     """Wrap arbitrary HTML in ocdkit's interactive figure shell.
 
@@ -6555,7 +6566,9 @@ def interactive_shell(content_html: str, *,
                               r'\1></canvas>', content_html)
     uid = secrets.token_hex(6)
     css = _SHELL_CSS.replace("__UID__", uid)
-    js = _SHELL_JS.replace("__UID__", uid)
+    # The base shell is now a parameterized window.__ocdInitFig(uid) function
+    # (no per-figure __UID__); the call is appended below, after the controllers.
+    js = _SHELL_JS
     # Colormap LUTs for the live GPU tile colormap (the linked GL layer renders
     # raw intensity tiles → normalize(lo,hi) → LUT, with a cmap picker + a
     # self/global/bit-depth readout-norm toggle — all live uniform swaps).
@@ -6609,6 +6622,17 @@ def interactive_shell(content_html: str, *,
     # One source of truth for the shared WebGL2 context-budget IIFE — inject it into
     # every site that uses it (label + colormap controllers AND the zoom popup).
     js = js.replace("__OCD_GL_POOL_IIFE__", _GL_POOL_IIFE)
+    # A grid passes include_base_shell=False and emits _base_shell_js() ONCE
+    # itself, so each cell carries only the tiny init call (N figures share one
+    # ~242 KB base definition). Strip the base out of this cell's script when so.
+    if not include_base_shell:
+        js = js.replace(_base_shell_js(), "")
+    # Invoke this figure's controller once the base shell is defined. The base is
+    # either inline just above (include_base_shell) or emitted once by a grid; in
+    # the grid case a cell's <script> may run before the shared base, so retry.
+    js += (f"\n  (function(){{var u='{uid}';(function go(){{"
+           f"if(window.__ocdInitFig){{window.__ocdInitFig(u);}}else{{setTimeout(go,0);}}"
+           f"}})();}})();")
     actions = ''
     if save_button or copy_button or hdr_button:
         buttons = []
