@@ -88,6 +88,11 @@
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
+      // Adaptive supersampling: render at 1x while interacting (fast/smooth, high
+      // fps) and at `superSample`x once motion settles (a crisp anti-aliased
+      // still). `_interacting` is flipped by the input loop.
+      this.superSample = opts.superSample != null ? opts.superSample : 2.0;
+      this._interacting = false;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
@@ -214,8 +219,16 @@
       const eye = this._eye();
       const up = Mat4.quatRotate(this.orient, [0, 1, 0]);
       const view = Mat4.lookAt(eye, this.target, up);
-      const proj = Mat4.perspective(this.fovy, this.canvas.width / Math.max(1, this.canvas.height),
-        Math.max(0.01, this.radius - diag * 1.2), this.radius + diag * 1.2);
+      // Near/far that stay WELL-CONDITIONED when zoomed in. The box is centred at
+      // the origin, so size the frustum to the eye->origin distance plus a margin.
+      // The old `near = max(0.01, radius - 1.2·diag)` collapsed near to 0.01 once
+      // the camera came within ~1 diagonal (zoomed in), giving a near:far ratio in
+      // the tens of thousands -> f32 unprojection error -> the ray entry point
+      // jittered as the camera moved -> the voxel surfaces shimmered/crawled.
+      const d = Math.hypot(eye[0], eye[1], eye[2]);          // eye -> box centre
+      const near = Math.max(d * 0.05, d - diag * 0.6);
+      const far = d + diag * 0.6;
+      const proj = Mat4.perspective(this.fovy, this.canvas.width / Math.max(1, this.canvas.height), near, far);
       const viewProj = Mat4.multiply(proj, view);
       return { eye, viewProj, invViewProj: Mat4.invert(viewProj) };
     }
@@ -322,11 +335,13 @@
           self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * Math.exp(vz * 0.0015)));
           changed = true;
         }
-        if (changed) { self.render(); if (self._onCam) self._onCam(); }
-        if (drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
-            Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS) {
-          anim = requestAnimationFrame(step);
-        }
+        const moving = !!drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
+            Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS;
+        self._interacting = moving;                 // 1x while moving, crisp when settled
+        // Always render the settling frame (even if unchanged) so the final image
+        // is the high-supersample, anti-aliased still.
+        if (changed || !moving) { self.render(); if (self._onCam) self._onCam(); }
+        if (moving) anim = requestAnimationFrame(step);
       };
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
 
@@ -372,8 +387,14 @@
 
     render() {
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-      const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr) || this.canvas.width);
-      const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr) || this.canvas.height);
+      // Supersample: render the backing store larger than the CSS display size and
+      // let the browser downsample it. A ray-march is one fullscreen triangle, so
+      // MSAA can't anti-alias its content (no primitive edges); supersampling is
+      // the only way to soften the hard voxel-cube label silhouettes that
+      // otherwise shimmer/crawl under camera motion when zoomed in.
+      const ss = this._interacting ? 1 : (this.superSample || 1);
+      const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr * ss) || this.canvas.width);
+      const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr * ss) || this.canvas.height);
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
       this._writeUniform(cam);

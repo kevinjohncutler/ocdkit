@@ -78,21 +78,39 @@ fn labelColor(lab : u32) -> vec3<f32> {
                    sin(a + 4.18879020479) * 0.5 + 0.5);
 }
 
-// Per-label occupancy at a voxel (1 if it belongs to `lab`), for normals.
-fn occ(vc : vec3<i32>, lab : u32, dims : vec3<i32>) -> f32 {
-  let c = clamp(vc, vec3<i32>(0), dims - vec3<i32>(1));
-  if (textureLoad(labTex, c, 0).r == lab) { return 1.0; }
-  return 0.0;
+// Per-label occupancy at an integer voxel (1 if it belongs to `lab`, 0 outside
+// the volume = background). Out-of-range reads as background so the volume
+// boundary is itself a surface.
+fn occf(vc : vec3<i32>, lab : u32, dims : vec3<i32>) -> f32 {
+  if (any(vc < vec3<i32>(0)) || any(vc >= dims)) { return 0.0; }
+  return select(0.0, 1.0, textureLoad(labTex, vc, 0).r == lab);
 }
-// Outward surface normal of label `lab` from the central-difference gradient of
-// its occupancy (occupancy rises inward, so the normal is -grad). Zero if flat.
-fn labelNormal(vc : vec3<i32>, lab : u32, dims : vec3<i32>) -> vec3<f32> {
+// Trilinearly-interpolated occupancy at a sub-voxel position (voxel-centre
+// convention: voxel i is centred at i+0.5). A continuous field, so its gradient
+// is continuous too.
+fn occT(p : vec3<f32>, lab : u32, dims : vec3<i32>) -> f32 {
+  let q = p - vec3<f32>(0.5);
+  let fl = floor(q);
+  let i = vec3<i32>(fl);
+  let f = q - fl;
+  let c00 = mix(occf(i + vec3<i32>(0, 0, 0), lab, dims), occf(i + vec3<i32>(1, 0, 0), lab, dims), f.x);
+  let c01 = mix(occf(i + vec3<i32>(0, 0, 1), lab, dims), occf(i + vec3<i32>(1, 0, 1), lab, dims), f.x);
+  let c10 = mix(occf(i + vec3<i32>(0, 1, 0), lab, dims), occf(i + vec3<i32>(1, 1, 0), lab, dims), f.x);
+  let c11 = mix(occf(i + vec3<i32>(0, 1, 1), lab, dims), occf(i + vec3<i32>(1, 1, 1), lab, dims), f.x);
+  return mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z);
+}
+// Smooth outward surface normal: gradient of the trilinear occupancy field at the
+// CONTINUOUS hit position. Evaluating at the sub-voxel hit (not the integer voxel)
+// makes the normal vary smoothly as the first-hit voxel flips under camera motion
+// — which is what removed the shaded-label shimmer when zoomed in.
+fn smoothNormal(p : vec3<f32>, lab : u32, dims : vec3<i32>) -> vec3<f32> {
+  let h = 1.0;
   let g = vec3<f32>(
-    occ(vc + vec3<i32>(1, 0, 0), lab, dims) - occ(vc - vec3<i32>(1, 0, 0), lab, dims),
-    occ(vc + vec3<i32>(0, 1, 0), lab, dims) - occ(vc - vec3<i32>(0, 1, 0), lab, dims),
-    occ(vc + vec3<i32>(0, 0, 1), lab, dims) - occ(vc - vec3<i32>(0, 0, 1), lab, dims));
+    occT(p + vec3<f32>(h, 0.0, 0.0), lab, dims) - occT(p - vec3<f32>(h, 0.0, 0.0), lab, dims),
+    occT(p + vec3<f32>(0.0, h, 0.0), lab, dims) - occT(p - vec3<f32>(0.0, h, 0.0), lab, dims),
+    occT(p + vec3<f32>(0.0, 0.0, h), lab, dims) - occT(p - vec3<f32>(0.0, 0.0, h), lab, dims));
   let l = length(g);
-  if (l < 1e-4) { return vec3<f32>(0.0); }
+  if (l < 1e-5) { return vec3<f32>(0.0); }
   return -g / l;
 }
 
@@ -175,32 +193,33 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     let stp = sign(dv);
     let tDelta = abs(1.0 / dv);
     var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
-    var face = -rd;        // axis-aligned face the ray entered the hit voxel by
+    var tEnter = 0.0;      // DDA param at entry of the current voxel (pos = p0 + dv·t)
     var found = 0u;
-    var hitVox = vec3<i32>(0);
+    var hitPos = p0;
     let maxIter = dims.x + dims.y + dims.z + 3;
     for (var g = 0; g < maxIter; g = g + 1) {
       let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
       let lab = textureLoad(labTex, ci, 0).r;
-      if (lab > 0u) { found = lab; hitVox = ci; break; }
+      if (lab > 0u) { found = lab; hitPos = p0 + dv * tEnter; break; }
       if (tMax.x < tMax.y && tMax.x < tMax.z) {
-        vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x; face = vec3<f32>(-stp.x, 0.0, 0.0);
+        tEnter = tMax.x; vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x;
         if (vox.x < 0.0 || vox.x >= res.x) { break; }
       } else if (tMax.y < tMax.z) {
-        vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y; face = vec3<f32>(0.0, -stp.y, 0.0);
+        tEnter = tMax.y; vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y;
         if (vox.y < 0.0 || vox.y >= res.y) { break; }
       } else {
-        vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z; face = vec3<f32>(0.0, 0.0, -stp.z);
+        tEnter = tMax.z; vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z;
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
     if (found > 0u) {
       var lc = labelColor(found);
       if (shadeLabels > 0.5) {
-        // Smooth surface normal from the label's occupancy gradient (nicer than
-        // the faceted cube face), falling back to the entered face if degenerate.
-        var nrm = labelNormal(hitVox, found, dims);
-        if (dot(nrm, nrm) < 0.25) { nrm = face; }
+        // Smooth normal from the trilinear occupancy gradient at the continuous
+        // hit position (not the integer voxel) — continuous under motion, so the
+        // shading no longer jumps/shimmers as the first-hit voxel flips.
+        var nrm = smoothNormal(hitPos, found, dims);
+        if (dot(nrm, nrm) < 0.25) { nrm = normalize(-rd); }   // headlight fallback
         let diff = max(dot(nrm, lightDir), 0.0);
         lc = lc * (ambient + (1.0 - ambient) * diff);
         if (specular > 0.0) {
