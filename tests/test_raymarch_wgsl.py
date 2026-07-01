@@ -14,6 +14,21 @@ import pytest
 wgpu = pytest.importorskip("wgpu")
 import wgpu.utils  # noqa: E402
 
+import json  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+_NODE = shutil.which("node") or "/opt/homebrew/bin/node"
+_EMIT = "/Volumes/DataDrive/ocdkit/tests/js/emit_camera.mjs"
+
+
+def _angled_cam(yaw, pitch):
+    """An orbit camera at (yaw,pitch) from the SHIPPED mat4.js orbitCamera — so a
+    voxel label surface is seen at an angle (multiple cube faces visible), which is
+    what makes the hard per-face shading vary (a face-on view shows one face)."""
+    out = subprocess.run([_NODE, _EMIT, str(yaw), str(pitch)], capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)
+
 WGSL_PATH = "/Volumes/DataDrive/ocdkit/src/ocdkit/viewer/web/js/raymarch.wgsl"
 pytestmark = pytest.mark.skipif(not os.path.exists(WGSL_PATH), reason="raymarch.wgsl missing")
 
@@ -220,50 +235,55 @@ def test_image_and_label_layer_toggles(hz):
     assert lab_only[0, 0, 3] < 1e-2                               # bg transparent
 
 
+@pytest.mark.skipif(not os.path.exists(_NODE), reason="node not found")
+@pytest.mark.skipif(not os.path.exists(_EMIT), reason="emit_camera.mjs missing")
 def test_label_shading_varies_over_surface(hz):
-    """shade_labels lights the label surfaces: a label sphere shows brightness
-    variation across its surface when shaded, but is a flat colour when not."""
-    N = 24
-    vol = np.zeros((N, N, N), np.float32)
-    lab = np.zeros((N, N, N), np.uint8)
-    zz, yy, xx = np.mgrid[0:N, 0:N, 0:N]
-    lab[((xx - 12) ** 2 + (yy - 12) ** 2 + (zz - 12) ** 2) < 8 ** 2] = 5
-    kw = dict(imgW=N, imgH=N, nsteps=N, show_image=0.0, show_labels=1.0, label_opacity=1.0)
+    """Hard voxel-face shading: viewed at an angle (multiple cube faces visible),
+    a shaded label sphere shows brightness variation ACROSS its faces, while
+    unshaded it is a flat colour. (A face-on view shows one face, so we tilt.)"""
+    cam = _angled_cam(0.7, 0.5)
+    NX, NY, NZ = cam["dims"]; c = NX // 2
+    vol = np.zeros((NZ, NY, NX), np.float32)
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    zz, yy, xx = np.mgrid[0:NZ, 0:NY, 0:NX]
+    lab[((xx - c) ** 2 + (yy - c) ** 2 + (zz - c) ** 2) < 4 ** 2] = 5
+    kw = dict(imgW=64, imgH=64, nsteps=96, show_image=0.0, show_labels=1.0, label_opacity=1.0,
+              inv_vp=cam["invViewProj"], box_min=cam["box"]["min"], box_max=cam["box"]["max"])
     flat = hz.render(vol, lab, 1, shade_labels=0.0, **kw)
-    shad = hz.render(vol, lab, 1, shade_labels=1.0, **kw)
+    shad = hz.render(vol, lab, 1, shade_labels=1.0, headlight=1.0, **kw)
     fl = flat[..., :3].sum(-1)[flat[..., 3] > 0.5]
     sl = shad[..., :3].sum(-1)[shad[..., 3] > 0.5]
-    assert fl.size > 30 and sl.size > 30
+    assert fl.size > 20 and sl.size > 20
     assert fl.std() < 0.02              # unshaded label = uniform colour
-    assert sl.std() > 0.05              # shaded label = varies over the surface
+    assert sl.std() > 0.05              # shaded label = varies across the cube faces
     assert sl.max() <= fl.max() + 1e-2  # ambient+diffuse never brightens beyond base
 
 
+@pytest.mark.skipif(not os.path.exists(_NODE), reason="node not found")
+@pytest.mark.skipif(not os.path.exists(_EMIT), reason="emit_camera.mjs missing")
 def test_label_specular_and_ambient_params(hz):
     """specular adds a highlight brighter than diffuse-only; ambient sets the
-    dark-side floor (lower ambient -> darker minimum)."""
-    N = 24
-    vol = np.zeros((N, N, N), np.float32)
-    lab = np.zeros((N, N, N), np.uint8)
-    zz, yy, xx = np.mgrid[0:N, 0:N, 0:N]
-    lab[((xx - 12) ** 2 + (yy - 12) ** 2 + (zz - 12) ** 2) < 8 ** 2] = 5
-    kw = dict(imgW=N, imgH=N, nsteps=N, show_image=0.0, show_labels=1.0,
-              label_opacity=1.0, shade_labels=1.0)
+    dark-side floor (lower ambient -> darker minimum). Angled view + headlight so
+    a face aligns with the highlight."""
+    cam = _angled_cam(0.7, 0.5)
+    NX, NY, NZ = cam["dims"]; c = NX // 2
+    vol = np.zeros((NZ, NY, NX), np.float32)
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    zz, yy, xx = np.mgrid[0:NZ, 0:NY, 0:NX]
+    lab[((xx - c) ** 2 + (yy - c) ** 2 + (zz - c) ** 2) < 4 ** 2] = 5
+    kw = dict(imgW=64, imgH=64, nsteps=96, show_image=0.0, show_labels=1.0,
+              label_opacity=1.0, shade_labels=1.0, headlight=1.0,
+              inv_vp=cam["invViewProj"], box_min=cam["box"]["min"], box_max=cam["box"]["max"])
     lum = lambda im: im[..., :3].sum(-1)[im[..., 3] > 0.5]
     diffuse = lum(hz.render(vol, lab, 1, ambient=0.4, specular=0.0, **kw))
-    spec = lum(hz.render(vol, lab, 1, ambient=0.4, specular=0.9, shininess=24.0, **kw))
+    # broad highlight (low shininess): on hard axis-aligned faces a tight
+    # highlight only shows when a face nearly faces the half-vector, so use a wide
+    # exponent to verify the specular term contributes at oblique face angles.
+    spec = lum(hz.render(vol, lab, 1, ambient=0.4, specular=0.9, shininess=2.0, **kw))
     lo_amb = lum(hz.render(vol, lab, 1, ambient=0.1, specular=0.0, **kw))
     hi_amb = lum(hz.render(vol, lab, 1, ambient=0.9, specular=0.0, **kw))
     assert spec.max() > diffuse.max() + 0.1     # highlight pops above diffuse
     assert lo_amb.min() < hi_amb.min() - 0.1    # ambient controls the dark floor
-
-
-import json
-import shutil
-import subprocess
-
-_NODE = shutil.which("node") or "/opt/homebrew/bin/node"
-_EMIT = "/Volumes/DataDrive/ocdkit/tests/js/emit_camera.mjs"
 
 
 @pytest.mark.skipif(not os.path.exists(_NODE), reason="node not found")
