@@ -3903,6 +3903,12 @@ function setMaskDisplayMode(nextMode, { silent = false } = {}) {
   const normalized = normalizeMaskDisplayMode(nextMode);
   if (maskDisplayMode === normalized) {
     updateMaskStyleControls();
+    // Re-sync the 3D volume even on a no-op click: the mode may already be this
+    // value while the volume's label visibility is out of step (e.g. created
+    // after the mode was set), so a click on "No Mask" must still take effect.
+    if (typeof window.__viewerVolumeOnMaskStyle === 'function') {
+      try { window.__viewerVolumeOnMaskStyle(maskDisplayMode); } catch (e) {}
+    }
     return;
   }
   maskDisplayMode = normalized;

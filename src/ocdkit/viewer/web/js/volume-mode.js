@@ -415,6 +415,7 @@
         vgpu.setOverlay("axes", false);
         if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom
         window.__volumeGPU = vgpu;
+        applyLabelVisibilityToGpu();   // respect the current label style (e.g. hidden) on creation
         return vgpu;
       })();
       try {
