@@ -455,6 +455,23 @@ def _svg_to_png_bytes(svg_bytes: bytes, *, dpi: int = 96) -> bytes:
 # ─── interactive HTML shell (Jupyter `_repr_mimebundle_` payload) ────
 
 
+# Shared zoom-overlay backdrop — ONE source of truth reused by the SvgFigure /
+# image_grid overlay (below) AND downstream native bar-grid overlays. Blur the page
+# behind with NO tint (a dark scrim is brutal over light-mode Jupyter; transparent
+# + blur adapts to light OR dark), sit just below JupyterLab's toast (z 9999), and
+# isolate the compositor layer for cheap redraws. Valid as both a CSS-rule body and
+# an inline style string.
+ZOOM_BACKDROP_CSS = (
+    "background: transparent;"
+    "-webkit-backdrop-filter: blur(8px);"
+    "backdrop-filter: blur(8px);"
+    "z-index: 9998;"
+    "contain: strict;"
+    "isolation: isolate;"
+    "will-change: transform;"
+)
+
+
 _SHELL_CSS = """
   .ocd-svgfig[data-uid="__UID__"] {
     position: relative;
@@ -627,29 +644,12 @@ _SHELL_CSS = """
   .ocd-zoom-overlay[data-uid="__UID__"] {
     position: fixed;
     /* top/left/width/height set dynamically by JS to match the notebook
-       pane's bbox so the overlay doesn't bleed under JupyterLab side
-       panels. Default to viewport-cover for non-Jupyter hosts. */
+       pane's bbox so the overlay doesn't bleed under JupyterLab side panels. */
     top: 0; left: 0; right: 0; bottom: 0;
     display: none;
-    /* Blur the page behind, NO tint (an 85%-black scrim was brutal over
-       light-mode Jupyter). Fully transparent + blur adapts to light OR dark. */
-    background: transparent;
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
-    /* 9998 (NOT 10000): sit just BELOW JupyterLab's notification/news toast
-       (react-toastify, --toastify-z-index=9999) so a news popup isn't blurred
-       under the zoom. Still well above the notebook content it covers. */
-    z-index: 9998;
     cursor: zoom-out;
-    /* Compositor isolation: tell the browser this subtree is layout/
-       paint/style-self-contained, and force it onto its own composite
-       layer.  Reduces re-composite cost on each canvas redraw — the
-       browser no longer has to merge our overlay with the rest of the
-       JupyterLab page on every frame.  Free perf bump for embedded
-       hosts. */
-    contain: strict;
-    isolation: isolate;
-    will-change: transform;
+    /* Shared blur/z-index/isolation backdrop (see ZOOM_BACKDROP_CSS). */
+    __ZOOM_BACKDROP__
   }
   .ocd-zoom-overlay[data-uid="__UID__"].active { display: flex; }
   .ocd-zoom-overlay[data-uid="__UID__"] .ocd-zoom-inner {
@@ -6565,7 +6565,7 @@ def interactive_shell(content_html: str, *,
         content_html = re.sub(r'(<canvas\b[^>]*?)\s*/>',
                               r'\1></canvas>', content_html)
     uid = secrets.token_hex(6)
-    css = _SHELL_CSS.replace("__UID__", uid)
+    css = _SHELL_CSS.replace("__UID__", uid).replace("__ZOOM_BACKDROP__", ZOOM_BACKDROP_CSS)
     # The base shell is now a parameterized window.__ocdInitFig(uid) function
     # (no per-figure __UID__); the call is appended below, after the controllers.
     js = _SHELL_JS
@@ -6678,7 +6678,7 @@ def interactive_shell(content_html: str, *,
 _build_interactive_shell = interactive_shell
 
 
-__all__ = ["SvgFigure", "Axes", "interactive_shell"]
+__all__ = ["SvgFigure", "Axes", "interactive_shell", "ZOOM_BACKDROP_CSS"]
 
 
 # ──────────────────────────────────────────────────────────────────────
