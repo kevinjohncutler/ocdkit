@@ -45,7 +45,6 @@
       } catch (e) {
         ctx.configure({ device, format: self.format, alphaMode: "premultiplied" });
       }
-      self._configured = true;   // gate renders; a queued rAF render must not run after destroy()
 
       const _v = (typeof window !== "undefined" && window.__AV__) ? ("?v=" + window.__AV__) : "";
       const wgsl = await (await fetch((opts.shaderUrl || "js/raymarch.wgsl") + _v)).text();
@@ -73,18 +72,7 @@
         catch (e) { self.overlays = null; }
       }
       self._initCamera(opts);
-      self.render();            // immediate (headless/tests read pixels right away)
-      self.requestRender();     // and an rAF-synced frame so it presents on a real display
-      // Re-render (rAF-synced) whenever the canvas gets laid out or resized — the
-      // 0 -> size transition on first show / page refresh, and hidden -> shown
-      // when toggling 2D<->3D. Guards against a render fired before the canvas has
-      // its final size (which would otherwise stay blank until the user dragged).
-      if (typeof ResizeObserver !== "undefined") {
-        try {
-          self._resizeObserver = new ResizeObserver(() => self.requestRender());
-          self._resizeObserver.observe(self.canvas);
-        } catch (_) {}
-      }
+      self.render();
       return self;
     }
 
@@ -136,7 +124,7 @@
     }
 
     /** Switch the intensity colormap (e.g. when the 2D view's selector changes). */
-    setColormap(name) { this.colormap = name; this._uploadLut(name); this.requestRender(); }
+    setColormap(name) { this.colormap = name; this._uploadLut(name); this.render(); }
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
@@ -217,7 +205,7 @@
       this.orient = this._home.orient.slice();
       this.radius = this._home.radius;
       this.target = this._home.target.slice();
-      this.requestRender();
+      this.render();
       if (this._onCam) this._onCam();   // persist the reset so a refresh shows the default too
     }
 
@@ -380,7 +368,7 @@
       if (Array.isArray(c.orient) && c.orient.length === 4) this.orient = c.orient.slice();
       if (typeof c.radius === "number") this.radius = c.radius;
       if (Array.isArray(c.target) && c.target.length === 3) this.target = c.target.slice();
-      this.requestRender();
+      this.render();
     }
 
     _writeUniform(cam) {
@@ -397,22 +385,7 @@
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
-    // Schedule a render on the next animation frame (coalesced). Programmatic
-    // updates (mode/colormap/label toggles/camera restore, entering 3D) must
-    // present through rAF: a WebGPU swap-chain frame drawn by a direct render()
-    // OUTSIDE an animation frame does not reliably composite to a real display,
-    // which left the volume blank (and "No Mask" looking inert) until the user
-    // dragged — the drag renders inside the input loop's rAF, which DOES present.
-    requestRender() {
-      if (this._rraf) return;
-      const cb = () => { this._rraf = 0; this.render(); };
-      // Call rAF directly (a detached reference throws "Illegal invocation").
-      this._rraf = (typeof requestAnimationFrame === "function")
-        ? requestAnimationFrame(cb) : setTimeout(cb, 16);
-    }
-
     render() {
-      if (!this._configured) return;   // context unconfigured (destroyed) — a stale rAF render must no-op
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
       // Supersample: render the backing store larger than the CSS display size and
       // let the browser downsample it. A ray-march is one fullscreen triangle, so
@@ -441,24 +414,21 @@
       this.device.queue.submit([enc.finish()]);
     }
 
-    setMode(m) { this.mode = m | 0; this.requestRender(); }
-    setShowImage(on) { this.showImage = on ? 1 : 0; this.requestRender(); }
-    setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.requestRender(); }
-    setAmbient(a) { this.ambient = +a; this.requestRender(); }
-    setSpecular(s) { this.specular = +s; this.requestRender(); }
-    setShininess(s) { this.shininess = +s; this.requestRender(); }
-    setHeadlight(on) { this.headlight = on ? 1 : 0; this.requestRender(); }
-    setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.requestRender(); } }
-    setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.requestRender(); } }
-    setDensity(d) { this.density = +d; this.requestRender(); }
-    setLabelOpacity(o) { this.labelOpacity = +o; this.requestRender(); }
-    setShowLabels(on) { this.showLabels = on ? 1 : 0; this.requestRender(); }
-    setZScale(z) { this.zScale = +z; this.requestRender(); }
+    setMode(m) { this.mode = m | 0; this.render(); }
+    setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
+    setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.render(); }
+    setAmbient(a) { this.ambient = +a; this.render(); }
+    setSpecular(s) { this.specular = +s; this.render(); }
+    setShininess(s) { this.shininess = +s; this.render(); }
+    setHeadlight(on) { this.headlight = on ? 1 : 0; this.render(); }
+    setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
+    setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
+    setDensity(d) { this.density = +d; this.render(); }
+    setLabelOpacity(o) { this.labelOpacity = +o; this.render(); }
+    setShowLabels(on) { this.showLabels = on ? 1 : 0; this.render(); }
+    setZScale(z) { this.zScale = +z; this.render(); }
 
     destroy() {
-      this._configured = false;
-      if (this._rraf) { try { cancelAnimationFrame(this._rraf); } catch (_) {} try { clearTimeout(this._rraf); } catch (_) {} this._rraf = 0; }
-      if (this._resizeObserver) { try { this._resizeObserver.disconnect(); } catch (_) {} }
       try { this.ctx.unconfigure(); } catch (_) {}
       try { this.device.destroy(); } catch (_) {}
     }

@@ -458,7 +458,7 @@
         }
         mask3dStale = false;
         const g = await ensureVolume();
-        if (g) { g.requestRender(); applyLabelVisibilityToGpu(); }
+        if (g) { g.render(); applyLabelVisibilityToGpu(); }
         else { mode = "2d"; setMode("2d"); }
       }
       saveVolState();
@@ -492,7 +492,7 @@
 
     btn2d.addEventListener("click", () => setMode("2d"));
     btn3d.addEventListener("click", () => setMode("3d"));
-    window.addEventListener("resize", () => { if (mode === "3d" && vgpu) vgpu.requestRender(); });
+    window.addEventListener("resize", () => { if (mode === "3d" && vgpu) vgpu.render(); });
 
     // Apply the 2D view's selected image colormap to the 3D volume too, and keep
     // them in sync when the user changes it (the dropdown dispatches `change`).
@@ -527,7 +527,7 @@
       await updateMaskSlice(slice);
       if (vgpu) { try { vgpu.destroy(); } catch (e) {} vgpu = null; window.__volumeGPU = null; }
       loading = null;
-      if (mode === "3d") { const g = await ensureVolume(); if (g) { g.requestRender(); applyLabelVisibilityToGpu(); } }
+      if (mode === "3d") { const g = await ensureVolume(); if (g) { g.render(); applyLabelVisibilityToGpu(); } }
       return true;
     }
     if (loadMasksBtn) {
@@ -563,7 +563,7 @@
           mask3dStale = false;
           const g = await ensureVolume();
           if (g) {
-            g.requestRender(); applyLabelVisibilityToGpu();
+            g.render(); applyLabelVisibilityToGpu();
             await showSlice(slice);     // prep the hidden 2D view so switching back is instant + matched
           } else {                      // WebGPU unavailable → fall back to 2D
             mode = "2d";
