@@ -88,14 +88,24 @@
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
-      // Dynamic resolution: render at a FRACTION of native pixels while the camera
-      // is moving (a ray-march costs O(pixels·steps), so zoomed-in orbit — where
-      // most pixels hit the volume — is the slow case), then a full-res frame once
-      // it settles. Keeps interaction snappy without sacrificing the still image.
+      // Adaptive resolution while moving: a ray-march costs O(pixels·steps), so
+      // zoomed-in orbit (most pixels hit the volume) is the slow case. Render at a
+      // dynamic fraction of native pixels chosen to hold the interactive frame
+      // time near the display refresh (up to ~120 fps): full-res when there's
+      // headroom (zoomed out), scaled down only as needed (zoomed in). A full-res
+      // frame is drawn once motion settles, so the still is always sharp.
       this._interacting = false;
-      this.interactScale = opts.interactScale != null ? opts.interactScale : 0.5;
+      this._dynScale = 1.0;              // current adaptive scale (drives render resolution)
+      this.minScale = opts.minScale != null ? opts.minScale : 0.4;   // floor
+      this.targetFps = opts.targetFps != null ? opts.targetFps : 120;
+      this._frameEMA = 0; this._period = 0; this._lastFrameMs = 0; this._probe = 0;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
+      // Fewer ray samples while moving (motion masks the slight MIP thin-feature
+      // dimming; mean is unaffected) — the raymarch is pixels*steps bound, so this
+      // stacks with the dynamic-resolution downscale to reach a high interactive
+      // frame rate. The settled frame uses the full step count for a clean still.
+      this.nstepsInteract = Math.max(96, Math.round(this.nsteps * 0.5));
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
       this.uniform = device_buf(this.device, 44 * 4);
       // Intensity colormap LUT (256x1 RGBA) — same image colormap as the 2D view.
@@ -305,8 +315,49 @@
       const DECAY = 0.8;      // momentum decay per frame after the gesture stops
       const EPS = 1e-3;
       const ema = (v, x, active) => active ? v * (1 - SMOOTH) + x * SMOOTH : v * DECAY;
+      const _now = (typeof performance !== "undefined" && performance.now)
+        ? () => performance.now() : () => Date.now();
+      // Adaptive resolution controller (AIMD): each interactive frame, track the
+      // frame interval; shrink the render scale when we're slower than the target
+      // and probe it back up when there's headroom. Quantised steps + a probe
+      // cooldown keep a steady load from churning the canvas size.
+      // Measure the display refresh period once (idle rAF interval = one vsync).
+      // This is the budget basis; we must never infer it from render times, since
+      // a persistently zoomed-in (slow) session never observes a fast frame.
+      (function measureRefresh() {
+        let n = 0, last = 0, best = 1e9;
+        const tick = (t) => {
+          if (last) best = Math.min(best, t - last);
+          last = t;
+          if (++n < 8) requestAnimationFrame(tick);
+          else self._displayPeriod = best;
+        };
+        if (typeof requestAnimationFrame === "function") requestAnimationFrame((t) => { last = t; requestAnimationFrame(tick); });
+      })();
+      const tuneScale = () => {
+        const nowMs = _now();
+        const fdt = nowMs - self._lastFrameMs;
+        self._lastFrameMs = nowMs;
+        if (fdt <= 0 || fdt > 200) return;            // new gesture / stall — skip
+        self._frameEMA = self._frameEMA ? self._frameEMA * 0.8 + fdt * 0.2 : fdt;
+        // Target one display refresh (capped so a request for >refresh fps just
+        // targets the refresh — you can't beat vsync). Small slack for noise.
+        const period = Math.max(self._displayPeriod || (1000 / self.targetFps), 1000 / self.targetFps);
+        const budget = period * 1.15;
+        if (self._frameEMA > budget) {                // slower than the refresh -> shrink now
+          self._dynScale = Math.max(self.minScale, self._dynScale - 0.12);
+          self._probe = 40;
+        } else if (self._probe > 0) {
+          self._probe -= 1;
+        } else if (self._dynScale < 1.0) {            // sustaining the refresh with headroom -> probe up
+          self._dynScale = Math.min(1.0, self._dynScale + 0.06);
+          self._probe = 20;
+        }
+      };
       const step = () => {
         anim = 0;
+        if (drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS || Math.abs(vpx) > EPS ||
+            Math.abs(vpy) > EPS || Math.abs(vz) > EPS) tuneScale();
         const H = c.clientHeight || c.height || 1;
         const ix = pdx, iy = pdy, qx = ppx, qy = ppy, iz = pz;
         pdx = 0; pdy = 0; ppx = 0; ppy = 0; pz = 0;
@@ -378,7 +429,8 @@
       u.set([box.min[0], box.min[1], box.min[2], 0], 20);
       u.set([box.max[0], box.max[1], box.max[2], 0], 24);
       u.set([this.NX, this.NY, this.NZ, this.mode], 28);
-      u.set([this.nsteps, this.density, this.labelOpacity, this.showLabels], 32);
+      const steps = this._interacting ? (this.nstepsInteract || this.nsteps) : this.nsteps;
+      u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, 0], 36);   // iscale, showImage, shadeLabels
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       this.device.queue.writeBuffer(this.uniform, 0, u);
@@ -392,7 +444,7 @@
       // BLANK until something shrinks the canvas (the old supersample path made
       // this far worse). The cap keeps every frame renderable.
       const maxDim = (this.device.limits && this.device.limits.maxTextureDimension2D) || 8192;
-      const dyn = this._interacting ? (this.interactScale || 1) : 1;   // downscale while moving
+      const dyn = this._interacting ? (this._dynScale || 1) : 1;   // adaptive downscale while moving
       let w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr * dyn) || this.canvas.width);
       let h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr * dyn) || this.canvas.height);
       if (w > maxDim || h > maxDim) { const k = maxDim / Math.max(w, h); w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }

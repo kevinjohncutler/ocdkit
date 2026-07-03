@@ -116,29 +116,35 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
 
   // ── Image layer: fixed-step volumetric (MIP / mean / additive) ────────────
   // The intensity scalar is colour-mapped through the LUT (grayscale = identity).
-  let dt = (tfar - tnear) / f32(nsteps);
-  var t = tnear + dt * 0.5;
-  var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
-  for (var i = 0; i < nsteps; i = i + 1) {
-    let pwld = ro + rd * t;
-    let n = (pwld - u.boxMin.xyz) / span;            // [0,1] in box
-    var vc = vec3<i32>(floor(n * vec3<f32>(u.dims.xyz)));
-    vc = clamp(vc, vec3<i32>(0), dims - vec3<i32>(1));
-    let s = textureLoad(volTex, vc, 0).r * iscale;
-    imgMip = max(imgMip, s);
-    imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
-    let a = clamp(s * density, 0.0, 1.0);
-    let om = 1.0 - imgAcc.w;
-    imgAcc = vec4<f32>(imgAcc.rgb + lutColor(s) * a * om, imgAcc.w + a * om);
-    t = t + dt;
-  }
-  // each layer as premultiplied (colour, alpha). lutColor already encodes the
-  // brightness, so the premultiplied colour IS lutColor(value) (grayscale ->
-  // vec3(value), matching the old white-times-alpha behaviour exactly).
+  // Skip the whole march when the image layer is hidden. MIP/mean sample ONE
+  // texture per step (the LUT is applied once at the end, not per sample); only
+  // additive needs the per-sample colour, and it terminates early once opacity
+  // saturates. The sample position is stepped directly in voxel space (no per-step
+  // world->box->voxel transform). Premultiplied: lutColor already encodes the
+  // brightness (grayscale -> vec3(value)).
   var imgPC = vec3<f32>(0.0); var imgA = 0.0;
   if (showImage > 0.5) {
+    let res = vec3<f32>(u.dims.xyz);
+    let dt = (tfar - tnear) / f32(nsteps);
+    let voxStep = rd * dt / span * res;                       // voxel-space step per dt
+    var voxPos = (ro + rd * (tnear + dt * 0.5) - u.boxMin.xyz) / span * res;
+    var imgMip = 0.0; var imgSum = 0.0; var imgAcc = vec4<f32>(0.0);
+    for (var i = 0; i < nsteps; i = i + 1) {
+      let vc = clamp(vec3<i32>(floor(voxPos)), vec3<i32>(0), dims - vec3<i32>(1));
+      let s = textureLoad(volTex, vc, 0).r * iscale;
+      if (mode == 0) {                                        // additive (emission-absorption)
+        let a = clamp(s * density, 0.0, 1.0);
+        let om = 1.0 - imgAcc.w;
+        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(s) * a * om, imgAcc.w + a * om);
+        if (imgAcc.w >= 0.995) { break; }                     // early ray termination
+      } else {                                                // MIP / mean
+        imgMip = max(imgMip, s);
+        imgSum = imgSum + s;
+      }
+      voxPos = voxPos + voxStep;
+    }
     if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = lutColor(imgMip); }
-    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
+    else if (mode == 2) { let m = imgSum / f32(nsteps); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 
