@@ -88,11 +88,6 @@
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
-      // Adaptive supersampling: render at 1x while interacting (fast/smooth, high
-      // fps) and at `superSample`x once motion settles (a crisp anti-aliased
-      // still). `_interacting` is flipped by the input loop.
-      this.superSample = opts.superSample != null ? opts.superSample : 2.0;
-      this._interacting = false;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
@@ -337,10 +332,7 @@
         }
         const moving = !!drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
             Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS;
-        self._interacting = moving;                 // 1x while moving, crisp when settled
-        // Always render the settling frame (even if unchanged) so the final image
-        // is the high-supersample, anti-aliased still.
-        if (changed || !moving) { self.render(); if (self._onCam) self._onCam(); }
+        if (changed) { self.render(); if (self._onCam) self._onCam(); }
         if (moving) anim = requestAnimationFrame(step);
       };
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
@@ -387,14 +379,15 @@
 
     render() {
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
-      // Supersample: render the backing store larger than the CSS display size and
-      // let the browser downsample it. A ray-march is one fullscreen triangle, so
-      // MSAA can't anti-alias its content (no primitive edges); supersampling is
-      // the only way to soften the hard voxel-cube label silhouettes that
-      // otherwise shimmer/crawl under camera motion when zoomed in.
-      const ss = this._interacting ? 1 : (this.superSample || 1);
-      const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr * ss) || this.canvas.width);
-      const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr * ss) || this.canvas.height);
+      // Render at native device pixels. CRUCIAL: cap the backing to the device's
+      // max 2D texture size — on a big Retina display clientWidth*dpr can exceed
+      // it, and getCurrentTexture() then yields nothing, so the volume renders
+      // BLANK until something shrinks the canvas (the old supersample path made
+      // this far worse). The cap keeps every frame renderable.
+      const maxDim = (this.device.limits && this.device.limits.maxTextureDimension2D) || 8192;
+      let w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr) || this.canvas.width);
+      let h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr) || this.canvas.height);
+      if (w > maxDim || h > maxDim) { const k = maxDim / Math.max(w, h); w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
       this._writeUniform(cam);
