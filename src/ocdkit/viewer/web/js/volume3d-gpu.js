@@ -88,6 +88,12 @@
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
+      // Dynamic resolution: render at a FRACTION of native pixels while the camera
+      // is moving (a ray-march costs O(pixels·steps), so zoomed-in orbit — where
+      // most pixels hit the volume — is the slow case), then a full-res frame once
+      // it settles. Keeps interaction snappy without sacrificing the still image.
+      this._interacting = false;
+      this.interactScale = opts.interactScale != null ? opts.interactScale : 0.5;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
@@ -332,7 +338,8 @@
         }
         const moving = !!drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
             Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS;
-        if (changed) { self.render(); if (self._onCam) self._onCam(); }
+        self._interacting = moving;                 // low-res while moving, full-res on the settle frame
+        if (changed || !moving) { self.render(); if (self._onCam) self._onCam(); }
         if (moving) anim = requestAnimationFrame(step);
       };
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
@@ -385,8 +392,9 @@
       // BLANK until something shrinks the canvas (the old supersample path made
       // this far worse). The cap keeps every frame renderable.
       const maxDim = (this.device.limits && this.device.limits.maxTextureDimension2D) || 8192;
-      let w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr) || this.canvas.width);
-      let h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr) || this.canvas.height);
+      const dyn = this._interacting ? (this.interactScale || 1) : 1;   // downscale while moving
+      let w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr * dyn) || this.canvas.width);
+      let h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr * dyn) || this.canvas.height);
       if (w > maxDim || h > maxDim) { const k = maxDim / Math.max(w, h); w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
