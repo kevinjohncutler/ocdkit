@@ -30,6 +30,10 @@ struct U {
 // so the 3D volume uses the SAME image colormap the 2D view selected (grayscale
 // is the identity ramp, so it round-trips exactly). Sampled with linear interp.
 @group(0) @binding(3) var lutTex : texture_2d<f32>;
+// Linear sampler for TRILINEAR interpolation of the intensity volume — removes the
+// nearest-neighbour "fish-scale" / stair-step voxel artefact. Labels stay nearest
+// (textureLoad) so masks remain crisp voxel cubes.
+@group(0) @binding(4) var volSamp : sampler;
 
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 
@@ -130,8 +134,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     var voxPos = (ro + rd * (tnear + dt * 0.5) - u.boxMin.xyz) / span * res;
     var imgMip = 0.0; var imgSum = 0.0; var imgAcc = vec4<f32>(0.0);
     for (var i = 0; i < nsteps; i = i + 1) {
-      let vc = clamp(vec3<i32>(floor(voxPos)), vec3<i32>(0), dims - vec3<i32>(1));
-      let s = textureLoad(volTex, vc, 0).r * iscale;
+      let s = textureSampleLevel(volTex, volSamp, voxPos / res, 0.0).r * iscale;   // trilinear
       if (mode == 0) {                                        // additive (emission-absorption)
         let a = clamp(s * density, 0.0, 1.0);
         let om = 1.0 - imgAcc.w;
