@@ -23,8 +23,17 @@ from typing import Any, Optional
 
 # Eviction limits — overridable via env vars in deployment.
 import os as _os
+import tempfile as _tempfile
 SESSION_MAX_COUNT = int(_os.environ.get("OCDKIT_VIEWER_MAX_SESSIONS", "100"))
 SESSION_TTL_SECONDS = float(_os.environ.get("OCDKIT_VIEWER_SESSION_TTL", "3600"))
+# On-disk record of each session's opened image path, so a server restart or dev
+# ``--reload`` (which wipes the in-memory sessions) still restores the image a
+# returning browser — same session cookie — had open, instead of reverting to the
+# preload default. Just maps session_id -> path; the image is re-read on restore.
+_SESSION_STORE_PATH = Path(
+    _os.environ.get("OCDKIT_VIEWER_SESSION_STORE")
+    or (Path(_tempfile.gettempdir()) / "ocdkit_viewer_sessions.json")
+)
 
 import numpy as np
 from imageio import v2 as imageio
@@ -210,9 +219,62 @@ class SessionManager:
                 state = self._sessions[session_id]
                 self._touch_unlocked(state)
                 return state
+            # Not in memory — try the on-disk store (survives a restart / --reload)
+            # so a returning browser keeps its opened image instead of reverting.
+            if session_id:
+                restored = self._restore_from_store_unlocked(session_id)
+                if restored is not None:
+                    self._evict_unlocked()
+                    return restored
             state = self._create_session_unlocked()
             self._evict_unlocked()  # respect cap if creation pushed us over
             return state
+
+    # -- on-disk opened-image store (restart/reload survival) ---------------
+
+    def _store_load(self) -> dict:
+        try:
+            return json.loads(_SESSION_STORE_PATH.read_text())
+        except Exception:
+            return {}
+
+    def _store_save(self, session_id: str, path: Optional[Path]) -> None:
+        try:
+            data = self._store_load()
+            if path is None:
+                data.pop(session_id, None)
+            else:
+                data[session_id] = {"path": str(path)}
+            if len(data) > 200:                       # keep the store bounded
+                data = dict(list(data.items())[-200:])
+            _SESSION_STORE_PATH.write_text(json.dumps(data))
+        except Exception:
+            pass
+
+    def _restore_from_store_unlocked(self, session_id: str) -> Optional[SessionState]:
+        entry = self._store_load().get(session_id)
+        path_str = entry.get("path") if isinstance(entry, dict) else None
+        if not path_str:
+            return None
+        path = Path(path_str)
+        if not path.exists():
+            return None
+        try:
+            image, is_rgb, is_volume = self._load_image_from_path(path)
+        except Exception:
+            return None
+        state = SessionState(
+            session_id=session_id,                    # REUSE the id — the cookie matches
+            current_path=path,
+            directory=path.parent,
+            files=self._list_directory_images(path.parent),
+            encoded_image=None,
+        )
+        self._apply_image(state, image, is_rgb, is_volume)
+        self._maybe_auto_mask(state)
+        state.last_seen = time.time()
+        self._sessions[session_id] = state
+        return state
 
     def get(self, session_id: str) -> SessionState:
         with self._lock:
@@ -368,6 +430,7 @@ class SessionManager:
         state.files = files
         self._apply_image(state, image, is_rgb, is_volume)
         self._maybe_auto_mask(state)
+        self._store_save(state.session_id, path)   # survive server restart / --reload
 
     def build_config(
         self, state: SessionState, *, embed_image: bool = True
