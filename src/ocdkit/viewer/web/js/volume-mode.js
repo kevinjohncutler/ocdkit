@@ -24,6 +24,22 @@
     const canvas2d = document.getElementById("canvas");
     const brush = document.getElementById("brushPreview");
     if (!panel || !sliceBar || !slider || !vcanvas || !canvas2d) return;
+
+    // FPS readout (updates while rotating/zooming; shows the actual render rate +
+    // the adaptive resolution scale).
+    const fpsEl = document.createElement("div");
+    fpsEl.id = "volFps";
+    fpsEl.style.cssText = "position:absolute;top:8px;left:50%;transform:translateX(-50%);" +
+      "z-index:6;pointer-events:none;font:11px ui-monospace,monospace;letter-spacing:.04em;" +
+      "color:#8fdc8f;text-shadow:0 0 4px #000;opacity:0;transition:opacity .3s;padding:2px 8px;";
+    (vcanvas.parentElement || document.body).appendChild(fpsEl);
+    let fpsHideT = 0;
+    function showFps(fps, scale) {
+      fpsEl.textContent = Math.round(fps) + " fps" + (scale < 0.995 ? "  · " + Math.round(scale * 100) + "%" : "");
+      fpsEl.style.opacity = "1";
+      if (fpsHideT) clearTimeout(fpsHideT);
+      fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 700);
+    }
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');
     const projRow = document.getElementById("projModeRow");
@@ -411,6 +427,7 @@
           mode: curProj,
           colormap: currentImageColormap(),
           onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
+          onFps: (fps, scale) => showFps(fps, scale),
         });
         vgpu.setOverlay("axes", false);
         if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom

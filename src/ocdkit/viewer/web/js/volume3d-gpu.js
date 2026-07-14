@@ -100,6 +100,7 @@
       this.targetFps = opts.targetFps != null ? opts.targetFps : 120;
       this._frameEMA = 0; this._period = 0; this._lastFrameMs = 0; this._probe = 0;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
+      this._onFps = typeof opts.onFps === "function" ? opts.onFps : null;
       this.nsteps = Math.min(512, Math.max(this.NX, this.NY, this.NZ) * 2);
       // Fewer ray samples while moving (motion masks the slight MIP thin-feature
       // dimming; mean is unaffected) — the raymarch is pixels*steps bound, so this
@@ -341,6 +342,7 @@
         self._lastFrameMs = nowMs;
         if (fdt <= 0 || fdt > 200) return;            // new gesture / stall — skip
         self._frameEMA = self._frameEMA ? self._frameEMA * 0.8 + fdt * 0.2 : fdt;
+        if (self._onFps) self._onFps(1000 / Math.max(self._frameEMA, 0.001), self._dynScale);
         // Target one display refresh (capped so a request for >refresh fps just
         // targets the refresh — you can't beat vsync). Small slack for noise.
         const period = Math.max(self._displayPeriod || (1000 / self.targetFps), 1000 / self.targetFps);
