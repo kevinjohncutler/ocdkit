@@ -30,10 +30,6 @@ struct U {
 // so the 3D volume uses the SAME image colormap the 2D view selected (grayscale
 // is the identity ramp, so it round-trips exactly). Sampled with linear interp.
 @group(0) @binding(3) var lutTex : texture_2d<f32>;
-// Linear sampler for TRILINEAR interpolation of the intensity volume — removes the
-// nearest-neighbour "fish-scale" / stair-step voxel artefact. Labels stay nearest
-// (textureLoad) so masks remain crisp voxel cubes.
-@group(0) @binding(4) var volSamp : sampler;
 
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 
@@ -119,35 +115,52 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   let lightDir = select(normalize(vec3<f32>(0.4, 0.7, 0.6)), -rd, headlight > 0.5);
 
   // ── Image layer: fixed-step volumetric (MIP / mean / additive) ────────────
-  // The intensity scalar is colour-mapped through the LUT (grayscale = identity).
-  // Skip the whole march when the image layer is hidden. MIP/mean sample ONE
-  // texture per step (the LUT is applied once at the end, not per sample); only
-  // additive needs the per-sample colour, and it terminates early once opacity
-  // saturates. The sample position is stepped directly in voxel space (no per-step
-  // world->box->voxel transform). Premultiplied: lutColor already encodes the
-  // brightness (grayscale -> vec3(value)).
+  // NEAREST-neighbour DDA — the intensity is NEVER interpolated. An Amanatides-Woo
+  // walk visits each voxel the ray crosses exactly once (same as the label layer),
+  // so MIP/mean/additive show crisp uniform voxel cubes with no fixed-step
+  // "sheet"/wood-grain artefact. Additive weights each voxel's opacity by the ray's
+  // path length through it. LUT/colour-map is applied once at the end (MIP/mean).
   var imgPC = vec3<f32>(0.0); var imgA = 0.0;
   if (showImage > 0.5) {
     let res = vec3<f32>(u.dims.xyz);
-    let dt = (tfar - tnear) / f32(nsteps);
-    let voxStep = rd * dt / span * res;                       // voxel-space step per dt
-    var voxPos = (ro + rd * (tnear + dt * 0.5) - u.boxMin.xyz) / span * res;
-    var imgMip = 0.0; var imgSum = 0.0; var imgAcc = vec4<f32>(0.0);
-    for (var i = 0; i < nsteps; i = i + 1) {
-      let s = textureSampleLevel(volTex, volSamp, voxPos / res, 0.0).r * iscale;   // trilinear
+    let dv0 = rd / span * res;                                // ray dir in voxel space
+    let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
+    let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;   // entry in voxel coords
+    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
+    let stp = sign(dv);
+    let tDelta = abs(1.0 / dv);
+    var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;     // t (world units) to each next face
+    var tPrev = 0.0;
+    var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
+    let maxIter = dims.x + dims.y + dims.z + 3;
+    for (var g = 0; g < maxIter; g = g + 1) {
+      let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
+      let s = textureLoad(volTex, ci, 0).r * iscale;          // exact voxel value (nearest)
+      let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (mode == 0) {                                        // additive (emission-absorption)
-        let a = clamp(s * density, 0.0, 1.0);
+        let segLen = max(tExit - tPrev, 0.0);                 // path length through this voxel
+        let a = clamp(s * density * segLen, 0.0, 1.0);
         let om = 1.0 - imgAcc.w;
         imgAcc = vec4<f32>(imgAcc.rgb + lutColor(s) * a * om, imgAcc.w + a * om);
         if (imgAcc.w >= 0.995) { break; }                     // early ray termination
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
-        imgSum = imgSum + s;
+        imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
       }
-      voxPos = voxPos + voxStep;
+      tPrev = tExit;
+      if (tMax.x < tMax.y && tMax.x < tMax.z) {
+        vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x;
+        if (vox.x < 0.0 || vox.x >= res.x) { break; }
+      } else if (tMax.y < tMax.z) {
+        vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y;
+        if (vox.y < 0.0 || vox.y >= res.y) { break; }
+      } else {
+        vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z;
+        if (vox.z < 0.0 || vox.z >= res.z) { break; }
+      }
     }
     if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = lutColor(imgMip); }
-    else if (mode == 2) { let m = imgSum / f32(nsteps); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
+    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 

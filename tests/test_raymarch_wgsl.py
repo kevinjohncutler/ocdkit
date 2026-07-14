@@ -102,8 +102,7 @@ class Harness:
                shade_labels=0.0, ambient=0.4, specular=0.0, shininess=24.0, headlight=0.0,
                iscale=1.0, inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
-        # r16float + a linear sampler: the shader trilinearly interpolates the volume.
-        volv = self._tex3d(vol_zyx.astype(np.float16), wgpu.TextureFormat.r16float, 2)
+        volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
         labv = self._tex3d(lab_zyx.astype(np.uint8), wgpu.TextureFormat.r8uint, 1)
         if inv_vp is None:
             inv_vp = _ortho_inv_vp(NX, NY, NZ)       # axis-aligned ortho (exact)
@@ -130,9 +129,7 @@ class Harness:
             entries=[{"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": u.nbytes}},
                      {"binding": 1, "resource": volv},
                      {"binding": 2, "resource": labv},
-                     {"binding": 3, "resource": self._lut_gray()},
-                     {"binding": 4, "resource": self.dev.create_sampler(
-                         mag_filter=wgpu.FilterMode.linear, min_filter=wgpu.FilterMode.linear)}])
+                     {"binding": 3, "resource": self._lut_gray()}])
         enc = self.dev.create_command_encoder()
         rp = enc.begin_render_pass(color_attachments=[{
             "view": target.create_view(), "clear_value": (0, 0, 0, 0),

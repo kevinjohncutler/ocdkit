@@ -18,26 +18,6 @@
   const Mat4 = (typeof require !== "undefined") ? require("./mat4.js")
                                                 : (typeof window !== "undefined" ? window.Mat4 : globalThis.Mat4);
 
-  // Float32Array -> half-float bits (Uint16), for uploading an r16float texture.
-  // Uses the native Float16Array when present (correct rounding), else a compact
-  // truncating conversion (fine for normalized [0,1] display data).
-  const _toF16 = (src) => {
-    if (typeof Float16Array !== "undefined") {
-      return new Uint16Array(new Float16Array(src).buffer);
-    }
-    const out = new Uint16Array(src.length);
-    const fb = new Float32Array(1), ib = new Int32Array(fb.buffer);
-    for (let i = 0; i < src.length; i++) {
-      fb[0] = src[i]; const x = ib[0];
-      let bits = (x >> 16) & 0x8000; const e = (x >> 23) & 0xff; const m = x & 0x7fffff;
-      if (e < 113) { out[i] = bits; }             // underflow -> +/-0
-      else if (e > 142) { out[i] = bits | 0x7c00; } // overflow -> inf
-      else { out[i] = bits | (((e - 112) << 10) | (m >> 13)); }
-      out[i] = out[i] & 0xffff;
-    }
-    return out;
-  };
-
   function labelUintFormat(maxLabel) {
     if (maxLabel <= 0xff) return ["r8uint", Uint8Array, 1];
     if (maxLabel <= 0xffff) return ["r16uint", Uint16Array, 2];
@@ -72,10 +52,9 @@
       self.bgl = device.createBindGroupLayout({
         entries: [
           { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "3d" } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
           { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "uint", viewDimension: "3d" } },
           { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
-          { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
         ],
       });
       self.pipeline = device.createRenderPipeline({
@@ -136,11 +115,6 @@
       });
       this.colormap = opts.colormap || "gray";
       this._uploadLut(this.colormap);
-      // Linear sampler for trilinear volume interpolation (labels stay nearest).
-      this.volSampler = this.device.createSampler({
-        magFilter: "linear", minFilter: "linear",
-        addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge", addressModeW: "clamp-to-edge",
-      });
     }
 
     /** Upload the 256-entry image colormap LUT (grayscale = identity ramp). */
@@ -165,9 +139,8 @@
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
-      // intensity -> normalized [0,1]. r16float is a FILTERABLE format, so the
-      // ray-march can trilinearly interpolate the volume (a linear sampler) — that
-      // removes the nearest-neighbour "fish-scale"/stair-step voxel artefact.
+      // intensity -> r32float, normalized [0,1]. Sampled NEAREST (textureLoad) via a
+      // per-voxel DDA — never interpolated.
       const N = NX * NY * NZ;
       const f = new Float32Array(N);
       if (decoded.image) {
@@ -181,12 +154,11 @@
         for (let i = 0; i < N; i++) f[i] = a[i] > 0 ? 1 : 0;
       }
       this.volTex = device.createTexture({
-        size: [NX, NY, NZ], dimension: "3d", format: "r16float",
+        size: [NX, NY, NZ], dimension: "3d", format: "r32float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      const h = _toF16(f);
-      device.queue.writeTexture({ texture: this.volTex }, h.buffer,
-        { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
+      device.queue.writeTexture({ texture: this.volTex }, f.buffer,
+        { bytesPerRow: NX * 4, rowsPerImage: NY }, [NX, NY, NZ]);
 
       // labels -> uint, format by max label
       let maxLabel = 0;
@@ -211,7 +183,6 @@
           { binding: 1, resource: this.volTex.createView() },
           { binding: 2, resource: this.labTex.createView() },
           { binding: 3, resource: this.lutTex.createView() },
-          { binding: 4, resource: this.volSampler },
         ],
       });
     }
