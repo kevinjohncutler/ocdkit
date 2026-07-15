@@ -43,13 +43,15 @@ def render_index(
     config["uiMode"] = ui_mode
     html = build_html(config, inline_assets=False, ui_mode=ui_mode)
     response = HTMLResponse(html)
-    # Never cache the HTML shell — the trust-install banner JS and probe
-    # origins are inlined here, and stale HTML caused the "banner persists
-    # after install" debugging session. Static assets (under /static/) are
-    # still cached aggressively via mtime cache-bust query strings.
-    response.headers["Cache-Control"] = "no-store, must-revalidate"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
+    # Revalidate the HTML shell every load but ALLOW the browser to keep the last
+    # render — `no-cache` (not `no-store`) means "store, but revalidate before
+    # use". The server has no ETag so revalidation always returns fresh 200 HTML
+    # (so the inlined trust-banner JS / probe origins are never stale — the bug
+    # that motivated no-store), while letting the browser paint-hold the previous
+    # frame during the reload fetch instead of flashing a blank/white backdrop
+    # (Safari especially discards the page under no-store). Static assets keep
+    # their aggressive mtime cache-bust.
+    response.headers["Cache-Control"] = "no-cache"
     response.set_cookie(
         SESSION_COOKIE_NAME,
         state.session_id,
