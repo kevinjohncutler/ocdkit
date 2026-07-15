@@ -91,6 +91,11 @@
       if (OcdHdr.setHdr) OcdHdr.setHdr(api.enabled);
       if (OcdHdr.setGain) OcdHdr.setGain(api.enabled ? api.gain : 1);
     }
+    // Drive the 3D volume too (same lift as the 2D image layer) when it's live.
+    try {
+      const vg = window.__volumeMode && window.__volumeMode.gpu && window.__volumeMode.gpu();
+      if (vg && vg.setHdr) { vg.setGain(api.enabled ? api.gain : 1); vg.setHdr(api.enabled); }
+    } catch (e) { /* volume not in 3D mode */ }
     const btn = document.getElementById('hdrToggleBtn');
     if (btn) { btn.setAttribute('aria-pressed', api.enabled ? 'true' : 'false'); btn.classList.toggle('is-on', api.enabled); }
     const sl = document.getElementById('hdrGainSlider');

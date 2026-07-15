@@ -69,19 +69,22 @@ class Harness:
         )
 
     def _lut_gray(self):
-        """Grayscale identity colormap LUT (256x1 RGBA): entry i = (i,i,i). With
+        """Grayscale identity colormap LUT (256x1 RGBA): entry i = (i/255,...). With
         the shader's linear-interp lutColor this maps value -> value exactly, so
-        the image-intensity assertions are unaffected by the colormap layer."""
-        data = np.zeros((256, 4), np.uint8)
-        ramp = np.arange(256, dtype=np.uint8)
-        data[:, 0] = ramp; data[:, 1] = ramp; data[:, 2] = ramp; data[:, 3] = 255
+        the image-intensity assertions are unaffected by the colormap layer.
+
+        rgba16float (not rgba8unorm) so HDR-lifted LUT entries can exceed 1.0 — the
+        shipped volume LUT is rgba16float; the identity ramp stays <=1 here."""
+        data = np.zeros((256, 4), np.float16)
+        ramp = (np.arange(256, dtype=np.float32) / 255).astype(np.float16)
+        data[:, 0] = ramp; data[:, 1] = ramp; data[:, 2] = ramp; data[:, 3] = np.float16(1.0)
         tex = self.dev.create_texture(
             size=(256, 1, 1), dimension=wgpu.TextureDimension.d2,
-            format=wgpu.TextureFormat.rgba8unorm,
+            format=wgpu.TextureFormat.rgba16float,
             usage=wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST)
         self.dev.queue.write_texture(
             {"texture": tex, "mip_level": 0, "origin": (0, 0, 0)},
-            data.tobytes(), {"offset": 0, "bytes_per_row": 256 * 4, "rows_per_image": 1},
+            data.tobytes(), {"offset": 0, "bytes_per_row": 256 * 8, "rows_per_image": 1},
             (256, 1, 1))
         return tex.create_view()
 
@@ -97,10 +100,25 @@ class Harness:
             (NX, NY, NZ))
         return tex.create_view()
 
+    def _lut_flat(self, rgb):
+        """Flat LUT: every entry = ``rgb`` (may exceed 1.0 for HDR headroom).
+        rgba16float, so a bright voxel emits ``rgb`` verbatim (tests HDR pass-through)."""
+        data = np.zeros((256, 4), np.float16)
+        data[:, 0] = rgb[0]; data[:, 1] = rgb[1]; data[:, 2] = rgb[2]; data[:, 3] = np.float16(1.0)
+        tex = self.dev.create_texture(
+            size=(256, 1, 1), dimension=wgpu.TextureDimension.d2,
+            format=wgpu.TextureFormat.rgba16float,
+            usage=wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST)
+        self.dev.queue.write_texture(
+            {"texture": tex, "mip_level": 0, "origin": (0, 0, 0)},
+            data.tobytes(), {"offset": 0, "bytes_per_row": 256 * 8, "rows_per_image": 1},
+            (256, 1, 1))
+        return tex.create_view()
+
     def render(self, vol_zyx, lab_zyx, mode, *, imgW, imgH, nsteps,
                density=1.0, label_opacity=0.0, show_labels=0.0, show_image=1.0,
                shade_labels=0.0, ambient=0.4, specular=0.0, shininess=24.0, headlight=0.0,
-               iscale=1.0, inv_vp=None, box_min=None, box_max=None):
+               iscale=1.0, inv_vp=None, box_min=None, box_max=None, lut=None):
         NZ, NY, NX = vol_zyx.shape
         # r16float (half the bandwidth of r32float) — still nearest (textureLoad).
         volv = self._tex3d(vol_zyx.astype(np.float16), wgpu.TextureFormat.r16float, 2)
@@ -130,7 +148,7 @@ class Harness:
             entries=[{"binding": 0, "resource": {"buffer": ubuf, "offset": 0, "size": u.nbytes}},
                      {"binding": 1, "resource": volv},
                      {"binding": 2, "resource": labv},
-                     {"binding": 3, "resource": self._lut_gray()}])
+                     {"binding": 3, "resource": lut if lut is not None else self._lut_gray()}])
         enc = self.dev.create_command_encoder()
         rp = enc.begin_render_pass(color_attachments=[{
             "view": target.create_view(), "clear_value": (0, 0, 0, 0),
@@ -190,6 +208,23 @@ def test_mean_matches_numpy(hz):
     out = hz.render(vol, lab, 2, imgW=NX, imgH=NY, nsteps=NZ)
     mean = np.flipud(out[..., 0])
     assert np.max(np.abs(mean - vol.mean(axis=0))) < 3e-3
+
+
+def test_hdr_lut_emits_headroom(hz):
+    """HDR: with an HDR-lifted LUT (entries >1, as generateImageCmapLutHdr yields),
+    a bright voxel must emit >1 into the rgba16float/extended canvas — that is the
+    HDR headroom. Guards against a clamp sneaking into the intensity path."""
+    NZ, NY, NX = 4, 6, 6
+    vol = np.zeros((NZ, NY, NX), np.float32)
+    vol[:, 2:4, 2:4] = 1.0                     # bright block
+    lab = np.zeros((NZ, NY, NX), np.uint8)
+    hdr_lut = hz._lut_flat((1.64, 1.64, 1.64))  # grayscale HDR top entry (Node-verified)
+    out = hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ, lut=hdr_lut)   # MIP
+    bright = np.flipud(out[..., 0])
+    assert bright[2:4, 2:4].max() > 1.3, "HDR LUT headroom did not reach the output"
+    # SDR identity LUT on the same input stays <=1 (no accidental HDR).
+    sdr = np.flipud(hz.render(vol, lab, 1, imgW=NX, imgH=NY, nsteps=NZ)[..., 0])
+    assert sdr[2:4, 2:4].max() <= 1.01
 
 
 def test_label_coloring_and_blend(hz):

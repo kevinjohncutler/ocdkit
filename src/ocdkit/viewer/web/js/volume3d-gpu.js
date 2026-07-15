@@ -38,6 +38,14 @@
     return out;
   };
 
+  // Extended sRGB OETF (linear-light → gamma-encoded), continued past 1.0 so HDR
+  // headroom (values >1) survives. Matches colormap.js `_srgbEncodeExt` and the
+  // 2D HDR renderer's `l2g` — the display-p3/extended canvas expects this encoding.
+  const _l2gExt = (c) => {
+    c = c > 0 ? c : 0;
+    return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+  };
+
   function labelUintFormat(maxLabel) {
     if (maxLabel <= 0xff) return ["r8uint", Uint8Array, 1];
     if (maxLabel <= 0xffff) return ["r16uint", Uint16Array, 2];
@@ -107,6 +115,13 @@
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.gamma = opts.gamma != null ? opts.gamma : 1.0;  // intensity gamma (matches the 2D slider)
+      // HDR: when on, the intensity LUT is the JzAzBz-lifted Display-P3 colormap
+      // (values >1 = HDR headroom), exactly like the 2D HDR image layer. The
+      // rgba16float / display-p3 / extended canvas emits those >1 values as true
+      // HDR. Off = the plain SDR colormap. Driven by the central OcdHdrUI toggle.
+      this._hdr = !!opts.hdr;
+      this._gain = opts.gain > 0 ? opts.gain : 1.0;
+      this._headroomVal = opts.headroom > 0 ? opts.headroom : 1.0;  // display headroom ×SDR-white
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       // Adaptive resolution while moving: a ray-march costs O(pixels·steps), so
@@ -130,34 +145,67 @@
       this.nstepsInteract = Math.max(96, Math.round(this.nsteps * 0.5));
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
       this.uniform = device_buf(this.device, 44 * 4);
-      // Intensity colormap LUT (256x1 RGBA) — same image colormap as the 2D view.
+      // Intensity colormap LUT (256x1 RGBA), stored FLOAT so HDR entries can
+      // exceed 1.0. Values are gamma-encoded (extended-sRGB/P3 transfer), matching
+      // what the display-p3 + extended-tone-mapping canvas expects — same as the
+      // shipped SDR path (rgba8unorm stored the encoded colormap), just float so
+      // the HDR lift's >1 headroom survives. The shader reads it verbatim.
       this.lutTex = this.device.createTexture({
-        size: [256, 1, 1], format: "rgba8unorm",
+        size: [256, 1, 1], format: "rgba16float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       this.colormap = opts.colormap || "gray";
       this._uploadLut(this.colormap);
     }
 
-    /** Upload the 256-entry image colormap LUT (grayscale = identity ramp). */
+    /** Upload the 256-entry image colormap LUT as float32 RGBA.
+     *
+     * SDR (default): the plain image colormap, byte-for-byte identical to the 2D
+     * view (generateImageCmapLut / grayscale ramp), just normalised to [0,1].
+     * HDR: the JzAzBz-lifted linear Display-P3 colormap (generateImageCmapLutHdr,
+     * values >1) re-encoded through the extended-sRGB transfer so the >1 headroom
+     * lands in the canvas the same way the SDR encoded values do. */
     _uploadLut(name) {
-      let data = null;
-      try {
-        if (typeof window !== "undefined" && window.ViewerColormap &&
-            window.ViewerColormap.generateImageCmapLut) {
-          data = window.ViewerColormap.generateImageCmapLut(name);
-        }
-      } catch (e) { data = null; }
-      if (!data || data.length < 256 * 4) {           // fallback: grayscale ramp
-        data = new Uint8Array(256 * 4);
-        for (let i = 0; i < 256; i = i + 1) { data[i * 4] = i; data[i * 4 + 1] = i; data[i * 4 + 2] = i; data[i * 4 + 3] = 255; }
+      const N = 256;
+      const out = new Float32Array(N * 4);
+      const CM = (typeof window !== "undefined") ? window.ViewerColormap : null;
+      let filled = false;
+      if (this._hdr && CM && CM.generateImageCmapLutHdr) {
+        try {
+          const peak = this._headroomVal * (this._gain || 1) * 203.0;  // ×BT.2408 white
+          const lin = CM.generateImageCmapLutHdr(name, { auto: true, peakNits: peak });
+          if (lin && lin.length >= N * 4) {
+            for (let i = 0; i < N * 4; i += 4) {
+              out[i]     = _l2gExt(lin[i]);
+              out[i + 1] = _l2gExt(lin[i + 1]);
+              out[i + 2] = _l2gExt(lin[i + 2]);
+              out[i + 3] = 1.0;
+            }
+            filled = true;
+          }
+        } catch (e) { filled = false; }
       }
-      this.device.queue.writeTexture({ texture: this.lutTex }, data,
-        { bytesPerRow: 256 * 4, rowsPerImage: 1 }, [256, 1, 1]);
+      if (!filled) {                                   // SDR: identical colours to now
+        let u8 = null;
+        try { if (CM && CM.generateImageCmapLut) u8 = CM.generateImageCmapLut(name); } catch (e) { u8 = null; }
+        if (u8 && u8.length >= N * 4) {
+          for (let i = 0; i < N * 4; i += 1) out[i] = u8[i] / 255;
+        } else {                                       // fallback: grayscale ramp
+          for (let i = 0; i < N; i += 1) { const v = i / 255; out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 1.0; }
+        }
+      }
+      this.device.queue.writeTexture({ texture: this.lutTex }, _toF16(out).buffer,
+        { bytesPerRow: N * 8, rowsPerImage: 1 }, [N, 1, 1]);
     }
 
     /** Switch the intensity colormap (e.g. when the 2D view's selector changes). */
     setColormap(name) { this.colormap = name; this._uploadLut(name); this.render(); }
+
+    /** HDR on/off — swaps the LUT between the plain SDR colormap and the lifted
+     *  Display-P3 one. Driven by the shared OcdHdrUI toggle. */
+    setHdr(on) { this._hdr = !!on; this._uploadLut(this.colormap); this.render(); }
+    /** HDR gain (0.25–4): scales the lift's peak-nits target, like the 2D slider. */
+    setGain(g) { this._gain = g > 0 ? g : 1.0; if (this._hdr) { this._uploadLut(this.colormap); this.render(); } }
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
