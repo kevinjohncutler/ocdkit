@@ -66,14 +66,14 @@ def test_default_browser_mode_no_html_attribute(client):
     r = client.get("/")
     # The CSS rules inside the inline style still mention 'data-ui="desktop"'
     # as selectors — we want to verify the attribute is NOT on <html> itself.
-    assert '<html lang="en">' in r.text
-    assert '<html lang="en" data-ui=' not in r.text
+    assert '<html lang="en" style="color-scheme: light dark">' in r.text
+    assert 'data-ui=' not in r.text[:r.text.index('</head>')]
 
 
 def test_desktop_mode_sets_html_attribute(client):
     r = client.get("/?ui=desktop")
     assert r.status_code == 200
-    assert '<html lang="en" data-ui="desktop">' in r.text
+    assert '<html lang="en" data-ui="desktop" style="color-scheme: light dark">' in r.text
 
 
 def test_unknown_ui_mode_falls_back_to_browser(client):

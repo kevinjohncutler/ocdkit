@@ -590,8 +590,8 @@ def render_index(
     # Tag the root element so CSS can react to the launch context.
     if ui_mode and ui_mode != "browser":
         html = html.replace(
-            '<html lang="en">',
-            f'<html lang="en" data-ui="{ui_mode}">',
+            '<html lang="en" style="color-scheme: light dark">',
+            f'<html lang="en" data-ui="{ui_mode}" style="color-scheme: light dark">',
             1,
         )
     # Inject the early-paint background style as the FIRST thing in <head>
