@@ -268,9 +268,11 @@
 
 .dropdown-toggle-chevron {
   margin-left: 10px;
-  /* Pull into the pill's rounded right cap so the arrow is centred on it. The
-     toggle's 12px right padding left it ~5px short of the cap centre. */
-  margin-right: -5px;
+  /* Centre the arrow on the pill's rounded right cap. The cap centre sits
+     (height/2) in from the pill's right edge; the toggle's right padding (12px)
+     plus the accent inset otherwise leave the arrow short of it. Height-aware so
+     it stays centred whatever the control height. */
+  margin-right: calc(var(--control-inset, 1px) + var(--slider-track-height) / 2 - 12px - 0.425em);
   transform: rotate(90deg);  /* point down at rest */
 }
 
