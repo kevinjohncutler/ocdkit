@@ -122,6 +122,13 @@
       const s = document.getElementById("imageCmapSelect");
       return (s && s.value) || "gray";
     }
+    // The 2D gamma slider (#gamma, 10..600) maps to gamma value/100; apply the same
+    // to the 3D volume so both views match.
+    function currentGamma() {
+      const s = document.getElementById("gamma");
+      const v = s ? parseFloat(s.value) : 100;
+      return (isFinite(v) && v > 0) ? v / 100 : 1.0;
+    }
     if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
     if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
 
@@ -426,6 +433,7 @@
           overlayShaderUrl: "/static/js/overlay.wgsl",
           mode: curProj,
           colormap: currentImageColormap(),
+          gamma: currentGamma(),
           onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
           onFps: (fps, scale) => showFps(fps, scale),
         });
@@ -515,6 +523,12 @@
     // them in sync when the user changes it (the dropdown dispatches `change`).
     const cmapSel = document.getElementById("imageCmapSelect");
     if (cmapSel) cmapSel.addEventListener("change", () => { if (vgpu) vgpu.setColormap(currentImageColormap()); });
+    // Keep the 3D volume's gamma in sync with the 2D gamma slider / number input.
+    const gammaSl = document.getElementById("gamma");
+    const gammaIn = document.getElementById("gammaInput");
+    const syncGamma = () => { if (vgpu) vgpu.setGamma(currentGamma()); };
+    if (gammaSl) gammaSl.addEventListener("input", syncGamma);
+    if (gammaIn) gammaIn.addEventListener("input", syncGamma);
 
     function setProj(p) {
       curProj = p | 0;

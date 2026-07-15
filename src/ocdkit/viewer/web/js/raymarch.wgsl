@@ -106,6 +106,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
   let iscale = u.img.x;
   let showImage = u.img.y;
   let shadeLabels = u.img.z;
+  let gamma = u.img.w;                 // intensity gamma: displayed = value^gamma (matches 2D)
   let ambient = u.light.x;
   let specular = u.light.y;
   let shininess = max(u.light.z, 1.0);
@@ -138,10 +139,11 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       let s = textureLoad(volTex, ci, 0).r * iscale;          // exact voxel value (nearest)
       let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (mode == 0) {                                        // additive (emission-absorption)
+        let sg = pow(max(s, 0.0), gamma);                     // gamma per voxel
         let segLen = max(tExit - tPrev, 0.0);                 // path length through this voxel
-        let a = clamp(s * density * segLen, 0.0, 1.0);
+        let a = clamp(sg * density * segLen, 0.0, 1.0);
         let om = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(s) * a * om, imgAcc.w + a * om);
+        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
         if (imgAcc.w >= 0.995) { break; }                     // early ray termination
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
@@ -159,8 +161,8 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (mode == 1) { imgA = clamp(imgMip, 0.0, 1.0); imgPC = lutColor(imgMip); }
-    else if (mode == 2) { let m = imgSum / max(imgCnt, 1.0); imgA = clamp(m, 0.0, 1.0); imgPC = lutColor(m); }
+    if (mode == 1) { let v = pow(clamp(imgMip, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
+    else if (mode == 2) { let m = pow(clamp(imgSum / max(imgCnt, 1.0), 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 

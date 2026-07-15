@@ -102,7 +102,8 @@ class Harness:
                shade_labels=0.0, ambient=0.4, specular=0.0, shininess=24.0, headlight=0.0,
                iscale=1.0, inv_vp=None, box_min=None, box_max=None):
         NZ, NY, NX = vol_zyx.shape
-        volv = self._tex3d(vol_zyx.astype(np.float32), wgpu.TextureFormat.r32float, 4)
+        # r16float (half the bandwidth of r32float) — still nearest (textureLoad).
+        volv = self._tex3d(vol_zyx.astype(np.float16), wgpu.TextureFormat.r16float, 2)
         labv = self._tex3d(lab_zyx.astype(np.uint8), wgpu.TextureFormat.r8uint, 1)
         if inv_vp is None:
             inv_vp = _ortho_inv_vp(NX, NY, NZ)       # axis-aligned ortho (exact)
@@ -115,7 +116,7 @@ class Harness:
         u[24:28] = (*box_max, 0)                  # boxMax
         u[28:32] = (NX, NY, NZ, mode)             # dims + mode
         u[32:36] = (nsteps, density, label_opacity, show_labels)
-        u[36:40] = (iscale, show_image, shade_labels, 0)
+        u[36:40] = (iscale, show_image, shade_labels, 1.0)   # img.w = gamma (1 = identity)
         u[40:44] = (ambient, specular, shininess, headlight)
         ubuf = self.dev.create_buffer_with_data(
             data=u, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)

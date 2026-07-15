@@ -18,6 +18,26 @@
   const Mat4 = (typeof require !== "undefined") ? require("./mat4.js")
                                                 : (typeof window !== "undefined" ? window.Mat4 : globalThis.Mat4);
 
+  // Float32Array -> half-float bits (Uint16) for an r16float texture. Halves the
+  // volume's GPU memory bandwidth (the ray-march's dominant cost) with NO change
+  // to how it's sampled — still NEAREST (textureLoad), never interpolated. The
+  // source data is untouched; this is only the normalized [0,1] display copy.
+  const _toF16 = (src) => {
+    if (typeof Float16Array !== "undefined") {
+      return new Uint16Array(new Float16Array(src).buffer);
+    }
+    const out = new Uint16Array(src.length);
+    const fb = new Float32Array(1), ib = new Int32Array(fb.buffer);
+    for (let i = 0; i < src.length; i++) {
+      fb[0] = src[i]; const x = ib[0];
+      let bits = (x >> 16) & 0x8000; const e = (x >> 23) & 0xff; const m = x & 0x7fffff;
+      if (e < 113) { out[i] = bits; }
+      else if (e > 142) { out[i] = bits | 0x7c00; }
+      else { out[i] = (bits | (((e - 112) << 10) | (m >> 13))) & 0xffff; }
+    }
+    return out;
+  };
+
   function labelUintFormat(maxLabel) {
     if (maxLabel <= 0xff) return ["r8uint", Uint8Array, 1];
     if (maxLabel <= 0xffff) return ["r16uint", Uint16Array, 2];
@@ -86,6 +106,7 @@
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
+      this.gamma = opts.gamma != null ? opts.gamma : 1.0;  // intensity gamma (matches the 2D slider)
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       // Adaptive resolution while moving: a ray-march costs O(pixels·steps), so
@@ -140,8 +161,9 @@
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
-      // intensity -> r32float, normalized [0,1]. Sampled NEAREST (textureLoad) via a
-      // per-voxel DDA — never interpolated.
+      // intensity -> normalized [0,1], stored r16float (half the memory bandwidth
+      // of r32float). Sampled NEAREST (textureLoad) via a per-voxel DDA — never
+      // interpolated.
       const N = NX * NY * NZ;
       const f = new Float32Array(N);
       if (decoded.image) {
@@ -155,11 +177,11 @@
         for (let i = 0; i < N; i++) f[i] = a[i] > 0 ? 1 : 0;
       }
       this.volTex = device.createTexture({
-        size: [NX, NY, NZ], dimension: "3d", format: "r32float",
+        size: [NX, NY, NZ], dimension: "3d", format: "r16float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      device.queue.writeTexture({ texture: this.volTex }, f.buffer,
-        { bytesPerRow: NX * 4, rowsPerImage: NY }, [NX, NY, NZ]);
+      device.queue.writeTexture({ texture: this.volTex }, _toF16(f).buffer,
+        { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
 
       // labels -> uint, format by max label
       let maxLabel = 0;
@@ -434,7 +456,7 @@
       u.set([this.NX, this.NY, this.NZ, this.mode], 28);
       const steps = this._interacting ? (this.nstepsInteract || this.nsteps) : this.nsteps;
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
-      u.set([1.0, this.showImage, this.shadeLabels, 0], 36);   // iscale, showImage, shadeLabels
+      u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
@@ -473,6 +495,7 @@
     setMode(m) { this.mode = m | 0; this.render(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.render(); }
+    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this.render(); }
     setAmbient(a) { this.ambient = +a; this.render(); }
     setSpecular(s) { this.specular = +s; this.render(); }
     setShininess(s) { this.shininess = +s; this.render(); }
