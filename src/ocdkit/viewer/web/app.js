@@ -7397,6 +7397,11 @@ function setGamma(gamma, { emit = true } = {}) {
   // The HDR layer applies gamma in its shader (it samples the raw image), so it
   // needs the new value too — the native SDR path bakes gamma into the texture.
   if (window.OcdHdr && OcdHdr.setGamma) OcdHdr.setGamma(currentGamma);
+  // Let the 3D volume view apply the same gamma (its slider is detached by the
+  // custom-slider component, so it can't listen to the DOM element directly).
+  if (typeof window.__viewerOnGamma === 'function') {
+    try { window.__viewerOnGamma(currentGamma); } catch (e) {}
+  }
   if (emit) {
     applyImageAdjustments();
   } else {

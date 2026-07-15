@@ -122,12 +122,12 @@
       const s = document.getElementById("imageCmapSelect");
       return (s && s.value) || "gray";
     }
-    // The 2D gamma slider (#gamma, 10..600) maps to gamma value/100; apply the same
-    // to the 3D volume so both views match.
+    // Current gamma value (0.1..6.0). Read from the number input, which stays in
+    // the DOM (the range slider is detached by the custom-slider component).
     function currentGamma() {
-      const s = document.getElementById("gamma");
-      const v = s ? parseFloat(s.value) : 100;
-      return (isFinite(v) && v > 0) ? v / 100 : 1.0;
+      const s = document.getElementById("gammaInput");
+      const v = s ? parseFloat(s.value) : 1.0;
+      return (isFinite(v) && v > 0) ? v : 1.0;
     }
     if (typeof _vs.style2d === "string") saved2dMode = _vs.style2d;
     if (typeof _vs.style3d === "string") saved3dMode = _vs.style3d;
@@ -523,12 +523,9 @@
     // them in sync when the user changes it (the dropdown dispatches `change`).
     const cmapSel = document.getElementById("imageCmapSelect");
     if (cmapSel) cmapSel.addEventListener("change", () => { if (vgpu) vgpu.setColormap(currentImageColormap()); });
-    // Keep the 3D volume's gamma in sync with the 2D gamma slider / number input.
-    const gammaSl = document.getElementById("gamma");
-    const gammaIn = document.getElementById("gammaInput");
-    const syncGamma = () => { if (vgpu) vgpu.setGamma(currentGamma()); };
-    if (gammaSl) gammaSl.addEventListener("input", syncGamma);
-    if (gammaIn) gammaIn.addEventListener("input", syncGamma);
+    // Keep the 3D volume's gamma in sync with the 2D gamma control (app.js calls
+    // this whenever gamma changes, via slider or number input).
+    window.__viewerOnGamma = (g) => { if (vgpu) vgpu.setGamma(g); };
 
     function setProj(p) {
       curProj = p | 0;
