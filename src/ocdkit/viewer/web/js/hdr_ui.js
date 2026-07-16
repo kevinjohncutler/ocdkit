@@ -104,8 +104,18 @@
     if (out) out.textContent = api.gain.toFixed(2) + '×';
   }
 
-  api.setEnabled = function (on) { api.enabled = !!on && api.available; apply(); };
-  api.setGain = function (g) { api.gain = Math.max(0.25, Math.min(4, g)); apply(); };
+  // Persist the user's HDR choice (enabled + gain) so it survives a refresh.
+  const HDR_STORE = 'ocdkit-hdr';
+  function _persist() {
+    try { localStorage.setItem(HDR_STORE, JSON.stringify({ enabled: api.enabled, gain: api.gain })); } catch (e) {}
+  }
+  function _restore() {
+    try { const s = JSON.parse(localStorage.getItem(HDR_STORE) || 'null'); return (s && typeof s.enabled === 'boolean') ? s : null; }
+    catch (e) { return null; }
+  }
+
+  api.setEnabled = function (on) { api.enabled = !!on && api.available; _persist(); apply(); };
+  api.setGain = function (g) { api.gain = Math.max(0.25, Math.min(4, g)); _persist(); apply(); };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
 
   function injectStyle() {
@@ -160,7 +170,17 @@
     (function poll() {
       api.available = available();
       root.classList.toggle('hdr-available', api.available);
-      if (api.available) { api.setEnabled(true); return; }   // default ON when available
+      if (api.available) {
+        const saved = _restore();
+        if (saved) {                       // honour the user's persisted choice
+          api.gain = Math.max(0.25, Math.min(4, saved.gain || 1));
+          api.enabled = saved.enabled;
+          apply();
+        } else {
+          api.setEnabled(true);            // first run → default ON when available
+        }
+        return;
+      }
       if (tries++ < 20) setTimeout(poll, 250);
     })();
   }

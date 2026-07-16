@@ -121,7 +121,21 @@
       // HDR. Off = the plain SDR colormap. Driven by the central OcdHdrUI toggle.
       this._hdr = !!opts.hdr;
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
-      this._headroomVal = opts.headroom > 0 ? opts.headroom : 1.0;  // display headroom ×SDR-white
+      // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
+      // layer uses. Critical: without a real headroom the lift targets ~203 nits
+      // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
+      // on" renders DIMMER than SDR (the inverted look). Default 4× until the
+      // probe resolves; re-lift on change.
+      this._headroomVal = opts.headroom > 0 ? opts.headroom : 4.0;
+      if (typeof window !== "undefined" && window.HdrHeadroom) {
+        try {
+          this._hh = new window.HdrHeadroom();
+          if (this._hh.value > 0) this._headroomVal = this._hh.value;
+          this._hh.onChange((v) => {
+            if (v > 0) { this._headroomVal = v; if (this._hdr) { this._uploadLut(this.colormap); this.render(); } }
+          });
+        } catch (e) { /* no probe; keep the 4× fallback */ }
+      }
       this.ambient = 0.4; this.specular = 0.0; this.shininess = 24.0; this.headlight = 1.0;
       this.zScale = opts.zScale != null ? opts.zScale : 1.0;
       // Adaptive resolution while moving: a ray-march costs O(pixels·steps), so

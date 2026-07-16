@@ -434,9 +434,11 @@
           mode: curProj,
           colormap: currentImageColormap(),
           gamma: currentGamma(),
-          // Inherit the current HDR toggle state so the volume opens lifted if HDR is on.
-          hdr: !!(window.OcdHdrUI && window.OcdHdrUI.enabled),
-          gain: (window.OcdHdrUI && window.OcdHdrUI.enabled) ? window.OcdHdrUI.gain : 1,
+          // Inherit the current (persisted) HDR toggle state so the volume opens
+          // lifted if HDR is on. Gate on `available` too so we don't lift before
+          // the display-capability probe has resolved.
+          hdr: !!(window.OcdHdrUI && window.OcdHdrUI.enabled && window.OcdHdrUI.available),
+          gain: (window.OcdHdrUI && window.OcdHdrUI.gain) || 1,
           onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
           onFps: (fps, scale) => showFps(fps, scale),
         });
