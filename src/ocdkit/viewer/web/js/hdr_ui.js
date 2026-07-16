@@ -111,10 +111,12 @@
   function injectStyle() {
     const css =
       ':root { --hdr-gain: 1; }\n' +
-      // The preview canvas sits in the dropdown toggle at z-index 0; the chevron
-      // is static content, so lift it (and the hidden label) above the canvas.
-      '.dropdown--gradient-preview .dropdown-toggle-chevron,\n' +
+      // The preview canvas sits in the dropdown toggle at z-index 0; lift the
+      // chevron and the hidden label above it. The chevron keeps its base
+      // position:absolute (do NOT force position:relative — that broke its
+      // centring); z-index applies to it since it is already positioned.
       '.dropdown--gradient-preview .dropdown-label { position: relative; z-index: 2; }\n' +
+      '.dropdown--gradient-preview .dropdown-toggle-chevron { z-index: 2; }\n' +
       ':root.hdr-ui { --accent-color: color(srgb-linear ' +
       'calc(var(--accent-lr, 1) * var(--hdr-gain)) ' +
       'calc(var(--accent-lg, 1) * var(--hdr-gain)) ' +
