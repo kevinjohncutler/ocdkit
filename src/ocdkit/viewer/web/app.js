@@ -10172,7 +10172,7 @@ function initialize() {
     const _doneT = typeof performance !== 'undefined' ? performance.now() : 0;
     console.log(`[perf] initialize: decode=${Math.round(_decodeT - _initT0)}ms, render=${Math.round(_doneT - _decodeT)}ms, total=${Math.round(_doneT - _initT0)}ms`);
     // Reveal the page now that everything is rendered
-    document.documentElement.style.opacity = '1';
+    (document.getElementById('app') || document.documentElement).style.opacity = '1';
     // notify volume-mode so it can (re)load the mask slice after a (re)init,
     // e.g. when switching the slicing axis changes the image dimensions
     if (typeof window.__onViewerImageReady === 'function') {
@@ -10183,7 +10183,7 @@ function initialize() {
     const detail = evt?.message || 'unknown error';
     log('image load failed: ' + detail);
     setLoadingOverlay('Failed to load image', true);
-    document.documentElement.style.opacity = '1';
+    (document.getElementById('app') || document.documentElement).style.opacity = '1';
   };
   img.src = imageDataUrl;
   updateCursor();

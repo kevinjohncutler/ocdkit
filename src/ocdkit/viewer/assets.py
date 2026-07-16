@@ -225,8 +225,8 @@ RESTORE_ACCENT_SCRIPT = """<script>
       }
     }
   } catch(_){}
-  document.documentElement.style.opacity = '0';
-  document.documentElement.style.transition = 'opacity 80ms ease-in';
+  // NOTE: #app is hidden (opacity:0) via the early-bg <style>, not the root, so
+  // the dark body backdrop stays painted during load (no white flash in Arc).
 })();
 </script>"""
 
@@ -251,10 +251,16 @@ _FG = "light-dark(#1a1a1a, #f0f0f0)"
 
 def early_background_style(ui_mode: str = "browser") -> str:
     bg = "transparent" if ui_mode == "desktop" else _BG
+    # Keep html/body painted (dark in dark mode) for the WHOLE load and fade in
+    # only #app (the content). Previously the root itself was hidden via opacity:0
+    # (in RESTORE_ACCENT_SCRIPT), which relied on the browser's own backdrop being
+    # dark during the reveal — true in Chrome but NOT in some Chromium shells
+    # (Arc), which flashed white. Fading #app instead never uncovers the backdrop.
     return (
         '<style id="early-bg">\n'
         "  :root { color-scheme: light dark; }\n"
         f"  html, body {{ margin: 0; height: 100%; background: {bg}; color: {_FG}; }}\n"
+        "  #app { opacity: 0; transition: opacity 0.12s ease-in; }\n"
         "</style>"
     )
 
