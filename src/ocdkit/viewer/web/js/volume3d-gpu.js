@@ -132,7 +132,7 @@
           this._hh = new window.HdrHeadroom();
           if (this._hh.value > 0) this._headroomVal = this._hh.value;
           this._hh.onChange((v) => {
-            if (v > 0) { this._headroomVal = v; if (this._hdr) { this._uploadLut(this.colormap); this.render(); } }
+            if (v > 0) { this._headroomVal = v; if (this._hdr) { this._uploadLut(this.colormap); this._requestRender(); } }
           });
         } catch (e) { /* no probe; keep the 4× fallback */ }
       }
@@ -213,13 +213,13 @@
     }
 
     /** Switch the intensity colormap (e.g. when the 2D view's selector changes). */
-    setColormap(name) { this.colormap = name; this._uploadLut(name); this.render(); }
+    setColormap(name) { this.colormap = name; this._uploadLut(name); this._requestRender(); }
 
     /** HDR on/off — swaps the LUT between the plain SDR colormap and the lifted
      *  Display-P3 one. Driven by the shared OcdHdrUI toggle. */
-    setHdr(on) { this._hdr = !!on; this._uploadLut(this.colormap); this.render(); }
+    setHdr(on) { this._hdr = !!on; this._uploadLut(this.colormap); this._requestRender(); }
     /** HDR gain (0.25–4): scales the lift's peak-nits target, like the 2D slider. */
-    setGain(g) { this._gain = g > 0 ? g : 1.0; if (this._hdr) { this._uploadLut(this.colormap); this.render(); } }
+    setGain(g) { this._gain = g > 0 ? g : 1.0; if (this._hdr) { this._uploadLut(this.colormap); this._requestRender(); } }
 
     _uploadTextures(decoded) {
       const { device, NX, NY, NZ } = this;
@@ -523,6 +523,20 @@
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
+    // Coalesce state-change renders into ONE render per animation frame. Rapid
+    // setter calls (an HDR toggle fires setGain+setHdr; a slider drag fires many
+    // input events) otherwise each dispatch a separate full raymarch, so the GPU
+    // ramps idle->busy repeatedly and irregularly — the bursty power draw the VRM
+    // inductors whine at. Deduped to the display refresh, the load is smooth and
+    // regular. (The camera loop already renders once per rAF, so it stays direct.)
+    _requestRender() {
+      if (this._rafPending) return;
+      this._rafPending = true;
+      const raf = (typeof requestAnimationFrame === "function")
+        ? requestAnimationFrame : (cb) => setTimeout(cb, 16);
+      raf(() => { this._rafPending = false; this.render(); });
+    }
+
     render() {
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
       // Render at native device pixels. CRUCIAL: cap the backing to the device's
@@ -554,20 +568,20 @@
       this.device.queue.submit([enc.finish()]);
     }
 
-    setMode(m) { this.mode = m | 0; this.render(); }
-    setShowImage(on) { this.showImage = on ? 1 : 0; this.render(); }
-    setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this.render(); }
-    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this.render(); }
-    setAmbient(a) { this.ambient = +a; this.render(); }
-    setSpecular(s) { this.specular = +s; this.render(); }
-    setShininess(s) { this.shininess = +s; this.render(); }
-    setHeadlight(on) { this.headlight = on ? 1 : 0; this.render(); }
-    setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this.render(); } }
-    setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this.render(); } }
-    setDensity(d) { this.density = +d; this.render(); }
-    setLabelOpacity(o) { this.labelOpacity = +o; this.render(); }
-    setShowLabels(on) { this.showLabels = on ? 1 : 0; this.render(); }
-    setZScale(z) { this.zScale = +z; this.render(); }
+    setMode(m) { this.mode = m | 0; this._requestRender(); }
+    setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
+    setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
+    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._requestRender(); }
+    setAmbient(a) { this.ambient = +a; this._requestRender(); }
+    setSpecular(s) { this.specular = +s; this._requestRender(); }
+    setShininess(s) { this.shininess = +s; this._requestRender(); }
+    setHeadlight(on) { this.headlight = on ? 1 : 0; this._requestRender(); }
+    setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this._requestRender(); } }
+    setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this._requestRender(); } }
+    setDensity(d) { this.density = +d; this._requestRender(); }
+    setLabelOpacity(o) { this.labelOpacity = +o; this._requestRender(); }
+    setShowLabels(on) { this.showLabels = on ? 1 : 0; this._requestRender(); }
+    setZScale(z) { this.zScale = +z; this._requestRender(); }
 
     destroy() {
       try { this.ctx.unconfigure(); } catch (_) {}
