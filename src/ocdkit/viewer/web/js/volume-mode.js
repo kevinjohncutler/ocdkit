@@ -445,6 +445,8 @@
           shaderUrl: "/static/js/raymarch.wgsl",
           cubesUrl: "/static/js/cubes.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
+          // Whine A/B: ?canvas=sdr -> plain 8-bit sRGB surface instead of 16F HDR.
+          sdrCanvas: (new URLSearchParams(location.search).get("canvas") === "sdr"),
           mode: curProj,
           colormap: currentImageColormap(),
           gamma: currentGamma(),

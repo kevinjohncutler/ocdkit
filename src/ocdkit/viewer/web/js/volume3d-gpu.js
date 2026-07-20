@@ -66,12 +66,22 @@
 
       const self = new VolumeGPU();
       self.canvas = canvas; self.device = device; self.ctx = ctx;
-      self.format = "rgba16float";
-      try {
-        ctx.configure({ device, format: self.format, colorSpace: "display-p3",
-                        alphaMode: "premultiplied", toneMapping: { mode: "extended" } });
-      } catch (e) {
+      // Whine experiment: opts.sdrCanvas configures a plain 8-bit sRGB surface
+      // (exactly what a WebGL mesh viewer uses) instead of our 16-bit-float
+      // display-p3 extended one — to test if the per-frame present of the wide
+      // HDR-capable surface is what rings, independent of the render workload.
+      // (Loses HDR; fine for the SDR A/B.)
+      if (opts.sdrCanvas) {
+        self.format = (navigator.gpu.getPreferredCanvasFormat && navigator.gpu.getPreferredCanvasFormat()) || "bgra8unorm";
         ctx.configure({ device, format: self.format, alphaMode: "premultiplied" });
+      } else {
+        self.format = "rgba16float";
+        try {
+          ctx.configure({ device, format: self.format, colorSpace: "display-p3",
+                          alphaMode: "premultiplied", toneMapping: { mode: "extended" } });
+        } catch (e) {
+          ctx.configure({ device, format: self.format, alphaMode: "premultiplied" });
+        }
       }
 
       const _v = (typeof window !== "undefined" && window.__AV__) ? ("?v=" + window.__AV__) : "";
