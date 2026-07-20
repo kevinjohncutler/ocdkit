@@ -42,10 +42,13 @@
     }
     // Prototype render-mode indicator (press 'c' in 3D to A/B raymarch vs cubes).
     function showRenderMode(m) {
-      fpsEl.textContent = (m === "cubes") ? "render: cubes (raster MIP)" : "render: raymarch";
+      const label = { raymarch: "render: raymarch (image-order)",
+                      cubes: "render: cubes (all voxels, raster MIP)",
+                      minimal: "render: minimal (~300 cubes — trivial load)" };
+      fpsEl.textContent = label[m] || ("render: " + m);
       fpsEl.style.opacity = "1";
       if (fpsHideT) clearTimeout(fpsHideT);
-      fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 1500);
+      fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 1800);
     }
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');

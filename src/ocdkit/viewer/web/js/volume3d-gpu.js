@@ -158,7 +158,11 @@
       this.NX = m.width; this.NY = m.height; this.NZ = m.depth;
       this.decoded = decoded;
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
-      this._cubeMode = !!opts.cubeMode;                // object-order cube MIP (prototype)
+      // Render-path experiment: "raymarch" (image-order) | "cubes" (object-order
+      // MIP, all occupied voxels) | "minimal" (a few hundred cubes — a trivially
+      // light raster load, to test whether the whine is the workload or the
+      // per-frame WebGPU present into the extended HDR canvas).
+      this._renderMode = opts.renderMode || "raymarch";
       this.density = opts.density != null ? opts.density : 1.0;
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
@@ -650,7 +654,8 @@
       if (w > maxDim || h > maxDim) { const k = maxDim / Math.max(w, h); w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
-      const useCubes = this._cubeMode && this.cubePipeline && this.cubeInstanceCount > 0;
+      const rm = this._renderMode;
+      const useCubes = (rm === "cubes" || rm === "minimal") && this.cubePipeline && this.cubeInstanceCount > 0;
       if (useCubes) this._writeCubeUniform(cam); else this._writeUniform(cam);
       const enc = this.device.createCommandEncoder();
       const rp = enc.beginRenderPass({
@@ -666,7 +671,8 @@
         rp.setVertexBuffer(0, this.cubeVertBuf);
         rp.setVertexBuffer(1, this.cubeInstBuf);
         rp.setIndexBuffer(this.cubeIdxBuf, "uint16");
-        rp.drawIndexed(36, this.cubeInstanceCount);
+        const n = (rm === "minimal") ? Math.min(this.cubeInstanceCount, 300) : this.cubeInstanceCount;
+        rp.drawIndexed(36, n);
       } else {
         rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
       }
@@ -678,11 +684,17 @@
       this.device.queue.submit([enc.finish()]);
     }
 
-    /** Prototype toggle: "cubes" = object-order voxel-cube MIP (raster path),
-     *  "raymarch"/anything else = the image-order ray-march. Returns the new mode. */
-    setRenderMode(mode) { this._cubeMode = (mode === "cubes"); this._requestRender(); return this._cubeMode ? "cubes" : "raymarch"; }
-    toggleRenderMode() { return this.setRenderMode(this._cubeMode ? "raymarch" : "cubes"); }
-    getRenderMode() { return this._cubeMode ? "cubes" : "raymarch"; }
+    /** Render-path experiment. "raymarch" (image-order) | "cubes" (object-order
+     *  MIP) | "minimal" (~300 cubes, trivially light raster). Returns the new mode. */
+    setRenderMode(mode) {
+      this._renderMode = (mode === "cubes" || mode === "minimal") ? mode : "raymarch";
+      this._requestRender(); return this._renderMode;
+    }
+    toggleRenderMode() {   // cycle raymarch -> cubes -> minimal -> raymarch
+      const next = { raymarch: "cubes", cubes: "minimal", minimal: "raymarch" };
+      return this.setRenderMode(next[this._renderMode] || "cubes");
+    }
+    getRenderMode() { return this._renderMode; }
 
     setMode(m) { this.mode = m | 0; this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
