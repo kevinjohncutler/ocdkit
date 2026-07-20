@@ -92,6 +92,55 @@
         primitive: { topology: "triangle-list" },
       });
 
+      // ── Object-order cube renderer (MIP prototype; toggle via setRenderMode) ──
+      // Rasterises each occupied voxel as a unit cube with MAX blend = MIP, no ray
+      // loop. A/B against the raymarch to test whether the coil whine tracks the
+      // pipeline (raster vs compute) rather than the workload.
+      try {
+        const cwgsl = await (await fetch((opts.cubesUrl || "js/cubes.wgsl") + _v)).text();
+        const cmod = device.createShaderModule({ code: cwgsl });
+        self.cubeBgl = device.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
+          ],
+        });
+        self.cubePipeline = device.createRenderPipeline({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [self.cubeBgl] }),
+          vertex: {
+            module: cmod, entryPoint: "vs",
+            buffers: [
+              { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3", offset: 0 }] },
+              { arrayStride: 16, stepMode: "instance", attributes: [{ shaderLocation: 1, format: "float32x4", offset: 0 }] },
+            ],
+          },
+          fragment: {
+            module: cmod, entryPoint: "fs",
+            targets: [{
+              format: self.format,
+              blend: {   // MAX blend -> order-independent maximum intensity projection
+                color: { operation: "max", srcFactor: "one", dstFactor: "one" },
+                alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
+              },
+            }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },   // MIP: no cull, no depth
+        });
+        const corners = new Float32Array([
+          -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5,0.5,-0.5,  -0.5,0.5,-0.5,
+          -0.5,-0.5, 0.5,  0.5,-0.5, 0.5,  0.5,0.5, 0.5,  -0.5,0.5, 0.5,
+        ]);
+        const idx = new Uint16Array([
+          0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,3,7, 0,7,4,
+          1,5,6, 1,6,2,  0,4,5, 0,5,1,  3,2,6, 3,6,7,
+        ]);
+        self.cubeVertBuf = device.createBuffer({ size: corners.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(self.cubeVertBuf, 0, corners);
+        self.cubeIdxBuf = device.createBuffer({ size: idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(self.cubeIdxBuf, 0, idx);
+        self.cubeUniform = device.createBuffer({ size: 28 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      } catch (e) { self.cubePipeline = null; console.warn("[cubes] pipeline init failed", e); }
+
       self._initState(decoded, opts);
       self._uploadTextures(decoded);
       self._makeBindGroup();
@@ -109,6 +158,7 @@
       this.NX = m.width; this.NY = m.height; this.NZ = m.depth;
       this.decoded = decoded;
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
+      this._cubeMode = !!opts.cubeMode;                // object-order cube MIP (prototype)
       this.density = opts.density != null ? opts.density : 1.0;
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
@@ -244,6 +294,7 @@
       });
       device.queue.writeTexture({ texture: this.volTex }, _toF16(f).buffer,
         { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
+      this._buildCubeInstances(f);   // object-order prototype instance buffer
 
       // labels -> uint, format by max label
       let maxLabel = 0;
@@ -270,6 +321,54 @@
           { binding: 3, resource: this.lutTex.createView() },
         ],
       });
+      if (this.cubePipeline) {
+        this.cubeBindGroup = this.device.createBindGroup({
+          layout: this.cubeBgl,
+          entries: [
+            { binding: 0, resource: { buffer: this.cubeUniform } },
+            { binding: 1, resource: this.lutTex.createView() },
+          ],
+        });
+      }
+    }
+
+    /** Build the per-voxel instance buffer for the cube renderer: one (i,j,k,value)
+     *  entry per OCCUPIED voxel. Capped so a dense volume can't allocate unboundedly
+     *  (the prototype targets sparse volumes; dense needs culling/slicing later). */
+    _buildCubeInstances(f) {
+      if (!this.cubePipeline) return;
+      const { NX, NY, NZ, device } = this;
+      const eps = 0.02;              // occupancy threshold (contributes to MIP)
+      const CAP = 4000000;
+      let n = 0;
+      for (let i = 0; i < f.length; i++) if (f[i] > eps) n++;
+      const count = Math.min(n, CAP);
+      const data = new Float32Array(count * 4);
+      let w = 0;
+      for (let z = 0; z < NZ && w < count; z++) {
+        for (let y = 0; y < NY && w < count; y++) {
+          const row = y * NX + z * NX * NY;
+          for (let x = 0; x < NX; x++) {
+            const v = f[row + x];
+            if (v > eps) { const o = w * 4; data[o] = x; data[o + 1] = y; data[o + 2] = z; data[o + 3] = v; if (++w >= count) break; }
+          }
+        }
+      }
+      this.cubeInstanceCount = w;
+      if (n > CAP) console.warn(`[cubes] ${n} occupied voxels exceed cap ${CAP}; rendering first ${w} (dense volume — needs culling/slicing)`);
+      if (this.cubeInstBuf) this.cubeInstBuf.destroy();
+      this.cubeInstBuf = device.createBuffer({ size: Math.max(16, data.byteLength), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(this.cubeInstBuf, 0, data);
+    }
+
+    _writeCubeUniform(cam) {
+      const box = this._box();
+      const u = new Float32Array(28);
+      u.set(cam.viewProj, 0);
+      u.set([box.min[0], box.min[1], box.min[2], 0], 16);
+      u.set([box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], this.gamma], 20);
+      u.set([this.NX, this.NY, this.NZ, 0], 24);
+      this.device.queue.writeBuffer(this.cubeUniform, 0, u);
     }
 
     _box() {
@@ -551,7 +650,8 @@
       if (w > maxDim || h > maxDim) { const k = maxDim / Math.max(w, h); w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
-      this._writeUniform(cam);
+      const useCubes = this._cubeMode && this.cubePipeline && this.cubeInstanceCount > 0;
+      if (useCubes) this._writeCubeUniform(cam); else this._writeUniform(cam);
       const enc = this.device.createCommandEncoder();
       const rp = enc.beginRenderPass({
         colorAttachments: [{
@@ -559,7 +659,17 @@
           clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store",
         }],
       });
-      rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
+      if (useCubes) {
+        // Object-order MIP: rasterise the occupied voxels, MAX-blended. No ray loop.
+        rp.setPipeline(this.cubePipeline);
+        rp.setBindGroup(0, this.cubeBindGroup);
+        rp.setVertexBuffer(0, this.cubeVertBuf);
+        rp.setVertexBuffer(1, this.cubeInstBuf);
+        rp.setIndexBuffer(this.cubeIdxBuf, "uint16");
+        rp.drawIndexed(36, this.cubeInstanceCount);
+      } else {
+        rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
+      }
       if (this.overlays) {
         const box = this._box();
         this.overlays.draw(rp, cam.viewProj, box.min, box.max, [this.NX, this.NY, this.NZ]);
@@ -567,6 +677,12 @@
       rp.end();
       this.device.queue.submit([enc.finish()]);
     }
+
+    /** Prototype toggle: "cubes" = object-order voxel-cube MIP (raster path),
+     *  "raymarch"/anything else = the image-order ray-march. Returns the new mode. */
+    setRenderMode(mode) { this._cubeMode = (mode === "cubes"); this._requestRender(); return this._cubeMode ? "cubes" : "raymarch"; }
+    toggleRenderMode() { return this.setRenderMode(this._cubeMode ? "raymarch" : "cubes"); }
+    getRenderMode() { return this._cubeMode ? "cubes" : "raymarch"; }
 
     setMode(m) { this.mode = m | 0; this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }

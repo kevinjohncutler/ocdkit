@@ -40,6 +40,13 @@
       if (fpsHideT) clearTimeout(fpsHideT);
       fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 700);
     }
+    // Prototype render-mode indicator (press 'c' in 3D to A/B raymarch vs cubes).
+    function showRenderMode(m) {
+      fpsEl.textContent = (m === "cubes") ? "render: cubes (raster MIP)" : "render: raymarch";
+      fpsEl.style.opacity = "1";
+      if (fpsHideT) clearTimeout(fpsHideT);
+      fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 1500);
+    }
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');
     const projRow = document.getElementById("projModeRow");
@@ -407,6 +414,9 @@
       }
       if (mode === "3d") {
         if ((e.key === "h" || e.key === "H") && vgpu) { e.preventDefault(); vgpu.resetView(); }
+        else if ((e.key === "c" || e.key === "C") && vgpu && vgpu.toggleRenderMode) {
+          e.preventDefault(); showRenderMode(vgpu.toggleRenderMode());   // A/B raymarch vs object-order cubes
+        }
         return;
       }
       let d = 0;
@@ -430,6 +440,7 @@
         const decoded = await window.decodeBundle(await r.json());
         vgpu = await window.VolumeGPU.create(vcanvas, decoded, {
           shaderUrl: "/static/js/raymarch.wgsl",
+          cubesUrl: "/static/js/cubes.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
           mode: curProj,
           colormap: currentImageColormap(),
@@ -577,6 +588,9 @@
       showSlice, getSlice: () => slice, setProj, getProj: () => curProj,
       setAxis, getAxis: () => curAxis,
       setBrushDim, getBrushDim: () => brushDim,
+      toggleRenderMode: () => (vgpu && vgpu.toggleRenderMode) ? vgpu.toggleRenderMode() : null,
+      setRenderMode: (m) => (vgpu && vgpu.setRenderMode) ? vgpu.setRenderMode(m) : null,
+      getRenderMode: () => (vgpu && vgpu.getRenderMode) ? vgpu.getRenderMode() : null,
       _dbg: () => ({ mode, saved2dMode, saved3dMode, vs: _vs }),
     };
 
