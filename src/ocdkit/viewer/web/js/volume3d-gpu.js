@@ -207,6 +207,10 @@
       // light raster load, to test whether the whine is the workload or the
       // per-frame WebGPU present into the extended HDR canvas).
       this._renderMode = opts.renderMode || "raymarch";
+      // Compute-shader march is pixel-identical to the fragment path and measurably
+      // faster at high resolution (holds frame rate on fast orbits where the
+      // fragment path floors its adaptive resolution). Fall back if it failed init.
+      if (this._renderMode === "compute" && !this.computePipeline) this._renderMode = "raymarch";
       this.density = opts.density != null ? opts.density : 1.0;
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer

@@ -451,6 +451,7 @@
           // Whine A/B: ?canvas=sdr -> plain 8-bit sRGB surface instead of 16F HDR.
           sdrCanvas: (new URLSearchParams(location.search).get("canvas") === "sdr"),
           mode: curProj,
+          renderMode: "compute",   // default to the faster compute-shader march (toggle with 'c')
           colormap: currentImageColormap(),
           gamma: currentGamma(),
           // Inherit the current (persisted) HDR toggle state so the volume opens
