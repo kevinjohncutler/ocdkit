@@ -151,6 +151,40 @@
         self.cubeUniform = device.createBuffer({ size: 28 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       } catch (e) { self.cubePipeline = null; console.warn("[cubes] pipeline init failed", e); }
 
+      // ── Compute-shader ray-march (A/B via setRenderMode("compute")) ──────────
+      // Same march as the fragment path, dispatched as a compute grid writing an
+      // rgba16float storage texture, then a trivial blit to the canvas.
+      try {
+        const [ccode, bcode] = await Promise.all([
+          fetch((opts.computeUrl || "js/raymarch_compute.wgsl") + _v).then((r) => r.text()),
+          fetch((opts.blitUrl || "js/blit.wgsl") + _v).then((r) => r.text()),
+        ]);
+        const cmod = device.createShaderModule({ code: ccode });
+        self.computeBgl = device.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+            { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
+            { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "uint", viewDimension: "3d" } },
+            { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d" } },
+            { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d" } },
+          ],
+        });
+        self.computePipeline = device.createComputePipeline({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [self.computeBgl] }),
+          compute: { module: cmod, entryPoint: "cs" },
+        });
+        const bmod = device.createShaderModule({ code: bcode });
+        self.blitBgl = device.createBindGroupLayout({
+          entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } }],
+        });
+        self.blitPipeline = device.createRenderPipeline({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [self.blitBgl] }),
+          vertex: { module: bmod, entryPoint: "vs" },
+          fragment: { module: bmod, entryPoint: "fs", targets: [{ format: self.format }] },
+          primitive: { topology: "triangle-list" },
+        });
+      } catch (e) { self.computePipeline = null; console.warn("[compute] pipeline init failed", e); }
+
       self._initState(decoded, opts);
       self._uploadTextures(decoded);
       self._makeBindGroup();
@@ -665,16 +699,27 @@
       if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
       const cam = this._camera();
       const rm = this._renderMode;
+      const useCompute = rm === "compute" && this._ensureComputeTargets(w, h);
       const useCubes = (rm === "cubes" || rm === "minimal") && this.cubePipeline && this.cubeInstanceCount > 0;
       if (useCubes) this._writeCubeUniform(cam); else this._writeUniform(cam);
       const enc = this.device.createCommandEncoder();
+      if (useCompute) {
+        // Image-order march as a compute dispatch -> rgba16float storage texture.
+        const cp = enc.beginComputePass();
+        cp.setPipeline(this.computePipeline);
+        cp.setBindGroup(0, this.computeBindGroup);
+        cp.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8), 1);
+        cp.end();
+      }
       const rp = enc.beginRenderPass({
         colorAttachments: [{
           view: this.ctx.getCurrentTexture().createView(),
           clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store",
         }],
       });
-      if (useCubes) {
+      if (useCompute) {
+        rp.setPipeline(this.blitPipeline); rp.setBindGroup(0, this.blitBindGroup); rp.draw(3);
+      } else if (useCubes) {
         // Object-order MIP: rasterise the occupied voxels, MAX-blended. No ray loop.
         rp.setPipeline(this.cubePipeline);
         rp.setBindGroup(0, this.cubeBindGroup);
@@ -694,15 +739,43 @@
       this.device.queue.submit([enc.finish()]);
     }
 
+    /** (Re)create the compute storage texture + bind groups when the size changes. */
+    _ensureComputeTargets(w, h) {
+      if (!this.computePipeline) return false;
+      if (this._computeTex && this._computeW === w && this._computeH === h) return true;
+      if (this._computeTex) this._computeTex.destroy();
+      this._computeTex = this.device.createTexture({
+        size: [w, h, 1], format: "rgba16float",
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this._computeW = w; this._computeH = h;
+      const view = this._computeTex.createView();
+      this.computeBindGroup = this.device.createBindGroup({
+        layout: this.computeBgl,
+        entries: [
+          { binding: 0, resource: { buffer: this.uniform } },
+          { binding: 1, resource: this.volTex.createView() },
+          { binding: 2, resource: this.labTex.createView() },
+          { binding: 3, resource: this.lutTex.createView() },
+          { binding: 4, resource: view },
+        ],
+      });
+      this.blitBindGroup = this.device.createBindGroup({
+        layout: this.blitBgl, entries: [{ binding: 0, resource: view }],
+      });
+      return true;
+    }
+
     /** Render-path experiment. "raymarch" (image-order) | "cubes" (object-order
      *  MIP) | "minimal" (~300 cubes, trivially light raster). Returns the new mode. */
     setRenderMode(mode) {
-      this._renderMode = (mode === "cubes" || mode === "minimal") ? mode : "raymarch";
+      const ok = { raymarch: 1, compute: 1, cubes: 1, minimal: 1 };
+      this._renderMode = ok[mode] ? mode : "raymarch";
       this._requestRender(); return this._renderMode;
     }
-    toggleRenderMode() {   // cycle raymarch -> cubes -> minimal -> raymarch
-      const next = { raymarch: "cubes", cubes: "minimal", minimal: "raymarch" };
-      return this.setRenderMode(next[this._renderMode] || "cubes");
+    toggleRenderMode() {   // cycle raymarch -> compute -> cubes -> minimal -> raymarch
+      const next = { raymarch: "compute", compute: "cubes", cubes: "minimal", minimal: "raymarch" };
+      return this.setRenderMode(next[this._renderMode] || "compute");
     }
     getRenderMode() { return this._renderMode; }
 

@@ -42,7 +42,8 @@
     }
     // Prototype render-mode indicator (press 'c' in 3D to A/B raymarch vs cubes).
     function showRenderMode(m) {
-      const label = { raymarch: "render: raymarch (image-order)",
+      const label = { raymarch: "render: raymarch (fragment, image-order)",
+                      compute: "render: compute (compute-shader march)",
                       cubes: "render: cubes (all voxels, raster MIP)",
                       minimal: "render: minimal (~300 cubes — trivial load)" };
       fpsEl.textContent = label[m] || ("render: " + m);
@@ -444,6 +445,8 @@
         vgpu = await window.VolumeGPU.create(vcanvas, decoded, {
           shaderUrl: "/static/js/raymarch.wgsl",
           cubesUrl: "/static/js/cubes.wgsl",
+          computeUrl: "/static/js/raymarch_compute.wgsl",
+          blitUrl: "/static/js/blit.wgsl",
           overlayShaderUrl: "/static/js/overlay.wgsl",
           // Whine A/B: ?canvas=sdr -> plain 8-bit sRGB surface instead of 16F HDR.
           sdrCanvas: (new URLSearchParams(location.search).get("canvas") === "sdr"),
