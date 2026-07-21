@@ -250,6 +250,8 @@
       this._dynScale = 1.0;              // current adaptive scale (drives render resolution)
       this.minScale = opts.minScale != null ? opts.minScale : 0.4;   // floor
       this.targetFps = opts.targetFps != null ? opts.targetFps : 120;
+      this._fpsCap = opts.fpsCap > 0 ? opts.fpsCap : 0;   // 0 = uncapped; e.g. 60 to quiet the coil whine
+      this._lastRenderT = 0;
       this._frameEMA = 0; this._period = 0; this._lastFrameMs = 0; this._probe = 0;
       this._onCam = typeof opts.onCameraChange === "function" ? opts.onCameraChange : null;
       this._onFps = typeof opts.onFps === "function" ? opts.onFps : null;
@@ -582,15 +584,21 @@
         // targets the refresh — you can't beat vsync). Small slack for noise.
         const period = Math.max(self._displayPeriod || (1000 / self.targetFps), 1000 / self.targetFps);
         const budget = period * 1.15;
-        if (self._frameEMA > budget) {                // slower than the refresh -> shrink now
+        // WIDE deadband: only change scale when clearly off, then hold. Constantly
+        // hunting the scale varies the per-frame GPU load every frame, which is
+        // what makes the coil whine 'chirp' (pitch tracks load). Letting the scale
+        // settle keeps the load steady -> a steadier, less-obtrusive tone, at no
+        // quality cost (it still adapts to hold the frame rate, just stops churning).
+        if (self._frameEMA > budget * 1.10) {         // clearly too slow -> shrink
           self._dynScale = Math.max(self.minScale, self._dynScale - 0.12);
-          self._probe = 40;
+          self._probe = 60;
         } else if (self._probe > 0) {
           self._probe -= 1;
-        } else if (self._dynScale < 1.0) {            // sustaining the refresh with headroom -> probe up
+        } else if (self._frameEMA < budget * 0.80 && self._dynScale < 1.0) {  // clear headroom -> grow
           self._dynScale = Math.min(1.0, self._dynScale + 0.06);
-          self._probe = 20;
+          self._probe = 40;
         }
+        // else: inside the deadband -> HOLD (steady load).
       };
       const step = () => {
         anim = 0;
@@ -628,7 +636,15 @@
         const moving = !!drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
             Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS;
         self._interacting = moving;                 // low-res while moving, full-res on the settle frame
-        if (changed || !moving) { self.render(); if (self._onCam) self._onCam(); }
+        // Frame-rate cap: while moving, skip renders inside the cap interval (the
+        // camera keeps integrating every rAF, so motion stays smooth). Fewer
+        // renders/sec -> the GPU sustains a LOWER clock -> less coil whine, at full
+        // image quality (this trades peak fps, not pixels — the Low-Power-Mode
+        // effect, but scoped to the viewer). The settle frame always renders.
+        const capMs = self._fpsCap > 0 ? 1000 / self._fpsCap : 0;
+        const nowT = _now();
+        const throttled = capMs > 0 && moving && (nowT - self._lastRenderT) < capMs * 0.98;
+        if ((changed || !moving) && !throttled) { self.render(); self._lastRenderT = nowT; if (self._onCam) self._onCam(); }
         if (moving) anim = requestAnimationFrame(step);
       };
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
@@ -782,6 +798,11 @@
       return this.setRenderMode(next[this._renderMode] || "compute");
     }
     getRenderMode() { return this._renderMode; }
+
+    /** Cap the interactive frame rate (fps; 0 = uncapped). A lower cap lets the
+     *  GPU hold a lower clock -> less coil whine, at full image quality. */
+    setFpsCap(fps) { this._fpsCap = fps > 0 ? fps : 0; this._lastRenderT = 0; this._requestRender(); return this._fpsCap; }
+    getFpsCap() { return this._fpsCap; }
 
     setMode(m) { this.mode = m | 0; this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }

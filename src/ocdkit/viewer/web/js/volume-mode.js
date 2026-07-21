@@ -46,7 +46,7 @@
                       compute: "render: compute (compute-shader march)",
                       cubes: "render: cubes (all voxels, raster MIP)",
                       minimal: "render: minimal (~300 cubes — trivial load)" };
-      fpsEl.textContent = label[m] || ("render: " + m);
+      fpsEl.textContent = label[m] || m;
       fpsEl.style.opacity = "1";
       if (fpsHideT) clearTimeout(fpsHideT);
       fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 1800);
@@ -421,6 +421,12 @@
         else if ((e.key === "c" || e.key === "C") && vgpu && vgpu.toggleRenderMode) {
           e.preventDefault(); showRenderMode(vgpu.toggleRenderMode());   // A/B raymarch vs object-order cubes
         }
+        else if ((e.key === "f" || e.key === "F") && vgpu && vgpu.setFpsCap) {
+          e.preventDefault();                                            // cycle fps cap: off -> 60 -> 30 -> off
+          const nextCap = { 0: 60, 60: 30, 30: 0 };
+          const cap = vgpu.setFpsCap(nextCap[vgpu.getFpsCap()] ?? 60);
+          showRenderMode(cap ? "fps cap: " + cap + " (quieter GPU)" : "fps cap: off (uncapped)");
+        }
         return;
       }
       let d = 0;
@@ -600,6 +606,8 @@
       toggleRenderMode: () => (vgpu && vgpu.toggleRenderMode) ? vgpu.toggleRenderMode() : null,
       setRenderMode: (m) => (vgpu && vgpu.setRenderMode) ? vgpu.setRenderMode(m) : null,
       getRenderMode: () => (vgpu && vgpu.getRenderMode) ? vgpu.getRenderMode() : null,
+      setFpsCap: (n) => (vgpu && vgpu.setFpsCap) ? vgpu.setFpsCap(n) : null,
+      getFpsCap: () => (vgpu && vgpu.getFpsCap) ? vgpu.getFpsCap() : null,
       _dbg: () => ({ mode, saved2dMode, saved3dMode, vs: _vs }),
     };
 
