@@ -26,7 +26,7 @@ def _auto_chunked_quantile(tensor, q):
     max_elements = int(16e6 - 1)
     num_elements = tensor.nelement()
     chunk_size = max(1, math.ceil(num_elements / max_elements))
-    chunks = torch.chunk(tensor, chunk_size)
+    chunks = torch.chunk(tensor.squeeze(), chunk_size)
     return torch.stack([torch.quantile(chunk, q) for chunk in chunks]).mean(dim=0)
 
 
