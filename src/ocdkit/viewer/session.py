@@ -13,6 +13,7 @@ import base64
 import gzip
 import io
 import json
+import math
 import secrets
 import threading
 import time
@@ -844,15 +845,29 @@ class SessionManager:
         tfar = float(np.min(np.maximum(t1, t2)))
         if tnear > tfar:
             return None
-        nsteps = int(max(64, 2 * max(NX, NY, NZ)))
-        dt = (tfar - tnear) / nsteps
-        t = tnear + dt * 0.5
-        for _ in range(nsteps):
-            p = ro + rd * t
-            vc = np.clip(np.floor(((p - bmin) / span) * dims).astype(int), 0, dims.astype(int) - 1)
-            if int(mv[vc[2], vc[1], vc[0]]) > 0:       # vc = (x, y, z) → mv[z, y, x]
-                return (int(vc[2]), int(vc[1]), int(vc[0]))
-            t += dt
+        # Amanatides-Woo voxel DDA, the same traversal (entry point, tie-breaking,
+        # first labelled voxel) as raymarch_compute.wgsl, so the picked cell is the
+        # one drawn under the cursor. A fixed-step march can skip a voxel corner the
+        # DDA enters (or vice versa) and pick a neighbouring cell.
+        res = [float(NX), float(NY), float(NZ)]
+        dv, p0, vox, stp, tdel, tmax = [0.0] * 3, [0.0] * 3, [0] * 3, [0] * 3, [0.0] * 3, [0.0] * 3
+        for k in range(3):
+            d = float(rd[k]) / float(span[k]) * res[k]
+            dv[k] = 1e-8 if abs(d) < 1e-8 else d
+            p0[k] = (float(ro[k]) + float(rd[k]) * tnear - float(bmin[k])) / float(span[k]) * res[k]
+            vox[k] = int(min(max(math.floor(p0[k]), 0), int(res[k]) - 1))
+            stp[k] = 1 if dv[k] > 0 else -1
+            tdel[k] = abs(1.0 / dv[k])
+            tmax[k] = (vox[k] + (1 if stp[k] > 0 else 0) - p0[k]) / dv[k]
+        n = [NX, NY, NZ]
+        for _ in range(NX + NY + NZ + 3):
+            if int(mv[vox[2], vox[1], vox[0]]) > 0:       # vox = (x, y, z) → mv[z, y, x]
+                return (vox[2], vox[1], vox[0])
+            k = 0 if (tmax[0] < tmax[1] and tmax[0] < tmax[2]) else (1 if tmax[1] < tmax[2] else 2)
+            vox[k] += stp[k]
+            tmax[k] += tdel[k]
+            if vox[k] < 0 or vox[k] >= n[k]:
+                break
         return None
 
     def pick_ray(self, state: SessionState, ro, rd, box_min, box_max):

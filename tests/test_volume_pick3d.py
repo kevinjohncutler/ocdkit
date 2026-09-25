@@ -84,3 +84,61 @@ def test_fill_label_identity_merge_and_undo(tmp_path):
     assert int((state.current_mask_volume == 5).sum()) == n5 + n7
     assert SESSION_MANAGER.undo(state) is True
     assert np.array_equal(state.current_mask_volume, before)
+
+
+def _first_label_fine(mv, ro, rd, box_min, box_max, step=1e-3):
+    """Reference: sample the ray every `step` voxels and return the first
+    labelled voxel (z, y, x). Much finer than any voxel, so only slivers thinner
+    than `step` can be missed."""
+    NZ, NY, NX = mv.shape
+    dims = np.array([NX, NY, NZ], float)
+    ro, rd = np.asarray(ro, float), np.asarray(rd, float) / np.linalg.norm(rd)
+    bmin, bmax = np.asarray(box_min, float), np.asarray(box_max, float)
+    span = bmax - bmin
+    inv = 1.0 / np.where(rd == 0, 1e-12, rd)
+    t1, t2 = (bmin - ro) * inv, (bmax - ro) * inv
+    tn, tf = max(0.0, np.minimum(t1, t2).max()), np.maximum(t1, t2).min()
+    if tn > tf:
+        return None
+    t = np.arange(tn, tf, step * span.max() / dims.max())
+    vc = np.clip(np.floor((ro + rd * t[:, None] - bmin) / span * dims).astype(int), 0, dims.astype(int) - 1)
+    hit = mv[vc[:, 2], vc[:, 1], vc[:, 0]] > 0
+    if not hit.any():
+        return None
+    x, y, z = vc[np.argmax(hit)]
+    return (int(z), int(y), int(x))
+
+
+def test_pick_ray_enters_a_grazed_voxel_corner(tmp_path):
+    """A ray clipping a 0.02-voxel corner of a one-voxel cell still picks it (the
+    render's DDA draws that corner; a fixed-step march can step over it)."""
+    state = _session(tmp_path)
+    mv = np.zeros((20, 20, 20), np.uint8)
+    mv[5, 5, 5] = 9                                   # z, y, x
+    state.current_mask_volume = mv
+    state.current_ncolor_volume = None
+    state.label_group = None
+    # world = voxel - 10 (20^3 volume in a centred 20-unit box); the ray runs along
+    # x + y = 11.98 in voxel units at z = 5.5, clipping voxel (x5, y5)'s corner
+    ro = [0.98 - 10.0, 11.0 - 10.0, 5.5 - 10.0]
+    rd = [1.0, -1.0, 0.0]
+    lab, _, vc = SESSION_MANAGER.pick_ray(state, ro, rd, BOX_MIN, BOX_MAX)
+    assert lab == 9 and vc == [5, 5, 5]
+
+
+def test_pick_ray_matches_fine_sampling_on_random_rays(tmp_path):
+    """The picked voxel is the first labelled voxel along the true ray."""
+    state = _session(tmp_path)
+    rng = np.random.default_rng(1)
+    mv = (rng.random((20, 20, 20)) < 0.03).astype(np.uint8) * rng.integers(1, 200, (20, 20, 20)).astype(np.uint8)
+    state.current_mask_volume = mv
+    agree = total = 0
+    for _ in range(1000):
+        ro = rng.uniform(-30, 30, 3)
+        rd = rng.normal(size=3) - ro / 30.0           # roughly toward the box
+        v = SESSION_MANAGER._march_ray(state, ro, rd, BOX_MIN, BOX_MAX)
+        ref = _first_label_fine(mv, ro, rd, BOX_MIN, BOX_MAX)
+        total += 1
+        agree += v == ref
+    # the DDA matched 1000/1000 when written; the old fixed-step march 986-988
+    assert agree / total >= 0.998, f"{agree}/{total}"
