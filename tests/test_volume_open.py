@@ -317,3 +317,50 @@ def test_paint_merges_by_visible_colour(tmp_path):
     fp2 = ((xx - 15) ** 2 + (yy - 26) ** 2) < 3 ** 2
     iso = SESSION_MANAGER.paint_sphere(state, 3, 0, g1, 0, fp2)
     assert SESSION_MANAGER.ncolor_map(state)[iso] == g1  # stays the chosen colour
+
+
+def _decode_raw(body, headers):
+    W, H, D = (int(v) for v in headers["X-Shape"].split(","))
+    n = W * H * D
+    img = np.frombuffer(body, np.float16, n).reshape(D, H, W)
+    md = headers["X-Mask-Dtype"]
+    mask = None if md == "none" else np.frombuffer(body, np.dtype(md), n, offset=2 * n).reshape(D, H, W)
+    assert len(body) == 2 * n + (0 if mask is None else n * mask.itemsize)
+    return img, mask
+
+
+def test_volume_raw_is_normalized_float16(tmp_path):
+    """GET /api/volume_raw: intensity normalized to [0,1] as float16 (the exact
+    bytes the 3D view uploads), no mask when none is loaded."""
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, _write_volume(tmp_path, (6, 10, 12)))
+    body, headers = SESSION_MANAGER.encode_volume_raw(state)
+    assert headers["X-Shape"] == "12,10,6" and headers["X-Image"] == "float16"
+    img, mask = _decode_raw(body, headers)
+    assert mask is None
+    v = state.current_volume.astype(np.float64)
+    ref = (v - v.min()) / (v.max() - v.min())
+    assert img.min() == 0 and img.max() == 1
+    assert np.abs(img.astype(np.float64) - ref).max() <= 2 ** -11   # float16 rounding
+
+
+def test_volume_raw_carries_ncolor_groups(tmp_path):
+    p = _write_volume(tmp_path, (6, 10, 12))
+    m = np.zeros((6, 10, 12), np.uint16)
+    m[1:4, 2:6, 2:6] = 300
+    m[1:4, 2:6, 6:10] = 301
+    tifffile.imwrite(str(tmp_path / "vol_masks.tif"), m)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, p)
+    body, headers = SESSION_MANAGER.encode_volume_raw(state)
+    _, mask = _decode_raw(body, headers)
+    np.testing.assert_array_equal(mask, SESSION_MANAGER.ensure_ncolor(state))
+    assert set(np.unique(mask)) - {0}, "labelled voxels carry a nonzero group"
+
+
+def test_volume_raw_none_for_2d(tmp_path):
+    p = tmp_path / "img.tif"
+    tifffile.imwrite(str(p), (np.random.default_rng(0).random((40, 40)) * 255).astype(np.uint8))
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, p)
+    assert SESSION_MANAGER.encode_volume_raw(state) is None

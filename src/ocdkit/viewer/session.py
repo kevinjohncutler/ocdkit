@@ -1041,6 +1041,35 @@ class SessionManager:
                                            else _narrow_labels(state.current_mask_volume))
         return bundle
 
+    def encode_volume_raw(self, state: SessionState) -> Optional[tuple[bytes, dict[str, str]]]:
+        """The 3D view's volume as one binary body, or None if not a volume.
+
+        Body = intensity normalized to [0, 1] as float16 (exactly the bytes the
+        browser uploads to its r16float texture), followed by the label volume
+        (ncolor groups, as in :meth:`encode_volume_bundle`). Headers describe the
+        layout. Replaces the JSON bundle's gzip + base64 of the source dtype,
+        which cost ~20x more to encode, transfer and decode.
+        """
+        vol = state.current_volume
+        if vol is None:
+            return None
+        D, H, W = vol.shape
+        a = np.asarray(vol, dtype=np.float64)
+        lo, hi = float(a.min()), float(a.max())
+        sc = 1.0 / (hi - lo) if hi > lo else 0.0
+        # same arithmetic as the viewer's JS path: (a - lo) * sc in float64,
+        # rounded to float32, then to float16
+        f16 = ((a - lo) * sc).astype(np.float32).astype(np.float16)
+        parts = [f16.tobytes()]
+        headers = {"X-Shape": f"{W},{H},{D}", "X-Image": "float16", "X-Mask-Dtype": "none",
+                   "Cache-Control": "no-store"}
+        if state.current_mask_volume is not None:
+            g = self.ensure_ncolor(state)
+            m = np.ascontiguousarray(g if g is not None else _narrow_labels(state.current_mask_volume))
+            parts.append(m.tobytes())
+            headers["X-Mask-Dtype"] = str(m.dtype)
+        return b"".join(parts), headers
+
     def _encode_image(self, array: np.ndarray, *, is_rgb: bool) -> str:
         raw_bytes = self._encode_image_bytes(array, is_rgb=is_rgb)
         return "data:image/png;base64," + base64.b64encode(raw_bytes).decode("ascii")

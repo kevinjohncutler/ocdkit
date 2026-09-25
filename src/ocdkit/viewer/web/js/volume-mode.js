@@ -441,13 +441,31 @@
     const hasWebGPU = !!(navigator.gpu && window.VolumeGPU && window.decodeBundle);
     if (!hasWebGPU) { btn3d.disabled = true; btn3d.title = "WebGPU not available in this browser"; }
 
+    // Binary volume (GET /api/volume_raw): float16 intensity already normalized
+    // on the server, then the label volume. Uploads to the GPU as-is (~20x faster
+    // than the JSON bundle's gzip + base64 + per-voxel normalize).
+    async function fetchVolumeRaw(sid) {
+      const r = await fetch("/api/volume_raw/" + encodeURIComponent(sid));
+      if (!r.ok) throw new Error("volume_raw " + r.status);
+      const buf = await r.arrayBuffer();
+      const [W, H, D] = r.headers.get("X-Shape").split(",").map(Number), N = W * H * D;
+      const decoded = { meta: { dim: 3, axes: ["t", "y", "x"], depth: D, height: H, width: W },
+                        steps: [], trajectories: null, image: null, mask: null,
+                        imageF16: { data: new Uint16Array(buf, 0, N), shape: [D, H, W] } };
+      const md = r.headers.get("X-Mask-Dtype");
+      const C = { uint8: Uint8Array, uint16: Uint16Array, uint32: Uint32Array }[md];
+      if (C) {   // typed views need an aligned offset; copy the tail if it isn't
+        const off = 2 * N;
+        decoded.mask = { data: off % C.BYTES_PER_ELEMENT ? new C(buf.slice(off), 0, N) : new C(buf, off, N), shape: [D, H, W] };
+      }
+      return decoded;
+    }
+
     async function ensureVolume() {
       if (vgpu) return vgpu;
       if (loading) return loading;
       loading = (async () => {
-        const r = await fetch("/api/volume_bundle/" + encodeURIComponent(cfg.sessionId));
-        if (!r.ok) throw new Error("volume_bundle " + r.status);
-        const decoded = await window.decodeBundle(await r.json());
+        const decoded = await fetchVolumeRaw(cfg.sessionId);
         vgpu = await window.VolumeGPU.create(vcanvas, decoded, {
           shaderUrl: "/static/js/raymarch.wgsl",
           cubesUrl: "/static/js/cubes.wgsl",

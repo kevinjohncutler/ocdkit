@@ -464,6 +464,21 @@ def api_volume_bundle(session_id: str) -> dict:
     return bundle
 
 
+@router.get("/volume_raw/{session_id}")
+def api_volume_raw(session_id: str) -> Response:
+    """Binary 3D volume for the WebGPU view: float16 intensity (normalized)
+    followed by the label volume; layout in X-Shape / X-Image / X-Mask-Dtype."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    out = SESSION_MANAGER.encode_volume_raw(state)
+    if out is None:
+        raise NotFound("not_a_volume")
+    body, headers = out
+    return Response(content=body, media_type="application/octet-stream", headers=headers)
+
+
 @router.post("/save_state")
 def api_save_state(
     payload: SaveStatePayload,
