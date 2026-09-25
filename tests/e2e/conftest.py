@@ -91,13 +91,18 @@ def _reset_active_plugin():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
+# Package-scoped, NOT session-scoped: an open sync_playwright() keeps its event
+# loop registered as running on the main thread, so any later test that starts
+# its own sync_playwright() (e.g. tests/test_volume_page.py) would fail with
+# "using Playwright Sync API inside the asyncio loop". Closing it when the e2e
+# package finishes releases the loop.
+@pytest.fixture(scope="package")
 def playwright_instance():
     with sync_playwright() as pw:
         yield pw
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def browser(playwright_instance):
     # Headless Chromium covers ~99% of GUI behavior; webview-specific quirks
     # are tested separately in tests/e2e/test_pywebview_snapshot.py.

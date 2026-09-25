@@ -7,6 +7,7 @@ and asserts the canvas renders, slices navigate, layers switch, and overlays dra
 """
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,9 +15,10 @@ import pytest
 pytest.importorskip("playwright.sync_api")
 from playwright.sync_api import sync_playwright
 
-from omnipose.gui import _volume3d as v3
+# the synthetic bundle is built by omnipose's 3D engine (optional here)
+v3 = pytest.importorskip("omnipose.gui._volume3d")
 
-HTML = "/Volumes/DataDrive/ocdkit/src/ocdkit/viewer/web/volume.html"
+HTML = str(Path(__file__).resolve().parents[1] / "src" / "ocdkit" / "viewer" / "web" / "volume.html")
 
 _CANVAS_SUM = """() => { const c=document.getElementById('stage'); const x=c.getContext('2d');
   const d=x.getImageData(0,0,c.width,c.height).data; let s=0;
