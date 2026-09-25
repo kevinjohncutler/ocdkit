@@ -72,3 +72,10 @@ Real viewer, 5I (141x348x325, 316 labels), `outputs/repro/volume_port_e2e`:
 3D mounts in 0.16 s; volume fetch 29 ms (binary float16) vs 203 ms (old JSON
 route + decode) in the same session; EA/MIP/mean, hidden labels and a 3D erase
 (label bricks rebuilt in place) all render with no errors.
+
+## Correction: transport speedup in the real app
+
+The transport suite encoded the stacks' float64 source, but the viewer session
+stores every volume as uint8 (`_apply_image`), so the old JSON route never
+shipped float64 in practice. The 20-28x figure is for float64 sources; in the
+real app the measured gain is ~7x (5I: 203 ms -> 29 ms, `volume_port_e2e`).

@@ -355,7 +355,7 @@ def test_volume_raw_carries_ncolor_groups(tmp_path):
     body, headers = SESSION_MANAGER.encode_volume_raw(state)
     _, mask = _decode_raw(body, headers)
     np.testing.assert_array_equal(mask, SESSION_MANAGER.ensure_ncolor(state))
-    assert set(np.unique(mask)) - {0}, "labelled voxels carry a nonzero group"
+    assert set(np.unique(mask)) - {0}, "labeled voxels carry a nonzero group"
 
 
 def test_volume_raw_none_for_2d(tmp_path):

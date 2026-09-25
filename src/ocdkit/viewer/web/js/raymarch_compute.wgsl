@@ -108,7 +108,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   let span = u.boxMax.xyz - u.boxMin.xyz;
   let lightDir = select(normalize(vec3<f32>(0.4, 0.7, 0.6)), -rd, headlight > 0.5);
 
-  // ── labels first: the first labelled voxel along the ray ──
+  // ── labels first: the first labeled voxel along the ray ──
   var labPC = vec3<f32>(0.0); var labA = 0.0;
   if (SHOW_LAB) {
     let res = vec3<f32>(u.dims.xyz);

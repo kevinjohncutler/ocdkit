@@ -846,9 +846,9 @@ class SessionManager:
         if tnear > tfar:
             return None
         # Amanatides-Woo voxel DDA, the same traversal (entry point, tie-breaking,
-        # first labelled voxel) as raymarch_compute.wgsl, so the picked cell is the
+        # first labeled voxel) as raymarch_compute.wgsl, so the picked cell is the
         # one drawn under the cursor. A fixed-step march can skip a voxel corner the
-        # DDA enters (or vice versa) and pick a neighbouring cell.
+        # DDA enters (or vice versa) and pick a neighboring cell.
         res = [float(NX), float(NY), float(NZ)]
         dv, p0, vox, stp, tdel, tmax = [0.0] * 3, [0.0] * 3, [0] * 3, [0] * 3, [0.0] * 3, [0.0] * 3
         for k in range(3):

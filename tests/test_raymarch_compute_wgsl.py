@@ -6,7 +6,7 @@ empty-space skipping over a brick grid. These tests pin it against:
   * numpy, exactly, for MIP and mean on an axis-aligned orthographic view;
   * the unoptimized fragment twin raymarch.wgsl at oblique views, in every mode
     and layer combination (the only allowed differences are rays grazing a voxel
-    edge, where the brick jump and the DDA can round to different neighbours);
+    edge, where the brick jump and the DDA can round to different neighbors);
   * the analytic answer for emission-absorption through a constant cube.
 """
 import math

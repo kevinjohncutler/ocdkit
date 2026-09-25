@@ -88,7 +88,7 @@ def test_fill_label_identity_merge_and_undo(tmp_path):
 
 def _first_label_fine(mv, ro, rd, box_min, box_max, step=1e-3):
     """Reference: sample the ray every `step` voxels and return the first
-    labelled voxel (z, y, x). Much finer than any voxel, so only slivers thinner
+    labeled voxel (z, y, x). Much finer than any voxel, so only slivers thinner
     than `step` can be missed."""
     NZ, NY, NX = mv.shape
     dims = np.array([NX, NY, NZ], float)
@@ -118,7 +118,7 @@ def test_pick_ray_enters_a_grazed_voxel_corner(tmp_path):
     state.current_mask_volume = mv
     state.current_ncolor_volume = None
     state.label_group = None
-    # world = voxel - 10 (20^3 volume in a centred 20-unit box); the ray runs along
+    # world = voxel - 10 (20^3 volume in a centered 20-unit box); the ray runs along
     # x + y = 11.98 in voxel units at z = 5.5, clipping voxel (x5, y5)'s corner
     ro = [0.98 - 10.0, 11.0 - 10.0, 5.5 - 10.0]
     rd = [1.0, -1.0, 0.0]
@@ -127,7 +127,7 @@ def test_pick_ray_enters_a_grazed_voxel_corner(tmp_path):
 
 
 def test_pick_ray_matches_fine_sampling_on_random_rays(tmp_path):
-    """The picked voxel is the first labelled voxel along the true ray."""
+    """The picked voxel is the first labeled voxel along the true ray."""
     state = _session(tmp_path)
     rng = np.random.default_rng(1)
     mv = (rng.random((20, 20, 20)) < 0.03).astype(np.uint8) * rng.integers(1, 200, (20, 20, 20)).astype(np.uint8)
