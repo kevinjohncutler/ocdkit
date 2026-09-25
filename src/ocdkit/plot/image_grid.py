@@ -332,7 +332,7 @@ def image_grid(
         mpl_fontcolor = (
             '#808080' if fontcolor in ('auto', 'currentColor') else fontcolor
         )
-        return image_grid_matplotlib(
+        result = image_grid_matplotlib(
             images,
             plot_labels=labels,
             figsize=figsize if figsize is not None else ncol,
@@ -340,6 +340,26 @@ def image_grid(
             dpi=dpi if dpi is not None else 300,
             **mpl_kwargs,
         )
+        # ``image_grid_matplotlib`` builds a bare ``matplotlib.figure.Figure``
+        # (Agg canvas, not pyplot-managed), so it has no inline PNG formatter
+        # registered unless ``%matplotlib inline`` was run. VS Code notebooks
+        # (and nbconvert) don't register that formatter, so both implicit
+        # last-expression display and ``display(fig)`` fall back to a bare
+        # ``text/plain`` repr and nothing renders. Rasterize to PNG ourselves
+        # and display that, so it renders in any kernel without the magic. In
+        # scripts, return the figure so callers can save/inspect it.
+        # ``return_axes`` means the caller wants the (fig, axes, pos) tuple
+        # back — never auto-display that.
+        import sys
+        if not mpl_kwargs.get('return_axes') and 'ipykernel' in sys.modules:
+            import io
+            from IPython.display import display, Image
+            buf = io.BytesIO()
+            result.savefig(buf, format='png', dpi=result.get_dpi(),
+                           facecolor=result.get_facecolor(), edgecolor='none')
+            display(Image(data=buf.getvalue()))
+            return None
+        return result
 
     if backend != 'svg':
         raise ValueError(f"backend must be 'svg' or 'matplotlib', got {backend!r}")
