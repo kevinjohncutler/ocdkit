@@ -52,6 +52,58 @@
     return ["r32uint", Uint32Array, 4];
   }
 
+  // half-float bits -> float, as a 64K lookup table (built on first use)
+  let _HALF = null;
+  function halfTable() {
+    if (_HALF) return _HALF;
+    _HALF = new Float32Array(65536);
+    if (typeof Float16Array !== "undefined") {
+      const u = new Uint16Array(65536); for (let i = 0; i < 65536; i++) u[i] = i;
+      _HALF.set(Float32Array.from(new Float16Array(u.buffer)));
+    } else {
+      for (let i = 0; i < 65536; i++) {
+        const s = i & 0x8000 ? -1 : 1, e = (i >> 10) & 0x1f, m = i & 0x3ff;
+        _HALF[i] = e === 0 ? s * m * 2 ** -24 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * 2 ** (e - 15);
+      }
+    }
+    return _HALF;
+  }
+
+  // ── empty-space-skipping brick grids (raymarch_compute.wgsl bindings 5/6) ──
+  // Brick edge B voxels; grid dims ceil(N/B). Values are Z,Y,X-ordered volumes.
+  const BRICK = 16;
+  function brickDims(NX, NY, NZ, B) { return [Math.ceil(NX / B), Math.ceil(NY / B), Math.ceil(NZ / B)]; }
+  /** Max value per brick. `vals` is a Float32Array, or Uint16Array of
+   *  half-float bits when `half` is true. Returns Float32Array (bx*by*bz). */
+  function brickMax(vals, NX, NY, NZ, B, half) {
+    const [bx, by, bz] = brickDims(NX, NY, NZ, B);
+    const out = new Float32Array(bx * by * bz), H = half ? halfTable() : null;
+    for (let z = 0; z < NZ; z++) {
+      const zb = ((z / B) | 0) * by;
+      for (let y = 0; y < NY; y++) {
+        const rb = (zb + ((y / B) | 0)) * bx, row = (z * NY + y) * NX;
+        for (let x = 0; x < NX; x++) {
+          const v = H ? H[vals[row + x]] : vals[row + x], i = rb + ((x / B) | 0);
+          if (v > out[i]) out[i] = v;
+        }
+      }
+    }
+    return out;
+  }
+  /** 1 per brick holding any nonzero label, else 0. Returns Uint8Array. */
+  function brickAny(lab, NX, NY, NZ, B) {
+    const [bx, by, bz] = brickDims(NX, NY, NZ, B);
+    const out = new Uint8Array(bx * by * bz);
+    for (let z = 0; z < NZ; z++) {
+      const zb = ((z / B) | 0) * by;
+      for (let y = 0; y < NY; y++) {
+        const rb = (zb + ((y / B) | 0)) * bx, row = (z * NY + y) * NX;
+        for (let x = 0; x < NX; x++) if (lab[row + x]) out[rb + ((x / B) | 0)] = 1;
+      }
+    }
+    return out;
+  }
+
   class VolumeGPU {
     static async create(canvas, decoded, opts = {}) {
       if (typeof navigator === "undefined" || !navigator.gpu) return null;
@@ -159,7 +211,7 @@
           fetch((opts.computeUrl || "js/raymarch_compute.wgsl") + _v).then((r) => r.text()),
           fetch((opts.blitUrl || "js/blit.wgsl") + _v).then((r) => r.text()),
         ]);
-        const cmod = device.createShaderModule({ code: ccode });
+        self.computeModule = device.createShaderModule({ code: ccode });
         self.computeBgl = device.createBindGroupLayout({
           entries: [
             { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
@@ -167,12 +219,16 @@
             { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "uint", viewDimension: "3d" } },
             { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d" } },
             { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: "write-only", format: "rgba16float", viewDimension: "2d" } },
+            { binding: 5, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "unfilterable-float", viewDimension: "3d" } },
+            { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "uint", viewDimension: "3d" } },
           ],
         });
-        self.computePipeline = device.createComputePipeline({
-          layout: device.createPipelineLayout({ bindGroupLayouts: [self.computeBgl] }),
-          compute: { module: cmod, entryPoint: "cs" },
-        });
+        self.computeLayout = device.createPipelineLayout({ bindGroupLayouts: [self.computeBgl] });
+        // The render state (mode, which layers, shading) is baked into the shader as
+        // pipeline-override constants, so there is one pipeline per state. Build the
+        // default state now (fails loudly here if the shader doesn't compile).
+        self._computePipes = {};
+        self.computePipeline = self._computePipelineFor(opts.mode != null ? opts.mode : 1, 1, 1, 1);
         const bmod = device.createShaderModule({ code: bcode });
         self.blitBgl = device.createBindGroupLayout({
           entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } }],
@@ -188,6 +244,7 @@
       self._initState(decoded, opts);
       self._uploadTextures(decoded);
       self._makeBindGroup();
+      self._prewarmComputePipelines();
       if (typeof window !== "undefined" && window.OverlayLayer) {
         try { self.overlays = await window.OverlayLayer.create(device, self.format, decoded, opts); }
         catch (e) { self.overlays = null; }
@@ -213,7 +270,7 @@
       if (this._renderMode === "compute" && !this.computePipeline) this._renderMode = "raymarch";
       this.density = opts.density != null ? opts.density : 1.0;
       this.labelOpacity = 1.0;                             // opaque labels by default
-      this.showImage = decoded.image ? 1.0 : 0.0;          // grayscale intensity layer
+      this.showImage = (decoded.image || decoded.imageF16) ? 1.0 : 0.0;   // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
       this.shadeLabels = 1.0;                              // diffuse-light the label surfaces
       this.gamma = opts.gamma != null ? opts.gamma : 1.0;  // intensity gamma (matches the 2D slider)
@@ -331,24 +388,47 @@
       // of r32float). Sampled NEAREST (textureLoad) via a per-voxel DDA — never
       // interpolated.
       const N = NX * NY * NZ;
-      const f = new Float32Array(N);
-      if (decoded.image) {
-        const a = decoded.image.data;
-        let lo = Infinity, hi = -Infinity;
-        for (let i = 0; i < a.length; i++) { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
-        const sc = hi > lo ? 1 / (hi - lo) : 0;
-        for (let i = 0; i < N; i++) f[i] = (a[i] - lo) * sc;
-      } else if (decoded.mask) {
-        const a = decoded.mask.data;            // no intensity: show label occupancy
-        for (let i = 0; i < N; i++) f[i] = a[i] > 0 ? 1 : 0;
+      let f16;
+      if (decoded.imageF16) {
+        // already normalized to [0,1] and half-float on the server (GET
+        // /api/volume_raw): upload the bytes as-is, no per-voxel work here
+        f16 = decoded.imageF16.data;
+      } else {
+        const f = new Float32Array(N);
+        if (decoded.image) {
+          const a = decoded.image.data;
+          let lo = Infinity, hi = -Infinity;
+          for (let i = 0; i < a.length; i++) { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
+          const sc = hi > lo ? 1 / (hi - lo) : 0;
+          for (let i = 0; i < N; i++) f[i] = (a[i] - lo) * sc;
+        } else if (decoded.mask) {
+          const a = decoded.mask.data;            // no intensity: show label occupancy
+          for (let i = 0; i < N; i++) f[i] = a[i] > 0 ? 1 : 0;
+        }
+        f16 = _toF16(f);
       }
+      this._volF16 = f16;            // kept for the lazily-built cube renderer
+      this._cubesBuilt = false;
       this.volTex = device.createTexture({
         size: [NX, NY, NZ], dimension: "3d", format: "r16float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      device.queue.writeTexture({ texture: this.volTex }, _toF16(f).buffer,
+      device.queue.writeTexture({ texture: this.volTex }, f16.buffer,
         { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
-      this._buildCubeInstances(f);   // object-order prototype instance buffer
+      if (this._renderMode === "cubes" || this._renderMode === "minimal") this._ensureCubes();
+
+      // brick grids for the compute march's empty-space skipping
+      const bd = brickDims(NX, NY, NZ, BRICK);
+      this.brickImgTex = device.createTexture({
+        size: bd, dimension: "3d", format: "r16float",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(brickMax(f16, NX, NY, NZ, BRICK, true)).buffer,
+        { bytesPerRow: bd[0] * 2, rowsPerImage: bd[1] }, bd);
+      this.brickLabTex = device.createTexture({
+        size: bd, dimension: "3d", format: "r8uint",
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
 
       // labels -> uint, format by max label
       let maxLabel = 0;
@@ -363,6 +443,52 @@
       this._labBpe = bpe; this._labCtor = Ctor;       // for in-place updateLabels
       device.queue.writeTexture({ texture: this.labTex }, lab.buffer,
         { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
+      this._writeLabelBricks(lab);
+    }
+
+    _writeLabelBricks(lab) {
+      const { NX, NY, NZ } = this, bd = brickDims(NX, NY, NZ, BRICK);
+      this.device.queue.writeTexture({ texture: this.brickLabTex }, brickAny(lab, NX, NY, NZ, BRICK),
+        { bytesPerRow: bd[0], rowsPerImage: bd[1] }, bd);
+    }
+
+    /** Pipeline for one render state (override constants), built on first use. */
+    _computePipelineFor(mode, showImg, showLab, shade) {
+      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}`;
+      if (!this._computePipes[key]) {
+        this._computePipes[key] = this.device.createComputePipeline({
+          layout: this.computeLayout,
+          compute: { module: this.computeModule, entryPoint: "cs",
+                     constants: { MODE: mode, SHOW_IMG: showImg ? 1 : 0, SHOW_LAB: showLab ? 1 : 0,
+                                  SHADE_LAB: shade ? 1 : 0, BRICK } },
+        });
+      }
+      return this._computePipes[key];
+    }
+
+    /** Compile every other render state in the background so switching mode or
+     *  layers never stalls on a shader compile. */
+    _prewarmComputePipelines() {
+      if (!this.computeModule || !this.device.createComputePipelineAsync) return;
+      for (const mode of [0, 1, 2]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
+        const key = `${mode}|${img}|${lab}|${sh}`;
+        if (this._computePipes[key]) continue;
+        this.device.createComputePipelineAsync({
+          layout: this.computeLayout,
+          compute: { module: this.computeModule, entryPoint: "cs",
+                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK } },
+        }).then((p) => { if (!this._computePipes[key]) this._computePipes[key] = p; }).catch(() => {});
+      }
+    }
+
+    /** Build the object-order cube renderer's instance buffer on first use (it is
+     *  an A/B experiment, so a normal load doesn't pay for it). */
+    _ensureCubes() {
+      if (this._cubesBuilt || !this.cubePipeline || !this._volF16) return;
+      const H = halfTable(), h = this._volF16, f = new Float32Array(h.length);
+      for (let i = 0; i < h.length; i++) f[i] = H[h[i]];
+      this._buildCubeInstances(f);
+      this._cubesBuilt = true;
     }
 
     _makeBindGroup() {
@@ -498,6 +624,7 @@
       }
       this.device.queue.writeTexture({ texture: this.labTex }, buf.buffer,
         { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
+      this._writeLabelBricks(buf);
       this.render();
     }
 
@@ -726,7 +853,7 @@
       if (useCompute) {
         // Image-order march as a compute dispatch -> rgba16float storage texture.
         const cp = enc.beginComputePass();
-        cp.setPipeline(this.computePipeline);
+        cp.setPipeline(this._computePipelineFor(this.mode, this.showImage > 0.5, this.showLabels > 0.5, this.shadeLabels > 0.5));
         cp.setBindGroup(0, this.computeBindGroup);
         cp.dispatchWorkgroups(Math.ceil(w / 8), Math.ceil(h / 8), 1);
         cp.end();
@@ -778,6 +905,8 @@
           { binding: 2, resource: this.labTex.createView() },
           { binding: 3, resource: this.lutTex.createView() },
           { binding: 4, resource: view },
+          { binding: 5, resource: this.brickImgTex.createView() },
+          { binding: 6, resource: this.brickLabTex.createView() },
         ],
       });
       this.blitBindGroup = this.device.createBindGroup({
@@ -791,6 +920,7 @@
     setRenderMode(mode) {
       const ok = { raymarch: 1, compute: 1, cubes: 1, minimal: 1 };
       this._renderMode = ok[mode] ? mode : "raymarch";
+      if (this._renderMode === "cubes" || this._renderMode === "minimal") this._ensureCubes();
       this._requestRender(); return this._renderMode;
     }
     toggleRenderMode() {   // cycle raymarch -> compute -> cubes -> minimal -> raymarch
@@ -829,5 +959,5 @@
     return device.createBuffer({ size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
 
-  return { VolumeGPU };
+  return { VolumeGPU, brickMax, brickAny, brickDims, BRICK };
 });

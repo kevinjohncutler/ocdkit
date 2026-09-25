@@ -141,7 +141,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       if (mode == 0) {                                        // additive (emission-absorption)
         let sg = pow(max(s, 0.0), gamma);                     // gamma per voxel
         let segLen = max(tExit - tPrev, 0.0);                 // path length through this voxel
-        let a = clamp(sg * density * segLen, 0.0, 1.0);
+        let a = 1.0 - exp(-sg * density * segLen);            // exact for any segment chopping
         let om = 1.0 - imgAcc.w;
         imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
         if (imgAcc.w >= 0.995) { break; }                     // early ray termination

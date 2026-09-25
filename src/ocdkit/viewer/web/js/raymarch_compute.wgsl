@@ -1,20 +1,34 @@
-// Compute-shader port of raymarch.wgsl (A/B via setRenderMode("compute")).
+// Compute-shader ray-march (the default 3D render path; raymarch.wgsl is the
+// fragment-shader twin, kept as the unoptimized reference).
 //
-// Identical volume logic (Amanatides-Woo nearest DDA, MIP/mean/additive, labels),
-// but dispatched as a compute grid (one thread per pixel) writing an rgba16float
-// storage texture, which a trivial blit pass then copies to the canvas. This is
-// the modern object-code path (fragment rasterisation of a fullscreen triangle is
-// replaced by a direct compute dispatch); it also becomes the basis for future
-// compute-only optimisations (empty-space skipping, temporal accumulation).
+// Amanatides-Woo nearest-voxel DDA, MIP / mean / emission-absorption, labels,
+// dispatched one thread per pixel into an rgba16float storage texture that a
+// trivial blit pass copies to the canvas. Three optimizations over the fragment
+// path, each benchmarked never-slower (outputs/repro/bench3d/SUMMARY.md):
 //
-// The shade() body is a verbatim port of raymarch.wgsl's fs() so output matches.
+//  1. Pipeline-override constants for the render state (MODE, SHOW_IMG,
+//     SHOW_LAB, SHADE_LAB): the host builds one pipeline per state, so the
+//     branches for other modes compile out of the ray loop.
+//  2. Labels are marched FIRST; when an opaque label is hit, the image march is
+//     skipped (its contribution is multiplied by 1 - labA = 0).
+//  3. Empty-space skipping over a coarse BRICK^3 grid: label-free bricks are
+//     jumped in every mode; image bricks only in MIP, when the brick's max can't
+//     raise the running max. (EA/mean never skip image bricks: real backgrounds
+//     are not zero and mean counts every voxel.)
+//
+// A brick jump recomputes tMax from the ray origin, while the plain DDA
+// accumulates tMax += tDelta, so a ray grazing a voxel edge can enter the other
+// neighbor (~0.001% of pixels, silhouette edges only).
+//
+// Emission-absorption alpha is 1 - exp(-tau), which composites exactly however
+// voxel boundaries chop the ray (the old clamp(tau) drifted with view angle).
 
 struct U {
   invViewProj : mat4x4<f32>,
   camPos      : vec4<f32>,
   boxMin      : vec4<f32>,
   boxMax      : vec4<f32>,
-  dims        : vec4<f32>,   // NX, NY, NZ, mode
+  dims        : vec4<f32>,   // NX, NY, NZ, mode (mode unused here: see MODE)
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
@@ -24,6 +38,14 @@ struct U {
 @group(0) @binding(2) var labTex : texture_3d<u32>;
 @group(0) @binding(3) var lutTex : texture_2d<f32>;
 @group(0) @binding(4) var outTex : texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var brickImg : texture_3d<f32>;   // max normalized intensity per brick
+@group(0) @binding(6) var brickLab : texture_3d<u32>;   // 1 if the brick holds any label voxel
+
+override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean
+override SHOW_IMG : bool = true;
+override SHOW_LAB : bool = true;
+override SHADE_LAB : bool = true;
+override BRICK : f32 = 16.0;         // brick edge in voxels (must match the host's brick grid)
 
 fn lutColor(v : f32) -> vec3<f32> {
   let f = clamp(v, 0.0, 1.0) * 255.0;
@@ -40,6 +62,20 @@ fn labelColor(lab : u32) -> vec3<f32> {
   return vec3<f32>(sin(a) * 0.5 + 0.5,
                    sin(a + 2.09439510239) * 0.5 + 0.5,
                    sin(a + 4.18879020479) * 0.5 + 0.5);
+}
+
+// Where the ray leaves the current brick: the first voxel past it (xyz) and the
+// ray parameter of that exit (w). Same p0/dv as the DDA, so tMax stays on the ray.
+fn brickExit(p0 : vec3<f32>, dv : vec3<f32>, stp : vec3<f32>, vox : vec3<f32>) -> vec4<f32> {
+  let lo = floor(vox / BRICK) * BRICK;
+  let bnd = lo + max(stp, vec3<f32>(0.0)) * BRICK;
+  let tb3 = (bnd - p0) / dv;
+  let tb = min(tb3.x, min(tb3.y, tb3.z));
+  var nv = clamp(floor(p0 + dv * tb), lo, lo + vec3<f32>(BRICK - 1.0));
+  if (tb3.x <= tb3.y && tb3.x <= tb3.z) { nv.x = select(lo.x - 1.0, lo.x + BRICK, stp.x > 0.0); }
+  else if (tb3.y <= tb3.z) { nv.y = select(lo.y - 1.0, lo.y + BRICK, stp.y > 0.0); }
+  else { nv.z = select(lo.z - 1.0, lo.z + BRICK, stp.z > 0.0); }
+  return vec4<f32>(nv, tb);
 }
 
 // uv: (0,0) = top-left, matching raymarch.wgsl's vs mapping.
@@ -61,13 +97,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   if (tnear > tfar) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }
 
   let dims = vec3<i32>(i32(u.dims.x), i32(u.dims.y), i32(u.dims.z));
-  let mode = i32(u.dims.w);
   let density = u.params.y;
   let labelOpacity = u.params.z;
-  let showLabels = u.params.w;
   let iscale = u.img.x;
-  let showImage = u.img.y;
-  let shadeLabels = u.img.z;
   let gamma = u.img.w;
   let ambient = u.light.x;
   let specular = u.light.y;
@@ -76,65 +108,39 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   let span = u.boxMax.xyz - u.boxMin.xyz;
   let lightDir = select(normalize(vec3<f32>(0.4, 0.7, 0.6)), -rd, headlight > 0.5);
 
-  var imgPC = vec3<f32>(0.0); var imgA = 0.0;
-  if (showImage > 0.5) {
-    let res = vec3<f32>(u.dims.xyz);
-    let dv0 = rd / span * res;
-    let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
-    let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;
-    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
-    let stp = sign(dv);
-    let tDelta = abs(1.0 / dv);
-    var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
-    var tPrev = 0.0;
-    var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
-    let maxIter = dims.x + dims.y + dims.z + 3;
-    for (var g = 0; g < maxIter; g = g + 1) {
-      let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
-      let s = textureLoad(volTex, ci, 0).r * iscale;
-      let tExit = min(tMax.x, min(tMax.y, tMax.z));
-      if (mode == 0) {
-        let sg = pow(max(s, 0.0), gamma);
-        let segLen = max(tExit - tPrev, 0.0);
-        let a = clamp(sg * density * segLen, 0.0, 1.0);
-        let om = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
-        if (imgAcc.w >= 0.995) { break; }
-      } else {
-        imgMip = max(imgMip, s);
-        imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
-      }
-      tPrev = tExit;
-      if (tMax.x < tMax.y && tMax.x < tMax.z) {
-        vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x;
-        if (vox.x < 0.0 || vox.x >= res.x) { break; }
-      } else if (tMax.y < tMax.z) {
-        vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y;
-        if (vox.y < 0.0 || vox.y >= res.y) { break; }
-      } else {
-        vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z;
-        if (vox.z < 0.0 || vox.z >= res.z) { break; }
-      }
-    }
-    if (mode == 1) { let v = pow(clamp(imgMip, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
-    else if (mode == 2) { let m = pow(clamp(imgSum / max(imgCnt, 1.0), 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
-    else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
-  }
-
+  // ── labels first: the first labelled voxel along the ray ──
   var labPC = vec3<f32>(0.0); var labA = 0.0;
-  if (showLabels > 0.5) {
+  if (SHOW_LAB) {
     let res = vec3<f32>(u.dims.xyz);
     let dv0 = rd / span * res;
     let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
     let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;
-    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
     let stp = sign(dv);
     let tDelta = abs(1.0 / dv);
+    let maxIter = dims.x + dims.y + dims.z + 3;
+    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
     var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
     var face = -rd;
     var found = 0u;
-    let maxIter = dims.x + dims.y + dims.z + 3;
+    var curB = vec3<f32>(-1.0);
     for (var g = 0; g < maxIter; g = g + 1) {
+      let bv = floor(vox / BRICK);
+      if (any(bv != curB)) {
+        curB = bv;
+        if (textureLoad(brickLab, vec3<i32>(bv), 0).r == 0u) {
+          let j = brickExit(p0, dv, stp, vox);
+          // the DDA sets `face` only on its own steps, so a hit right after a
+          // jump takes the face of the axis the jump exited through
+          let lo = bv * BRICK;
+          if (j.x < lo.x || j.x > lo.x + BRICK - 1.0) { face = vec3<f32>(-stp.x, 0.0, 0.0); }
+          else if (j.y < lo.y || j.y > lo.y + BRICK - 1.0) { face = vec3<f32>(0.0, -stp.y, 0.0); }
+          else { face = vec3<f32>(0.0, 0.0, -stp.z); }
+          vox = j.xyz;
+          tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
+          if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
+          continue;
+        }
+      }
       let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
       let lab = textureLoad(labTex, ci, 0).r;
       if (lab > 0u) { found = lab; break; }
@@ -151,7 +157,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     }
     if (found > 0u) {
       var lc = labelColor(found);
-      if (shadeLabels > 0.5) {
+      if (SHADE_LAB) {
         let diff = max(dot(face, lightDir), 0.0);
         lc = lc * (ambient + (1.0 - ambient) * diff);
         if (specular > 0.0) {
@@ -162,6 +168,68 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       labA = clamp(labelOpacity, 0.0, 1.0);
       labPC = lc * labA;
     }
+  }
+
+  // ── image: skipped entirely under an opaque label ──
+  var imgPC = vec3<f32>(0.0); var imgA = 0.0;
+  if (SHOW_IMG && labA < 1.0) {
+    let res = vec3<f32>(u.dims.xyz);
+    let dv0 = rd / span * res;
+    let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
+    let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;
+    let stp = sign(dv);
+    let tDelta = abs(1.0 / dv);
+    let maxIter = dims.x + dims.y + dims.z + 3;
+    var vox = clamp(floor(p0), vec3<f32>(0.0), res - vec3<f32>(1.0));
+    var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
+    var tPrev = 0.0;
+    var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
+    var curB = vec3<f32>(-1.0);
+    for (var g = 0; g < maxIter; g = g + 1) {
+      // Keep this check FLAT (bv computed every step, one combined condition).
+      // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
+      // image-only MIP on Apple GPUs, with identical output.
+      let bv = floor(vox / BRICK);
+      if (MODE == 1 && any(bv != curB)) {
+        curB = bv;
+        if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <= imgMip) {   // can't raise the max
+          let j = brickExit(p0, dv, stp, vox);
+          vox = j.xyz; tPrev = j.w;
+          tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
+          if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
+          continue;
+        }
+      }
+      let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
+      let s = textureLoad(volTex, ci, 0).r * iscale;
+      let tExit = min(tMax.x, min(tMax.y, tMax.z));
+      if (MODE == 0) {
+        let sg = pow(max(s, 0.0), gamma);
+        let segLen = max(tExit - tPrev, 0.0);
+        let a = 1.0 - exp(-sg * density * segLen);
+        let om = 1.0 - imgAcc.w;
+        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
+        if (imgAcc.w >= 0.995) { break; }
+      } else if (MODE == 1) {
+        imgMip = max(imgMip, s);
+      } else {
+        imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
+      }
+      tPrev = tExit;
+      if (tMax.x < tMax.y && tMax.x < tMax.z) {
+        vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x;
+        if (vox.x < 0.0 || vox.x >= res.x) { break; }
+      } else if (tMax.y < tMax.z) {
+        vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y;
+        if (vox.y < 0.0 || vox.y >= res.y) { break; }
+      } else {
+        vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z;
+        if (vox.z < 0.0 || vox.z >= res.z) { break; }
+      }
+    }
+    if (MODE == 1) { let v = pow(clamp(imgMip, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
+    else if (MODE == 2) { let m = pow(clamp(imgSum / max(imgCnt, 1.0), 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
+    else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 
   return vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA));

@@ -1,0 +1,228 @@
+"""Headless validation of the shipped raymarch_compute.wgsl (the default 3D
+render path) via wgpu-native.
+
+The compute march adds pipeline-override render states, a label-first march and
+empty-space skipping over a brick grid. These tests pin it against:
+  * numpy, exactly, for MIP and mean on an axis-aligned orthographic view;
+  * the unoptimized fragment twin raymarch.wgsl at oblique views, in every mode
+    and layer combination (the only allowed differences are rays grazing a voxel
+    edge, where the brick jump and the DDA can round to different neighbours);
+  * the analytic answer for emission-absorption through a constant cube.
+"""
+import math
+import os
+
+import numpy as np
+import pytest
+
+wgpu = pytest.importorskip("wgpu")
+import wgpu.utils  # noqa: E402
+
+JS = os.path.join(os.path.dirname(__file__), "..", "src", "ocdkit", "viewer", "web", "js")
+COMPUTE = os.path.join(JS, "raymarch_compute.wgsl")
+FRAGMENT = os.path.join(JS, "raymarch.wgsl")
+BRICK = 16
+BIG = 1000.0
+
+
+@pytest.fixture(scope="module")
+def dev():
+    return wgpu.utils.get_default_device()
+
+
+def _read(p):
+    with open(p) as fh:
+        return fh.read()
+
+
+def _tex(dev, fmt, size, data, bpr, dim="3d"):
+    t = dev.create_texture(size=size, format=fmt, dimension=dim,
+                           usage=wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST)
+    dev.queue.write_texture({"texture": t}, data, {"bytes_per_row": bpr, "rows_per_image": size[1]}, size)
+    return t
+
+
+def _bricks(vol16, lab):
+    """numpy mirror of volume3d-gpu.js brickMax / brickAny."""
+    NZ, NY, NX = vol16.shape
+    pz, py, px = (-NZ) % BRICK, (-NY) % BRICK, (-NX) % BRICK
+    v = np.pad(vol16.astype(np.float32), ((0, pz), (0, py), (0, px)))
+    m = np.pad(lab > 0, ((0, pz), (0, py), (0, px)))
+    shp = (v.shape[0] // BRICK, BRICK, v.shape[1] // BRICK, BRICK, v.shape[2] // BRICK, BRICK)
+    return (v.reshape(shp).max(axis=(1, 3, 5)).astype(np.float16),
+            m.reshape(shp).any(axis=(1, 3, 5)).astype(np.uint8))
+
+
+def _ortho(yaw, pitch, half):
+    """Column-major NDC -> world matrix for an orthographic view along (yaw, pitch)."""
+    d = np.array([math.cos(pitch) * math.sin(yaw), math.sin(pitch), math.cos(pitch) * math.cos(yaw)])
+    right = np.cross([0, 1, 0], d)
+    right /= np.linalg.norm(right)
+    up = np.cross(d, right)
+    inv = np.zeros(16, np.float32)
+    inv[0:3], inv[4:7], inv[8:11] = right * half, up * half, d * 2 * BIG
+    inv[12:15], inv[15] = -d * BIG, 1.0
+    return inv, d, right, up
+
+
+def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1):
+    NX, NY, NZ = dims
+    u = np.zeros(44, np.float32)
+    u[0:16] = inv
+    u[20:24] = [-NX / 2, -NY / 2, -NZ / 2, 0]
+    u[24:28] = [NX / 2, NY / 2, NZ / 2, 0]
+    u[28:32] = [NX, NY, NZ, mode]
+    u[32:36] = [2 * max(dims), density, opacity, show_lab]
+    u[36:40] = [1.0, show_img, 1.0, 1.0]
+    u[40:44] = [0.4, 0.0, 24.0, 1.0]
+    return u
+
+
+class Scene:
+    def __init__(self, dev, vol16, lab):
+        self.dev = dev
+        NZ, NY, NX = vol16.shape
+        self.dims = (NX, NY, NZ)
+        self.vol = _tex(dev, "r16float", (NX, NY, NZ), vol16.tobytes(), NX * 2)
+        self.lab = _tex(dev, "r8uint", (NX, NY, NZ), lab.astype(np.uint8).tobytes(), NX)
+        bi, bl = _bricks(vol16, lab)
+        bz, by, bx = bi.shape
+        self.bimg = _tex(dev, "r16float", (bx, by, bz), bi.tobytes(), bx * 2)
+        self.blab = _tex(dev, "r8uint", (bx, by, bz), bl.tobytes(), bx)
+        ramp = np.linspace(0, 1, 256, dtype=np.float32)
+        self.lut = _tex(dev, "rgba16float", (256, 1, 1),
+                        np.stack([ramp, ramp, ramp, np.ones(256, np.float32)], 1).astype(np.float16).tobytes(),
+                        256 * 8, dim="2d")
+        self.cmod = dev.create_shader_module(code=_read(COMPUTE))
+        fmod = dev.create_shader_module(code=_read(FRAGMENT))
+        self.frag = dev.create_render_pipeline(
+            layout="auto", vertex={"module": fmod, "entry_point": "vs"},
+            fragment={"module": fmod, "entry_point": "fs", "targets": [{"format": "rgba16float"}]},
+            primitive={"topology": "triangle-list"})
+
+    def _readback(self, enc, tex, W, H):
+        rb = self.dev.create_buffer(size=W * H * 8, usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
+        enc.copy_texture_to_buffer({"texture": tex}, {"buffer": rb, "bytes_per_row": W * 8}, (W, H, 1))
+        self.dev.queue.submit([enc.finish()])
+        rb.map_sync(mode=wgpu.MapMode.READ)
+        out = np.frombuffer(rb.read_mapped(), np.float16).reshape(H, W, 4).astype(np.float32)
+        rb.unmap()
+        return out
+
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1):
+        return self.dev.create_compute_pipeline(layout="auto", compute={
+            "module": self.cmod, "entry_point": "cs",
+            "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
+                          "BRICK": float(BRICK)}})
+
+    def compute(self, u, mode, show_img, show_lab, W, H):
+        p = self.compute_pipeline(mode, show_img, show_lab)
+        out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
+                                      usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
+        ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
+        res = [ub, self.vol, self.lab, self.lut, out, self.bimg, self.blab]
+        bg = self.dev.create_bind_group(layout=p.get_bind_group_layout(0), entries=[
+            {"binding": i, "resource": {"buffer": r} if i == 0 else r.create_view()} for i, r in enumerate(res)])
+        enc = self.dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(p); cp.set_bind_group(0, bg); cp.dispatch_workgroups(-(-W // 8), -(-H // 8), 1); cp.end()
+        return self._readback(enc, out, W, H)
+
+    def fragment(self, u, W, H):
+        out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
+                                      usage=wgpu.TextureUsage.RENDER_ATTACHMENT | wgpu.TextureUsage.COPY_SRC)
+        ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
+        res = [ub, self.vol, self.lab, self.lut]
+        bg = self.dev.create_bind_group(layout=self.frag.get_bind_group_layout(0), entries=[
+            {"binding": i, "resource": {"buffer": r} if i == 0 else r.create_view()} for i, r in enumerate(res)])
+        enc = self.dev.create_command_encoder()
+        rp = enc.begin_render_pass(color_attachments=[{"view": out.create_view(), "load_op": "clear",
+                                                        "store_op": "store", "clear_value": (0, 0, 0, 0)}])
+        rp.set_pipeline(self.frag); rp.set_bind_group(0, bg); rp.draw(3); rp.end()
+        return self._readback(enc, out, W, H)
+
+
+def _sparse_scene(seed=0, shape=(40, 48, 56)):
+    """Sparse blobs over a noisy background (like real fluorescence) plus a few
+    label cells, so both the image and the label bricks really skip."""
+    rng = np.random.default_rng(seed)
+    NZ, NY, NX = shape
+    z, y, x = np.mgrid[0:NZ, 0:NY, 0:NX]
+    vol = rng.random(shape) * 0.15
+    lab = np.zeros(shape, np.uint8)
+    for k in range(6):
+        c = rng.uniform([6, 6, 6], [NZ - 6, NY - 6, NX - 6])
+        r2 = (z - c[0]) ** 2 + (y - c[1]) ** 2 + (x - c[2]) ** 2
+        vol = np.maximum(vol, rng.uniform(0.5, 1.0) * np.exp(-r2 / 12.0))
+        if k < 4:
+            lab[r2 < 9] = k + 1
+    return vol.astype(np.float16), lab
+
+
+def test_every_render_state_compiles(dev):
+    s = Scene(dev, *_sparse_scene())
+    for mode in (0, 1, 2):
+        for img in (0, 1):
+            for lab in (0, 1):
+                for sh in (0, 1):
+                    s.compute_pipeline(mode, img, lab, sh)
+
+
+def test_mip_and_mean_exact_axis_aligned(dev):
+    """Looking straight down z with one pixel per voxel column, MIP is the column
+    max and mean the column mean, even with image-brick skipping active."""
+    vol, lab = _sparse_scene()
+    NZ, NY, NX = vol.shape
+    # a square ortho view needs a square cross-section, and texture readback
+    # rows must be a multiple of 256 bytes (32 rgba16float pixels)
+    n = 32
+    vol, lab = vol[:, :n, :n], lab[:, :n, :n]
+    s = Scene(dev, np.ascontiguousarray(vol), np.ascontiguousarray(lab))
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    ref_img = vol.astype(np.float32)[:, ::-1, :]                 # row iy <-> voxel y = n-1-iy
+    for mode, ref in ((1, ref_img.max(axis=0)), (2, ref_img.mean(axis=0))):
+        out = s.compute(_uniform(inv, (n, n, NZ), mode, show_lab=0), mode, 1, 0, n, n)
+        np.testing.assert_allclose(out[..., 3], ref, atol=2e-3)
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+@pytest.mark.parametrize("layers", ["img", "imglab", "lab", "imglab50"])
+def test_compute_matches_fragment_reference(dev, mode, layers):
+    if layers == "lab" and mode != 1:
+        pytest.skip("mode is irrelevant without the image")
+    vol, lab = _sparse_scene(seed=3)
+    s = Scene(dev, vol, lab)
+    NZ, NY, NX = vol.shape
+    show_img, show_lab = (0 if layers == "lab" else 1), (0 if layers == "img" else 1)
+    opacity = 0.5 if layers == "imglab50" else 1.0
+    W = H = 160
+    for yaw, pitch in ((0.4, 0.3), (1.1, -0.5), (2.5, 0.9)):
+        inv, *_ = _ortho(yaw, pitch, max(NX, NY, NZ) * 0.8)
+        u = _uniform(inv, (NX, NY, NZ), mode, opacity=opacity, show_img=show_img, show_lab=show_lab)
+        a, b = s.compute(u, mode, show_img, show_lab, W, H), s.fragment(u, W, H)
+        diff = np.abs(a - b).max(axis=-1)
+        frac = float((diff > 1 / 255).mean())
+        assert frac < 0.005, f"yaw={yaw} pitch={pitch}: {frac:.4%} of pixels differ"
+
+
+def test_emission_absorption_matches_analytic(dev):
+    """Constant cube: alpha = 1 - exp(-s * density * chord) at any view angle (the
+    old clamp(tau) was off by up to 0.09 at oblique views)."""
+    N, W, s_val, density = 48, 128, 0.5, 0.5
+    vol = np.full((N, N, N), s_val, np.float16)
+    sc = Scene(dev, vol, np.zeros((N, N, N), np.uint8))
+    half = N * 0.95
+    for yaw, pitch in ((0.5236, 0.349), (0.785, 0.611)):
+        inv, d, right, up = _ortho(yaw, pitch, half)
+        out = sc.compute(_uniform(inv, (N, N, N), 0, density=density, show_lab=0), 0, 1, 0, W, W)
+        ys, xs = np.mgrid[0:W, 0:W]
+        ndx, ndy = (xs + 0.5) / W * 2 - 1, 1 - (ys + 0.5) / W * 2
+        ro = (ndx[..., None] * right + ndy[..., None] * up) * half - d * BIG
+        with np.errstate(divide="ignore"):
+            iv = 1.0 / np.where(d == 0, 1e-12, d)
+        t1, t2 = (-N / 2 - ro) * iv, (N / 2 - ro) * iv
+        chord = np.clip(np.maximum(t1, t2).min(-1) - np.minimum(t1, t2).max(-1), 0, None)
+        exact = 1 - np.exp(-s_val * density * chord)
+        inside = chord > 1.0
+        # 0.0055 = early ray termination at alpha 0.995, which is intended
+        assert np.abs(out[..., 3][inside] - exact[inside]).max() < 0.0055
