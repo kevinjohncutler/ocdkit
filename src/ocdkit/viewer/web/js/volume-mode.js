@@ -465,7 +465,9 @@
       if (vgpu) return vgpu;
       if (loading) return loading;
       loading = (async () => {
+        const t0 = performance.now();
         const decoded = await fetchVolumeRaw(cfg.sessionId);
+        const tData = performance.now();
         vgpu = await window.VolumeGPU.create(vcanvas, decoded, {
           shaderUrl: "/static/js/raymarch.wgsl",
           cubesUrl: "/static/js/cubes.wgsl",
@@ -489,6 +491,15 @@
         vgpu.setOverlay("axes", false);
         if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom
         window.__volumeGPU = vgpu;
+        // how long 3D took to appear, shown briefly in the status readout
+        vgpu.device.queue.onSubmittedWorkDone().then(() => {
+          const t = performance.now();
+          window.__volume3dLoadMs = { total: t - t0, data: tData - t0, gpu: t - tData };
+          fpsEl.textContent = `3D ready in ${Math.round(t - t0)} ms  (data ${Math.round(tData - t0)}, GPU ${Math.round(t - tData)})`;
+          fpsEl.style.opacity = "1";
+          if (fpsHideT) clearTimeout(fpsHideT);
+          fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 2500);
+        });
         applyLabelVisibilityToGpu();   // respect the current label style (e.g. hidden) on creation
         return vgpu;
       })();

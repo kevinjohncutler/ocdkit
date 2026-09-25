@@ -137,8 +137,14 @@
       }
 
       const _v = (typeof window !== "undefined" && window.__AV__) ? ("?v=" + window.__AV__) : "";
-      const wgsl = await (await fetch((opts.shaderUrl || "js/raymarch.wgsl") + _v)).text();
-      const mod = device.createShaderModule({ code: wgsl });
+      // Fetch every shader source in parallel. Only the compute march (the default
+      // path) and its blit are compiled now; the fragment march and the cube
+      // renderer are A/B alternatives, compiled on first use (setRenderMode).
+      const _get = (u) => fetch(u + _v).then((r) => r.text());
+      const [fragCode, cubesCode, ccode, bcode] = await Promise.all([
+        _get(opts.shaderUrl || "js/raymarch.wgsl"), _get(opts.cubesUrl || "js/cubes.wgsl").catch(() => null),
+        _get(opts.computeUrl || "js/raymarch_compute.wgsl"), _get(opts.blitUrl || "js/blit.wgsl")]);
+      self._fragCode = fragCode; self._cubesCode = cubesCode;
       self.bgl = device.createBindGroupLayout({
         entries: [
           { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -147,70 +153,12 @@
           { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
         ],
       });
-      self.pipeline = device.createRenderPipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [self.bgl] }),
-        vertex: { module: mod, entryPoint: "vs" },
-        fragment: { module: mod, entryPoint: "fs", targets: [{ format: self.format }] },
-        primitive: { topology: "triangle-list" },
-      });
 
-      // ── Object-order cube renderer (MIP prototype; toggle via setRenderMode) ──
-      // Rasterises each occupied voxel as a unit cube with MAX blend = MIP, no ray
-      // loop. A/B against the raymarch to test whether the coil whine tracks the
-      // pipeline (raster vs compute) rather than the workload.
-      try {
-        const cwgsl = await (await fetch((opts.cubesUrl || "js/cubes.wgsl") + _v)).text();
-        const cmod = device.createShaderModule({ code: cwgsl });
-        self.cubeBgl = device.createBindGroupLayout({
-          entries: [
-            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
-          ],
-        });
-        self.cubePipeline = device.createRenderPipeline({
-          layout: device.createPipelineLayout({ bindGroupLayouts: [self.cubeBgl] }),
-          vertex: {
-            module: cmod, entryPoint: "vs",
-            buffers: [
-              { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3", offset: 0 }] },
-              { arrayStride: 16, stepMode: "instance", attributes: [{ shaderLocation: 1, format: "float32x4", offset: 0 }] },
-            ],
-          },
-          fragment: {
-            module: cmod, entryPoint: "fs",
-            targets: [{
-              format: self.format,
-              blend: {   // MAX blend -> order-independent maximum intensity projection
-                color: { operation: "max", srcFactor: "one", dstFactor: "one" },
-                alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
-              },
-            }],
-          },
-          primitive: { topology: "triangle-list", cullMode: "none" },   // MIP: no cull, no depth
-        });
-        const corners = new Float32Array([
-          -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5,0.5,-0.5,  -0.5,0.5,-0.5,
-          -0.5,-0.5, 0.5,  0.5,-0.5, 0.5,  0.5,0.5, 0.5,  -0.5,0.5, 0.5,
-        ]);
-        const idx = new Uint16Array([
-          0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,3,7, 0,7,4,
-          1,5,6, 1,6,2,  0,4,5, 0,5,1,  3,2,6, 3,6,7,
-        ]);
-        self.cubeVertBuf = device.createBuffer({ size: corners.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
-        device.queue.writeBuffer(self.cubeVertBuf, 0, corners);
-        self.cubeIdxBuf = device.createBuffer({ size: idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
-        device.queue.writeBuffer(self.cubeIdxBuf, 0, idx);
-        self.cubeUniform = device.createBuffer({ size: 28 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      } catch (e) { self.cubePipeline = null; console.warn("[cubes] pipeline init failed", e); }
 
       // ── Compute-shader ray-march (A/B via setRenderMode("compute")) ──────────
       // Same march as the fragment path, dispatched as a compute grid writing an
       // rgba16float storage texture, then a trivial blit to the canvas.
       try {
-        const [ccode, bcode] = await Promise.all([
-          fetch((opts.computeUrl || "js/raymarch_compute.wgsl") + _v).then((r) => r.text()),
-          fetch((opts.blitUrl || "js/blit.wgsl") + _v).then((r) => r.text()),
-        ]);
         self.computeModule = device.createShaderModule({ code: ccode });
         self.computeBgl = device.createBindGroupLayout({
           entries: [
@@ -304,6 +252,12 @@
       // headroom (zoomed out), scaled down only as needed (zoomed in). A full-res
       // frame is drawn once motion settles, so the still is always sharp.
       this._interacting = false;
+      // Off by default: measured, it misfired even on small volumes (each resize
+      // reallocates the compute target, the stall reads as a slow frame, and the
+      // controller shrinks again), so a drag went blurry and hitched. The compute
+      // march is fast enough at native resolution. opts.adaptiveResolution = true
+      // re-enables it.
+      this.adaptive = opts.adaptiveResolution === true;
       this._dynScale = 1.0;              // current adaptive scale (drives render resolution)
       this.minScale = opts.minScale != null ? opts.minScale : 0.4;   // floor
       this.targetFps = opts.targetFps != null ? opts.targetFps : 120;
@@ -484,6 +438,7 @@
     /** Build the object-order cube renderer's instance buffer on first use (it is
      *  an A/B experiment, so a normal load doesn't pay for it). */
     _ensureCubes() {
+      this._initCubePipeline();
       if (this._cubesBuilt || !this.cubePipeline || !this._volF16) return;
       const H = halfTable(), h = this._volF16, f = new Float32Array(h.length);
       for (let i = 0; i < h.length; i++) f[i] = H[h[i]];
@@ -501,8 +456,74 @@
           { binding: 3, resource: this.lutTex.createView() },
         ],
       });
+    }
+
+    /** Fragment-shader march (A/B alternative to the compute path), built on first use. */
+    _ensureFragmentPipeline() {
+      if (this.pipeline) return this.pipeline;
+      const mod = this.device.createShaderModule({ code: this._fragCode });
+      this.pipeline = this.device.createRenderPipeline({
+        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.bgl] }),
+        vertex: { module: mod, entryPoint: "vs" },
+        fragment: { module: mod, entryPoint: "fs", targets: [{ format: this.format }] },
+        primitive: { topology: "triangle-list" },
+      });
+      return this.pipeline;
+    }
+
+    /** Object-order cube renderer (A/B experiment), built on first use. */
+    _initCubePipeline() {
+      if (this.cubePipeline !== undefined || !this._cubesCode) return;
+      const device = this.device;
+      // ── Object-order cube renderer (MIP prototype; toggle via setRenderMode) ──
+      // Rasterises each occupied voxel as a unit cube with MAX blend = MIP, no ray
+      // loop. A/B against the raymarch to test whether the coil whine tracks the
+      // pipeline (raster vs compute) rather than the workload.
+      try {
+        const cmod = device.createShaderModule({ code: this._cubesCode });
+        this.cubeBgl = device.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float", viewDimension: "2d" } },
+          ],
+        });
+        this.cubePipeline = device.createRenderPipeline({
+          layout: device.createPipelineLayout({ bindGroupLayouts: [this.cubeBgl] }),
+          vertex: {
+            module: cmod, entryPoint: "vs",
+            buffers: [
+              { arrayStride: 12, attributes: [{ shaderLocation: 0, format: "float32x3", offset: 0 }] },
+              { arrayStride: 16, stepMode: "instance", attributes: [{ shaderLocation: 1, format: "float32x4", offset: 0 }] },
+            ],
+          },
+          fragment: {
+            module: cmod, entryPoint: "fs",
+            targets: [{
+              format: this.format,
+              blend: {   // MAX blend -> order-independent maximum intensity projection
+                color: { operation: "max", srcFactor: "one", dstFactor: "one" },
+                alpha: { operation: "max", srcFactor: "one", dstFactor: "one" },
+              },
+            }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },   // MIP: no cull, no depth
+        });
+        const corners = new Float32Array([
+          -0.5,-0.5,-0.5,  0.5,-0.5,-0.5,  0.5,0.5,-0.5,  -0.5,0.5,-0.5,
+          -0.5,-0.5, 0.5,  0.5,-0.5, 0.5,  0.5,0.5, 0.5,  -0.5,0.5, 0.5,
+        ]);
+        const idx = new Uint16Array([
+          0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,3,7, 0,7,4,
+          1,5,6, 1,6,2,  0,4,5, 0,5,1,  3,2,6, 3,6,7,
+        ]);
+        this.cubeVertBuf = device.createBuffer({ size: corners.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(this.cubeVertBuf, 0, corners);
+        this.cubeIdxBuf = device.createBuffer({ size: idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(this.cubeIdxBuf, 0, idx);
+        this.cubeUniform = device.createBuffer({ size: 28 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      } catch (e) { this.cubePipeline = null; console.warn("[cubes] pipeline init failed", e); }
       if (this.cubePipeline) {
-        this.cubeBindGroup = this.device.createBindGroup({
+        this.cubeBindGroup = device.createBindGroup({
           layout: this.cubeBgl,
           entries: [
             { binding: 0, resource: { buffer: this.cubeUniform } },
@@ -664,23 +685,19 @@
         drag = (e.button === 2 || e.button === 1 || e.shiftKey) ? 2 : 1;
         lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
       });
-      c.addEventListener("pointerup", (e) => { drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {} });
+      c.addEventListener("pointerup", (e) => {
+        const was = drag; drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+        if (was) ensureAnim();                          // full-quality frame on release
+      });
 
-      // ── Smoothed input loop (orbit / pan / zoom) ──────────────────────────
-      // A single rAF loop drives all camera motion. Raw pointer + wheel deltas
-      // accumulate into this-frame inputs; each frame we EMA-smooth a velocity
-      // toward that input — a low-pass that rejects the high-frequency trackpad
-      // micro-jitter — and once the gesture ends we let the velocity decay
-      // (light momentum) so motion eases to rest instead of snapping on a noisy
-      // frame. Coalescing alone (the previous approach) removed the discrete
-      // chunking but still mapped every vibration straight to the camera.
-      let pdx = 0, pdy = 0, ppx = 0, ppy = 0, pz = 0;   // raw input this frame
-      let vrx = 0, vry = 0, vpx = 0, vpy = 0, vz = 0;   // smoothed velocities
+      // ── Input loop (orbit / pan / zoom) ─────────────────────────────────
+      // Pointer and wheel deltas accumulate between frames; each animation frame
+      // applies exactly what arrived since the last one and renders once. No
+      // smoothing and no momentum: the camera tracks the hand with no lag and
+      // stops when the hand stops. (The previous EMA smoothing trailed the input
+      // by ~4 degrees and took ~10 frames to settle after the hand stopped.)
+      let pdx = 0, pdy = 0, ppx = 0, ppy = 0, pz = 0;   // input accumulated since the last frame
       let anim = 0;
-      const SMOOTH = 0.35;    // EMA weight toward live input (lower = smoother, more lag)
-      const DECAY = 0.8;      // momentum decay per frame after the gesture stops
-      const EPS = 1e-3;
-      const ema = (v, x, active) => active ? v * (1 - SMOOTH) + x * SMOOTH : v * DECAY;
       const _now = (typeof performance !== "undefined" && performance.now)
         ? () => performance.now() : () => Date.now();
       // Adaptive resolution controller (AIMD): each interactive frame, track the
@@ -707,6 +724,7 @@
         if (fdt <= 0 || fdt > 200) return;            // new gesture / stall — skip
         self._frameEMA = self._frameEMA ? self._frameEMA * 0.8 + fdt * 0.2 : fdt;
         if (self._onFps) self._onFps(1000 / Math.max(self._frameEMA, 0.001), self._dynScale);
+        if (!self.adaptive) return;
         // Target one display refresh (capped so a request for >refresh fps just
         // targets the refresh — you can't beat vsync). Small slack for noise.
         const period = Math.max(self._displayPeriod || (1000 / self.targetFps), 1000 / self.targetFps);
@@ -729,50 +747,37 @@
       };
       const step = () => {
         anim = 0;
-        if (drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS || Math.abs(vpx) > EPS ||
-            Math.abs(vpy) > EPS || Math.abs(vz) > EPS) tuneScale();
+        const hasInput = pdx !== 0 || pdy !== 0 || ppx !== 0 || ppy !== 0 || pz !== 0;
+        if (drag || hasInput) tuneScale();              // fps readout (+ adaptive scale when enabled)
         const H = c.clientHeight || c.height || 1;
-        const ix = pdx, iy = pdy, qx = ppx, qy = ppy, iz = pz;
-        pdx = 0; pdy = 0; ppx = 0; ppy = 0; pz = 0;
-        vrx = ema(vrx, ix, drag === 1); vry = ema(vry, iy, drag === 1);
-        vpx = ema(vpx, qx, drag === 2); vpy = ema(vpy, qy, drag === 2);
-        vz = ema(vz, iz, iz !== 0);
-
         const up = Mat4.quatRotate(self.orient, [0, 1, 0]);
         const right = Mat4.quatRotate(self.orient, [1, 0, 0]);
-        let changed = false;
-        if (Math.abs(vrx) > EPS || Math.abs(vry) > EPS) {     // arcball rotate (no poles)
+        if (pdx !== 0 || pdy !== 0) {                   // arcball rotate (no poles)
           const S = (Math.PI * 1.4) / H;
-          const q = Mat4.quatMul(Mat4.quatFromAxisAngle(up, -vrx * S), Mat4.quatFromAxisAngle(right, -vry * S));
+          const q = Mat4.quatMul(Mat4.quatFromAxisAngle(up, -pdx * S), Mat4.quatFromAxisAngle(right, -pdy * S));
           self.orient = Mat4.quatNormalize(Mat4.quatMul(q, self.orient));
-          changed = true;
         }
-        if (Math.abs(vpx) > EPS || Math.abs(vpy) > EPS) {     // pan target in screen plane
+        if (ppx !== 0 || ppy !== 0) {                   // pan target in screen plane
           const td = self.radius * Math.tan(self.fovy / 2);
-          const px = (2 * vpx * td) / H, py = (2 * vpy * td) / H;
+          const px = (2 * ppx * td) / H, py = (2 * ppy * td) / H;
           self.target = [self.target[0] - right[0] * px + up[0] * py,
                          self.target[1] - right[1] * px + up[1] * py,
                          self.target[2] - right[2] * px + up[2] * py];
-          changed = true;
         }
-        if (Math.abs(vz) > EPS) {                             // dolly (radius *= exp(k·v))
+        if (pz !== 0) {                                 // dolly (radius *= exp(k * wheel delta))
           const diag = Math.hypot(self.NX, self.NY, self.NZ * self.zScale);
-          self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * Math.exp(vz * 0.0015)));
-          changed = true;
+          self.radius = Math.max(diag * 0.2, Math.min(diag * 10, self.radius * Math.exp(pz * 0.0015)));
         }
-        const moving = !!drag || Math.abs(vrx) > EPS || Math.abs(vry) > EPS ||
-            Math.abs(vpx) > EPS || Math.abs(vpy) > EPS || Math.abs(vz) > EPS;
-        self._interacting = moving;                 // low-res while moving, full-res on the settle frame
-        // Frame-rate cap: while moving, skip renders inside the cap interval (the
-        // camera keeps integrating every rAF, so motion stays smooth). Fewer
-        // renders/sec -> the GPU sustains a LOWER clock -> less coil whine, at full
-        // image quality (this trades peak fps, not pixels — the Low-Power-Mode
-        // effect, but scoped to the viewer). The settle frame always renders.
+        pdx = 0; pdy = 0; ppx = 0; ppy = 0; pz = 0;
+        self._interacting = !!drag;                     // adaptive scale (if enabled) only mid-drag
+        // Frame-rate cap (opt-in, for coil whine): while dragging, skip renders
+        // inside the cap interval; input keeps accumulating into the camera, and
+        // the release frame always renders.
         const capMs = self._fpsCap > 0 ? 1000 / self._fpsCap : 0;
         const nowT = _now();
-        const throttled = capMs > 0 && moving && (nowT - self._lastRenderT) < capMs * 0.98;
-        if ((changed || !moving) && !throttled) { self.render(); self._lastRenderT = nowT; if (self._onCam) self._onCam(); }
-        if (moving) anim = requestAnimationFrame(step);
+        const throttled = capMs > 0 && drag && (nowT - self._lastRenderT) < capMs * 0.98;
+        if (!throttled) { self.render(); self._lastRenderT = nowT; if (self._onCam) self._onCam(); }
+        else anim = requestAnimationFrame(step);        // render the held-back frame next vsync
       };
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
 
@@ -876,7 +881,7 @@
         const n = (rm === "minimal") ? Math.min(this.cubeInstanceCount, 300) : this.cubeInstanceCount;
         rp.drawIndexed(36, n);
       } else {
-        rp.setPipeline(this.pipeline); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
+        rp.setPipeline(this._ensureFragmentPipeline()); rp.setBindGroup(0, this.bindGroup); rp.draw(3);
       }
       if (this.overlays) {
         const box = this._box();
