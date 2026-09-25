@@ -48,3 +48,27 @@ image + 50% labels. Modes: EA (emission-absorption), MIP, mean.
   passes via `variants=` and `tag=`). Pass-1 `override` numbers in render.jsonl are
   INVALID for datasets after dnaA (stale bind group, harness bug, fixed); use
   render_combo.jsonl.
+
+## Port into the viewer (render_final.jsonl)
+
+The shipped `raymarch_compute.wgsl` now implements combo16m + the EA fix as clean
+code (the benchmark's "Shipped" baseline is pinned to the pre-port commit via
+`server.py /baseline/`). Measured against that baseline, same 120 scenarios:
+
+| Result | Value |
+|---|---|
+| GPU time vs pre-port (geo mean) | 0.557x (EA 0.567, MIP 0.553, mean 0.551) |
+| Faster / same / slower | 100 / 13 / 7 |
+| Slower cases | 6 image-only EA, +3-4% (the 1-exp(-tau) accuracy fix); 1 image-only MIP +1.3% |
+| Pixels changed outside EA | median 0, worst 39 of 2.6M |
+
+Lesson from the port: the first clean rewrite nested the MIP brick check under
+its own `if (MODE == 1)`, which ran up to 35% slower for image-only MIP than the
+benchmarked flat form (same output). Hoisting the ray setup out of the two
+marches did not matter; the nesting did (`render_port_ab`, `render_bisect*`).
+The shader keeps the flat form with a comment saying why.
+
+Real viewer, 5I (141x348x325, 316 labels), `outputs/repro/volume_port_e2e`:
+3D mounts in 0.16 s; volume fetch 29 ms (binary float16) vs 203 ms (old JSON
+route + decode) in the same session; EA/MIP/mean, hidden labels and a 3D erase
+(label bricks rebuilt in place) all render with no errors.

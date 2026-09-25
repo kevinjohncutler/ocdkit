@@ -30,7 +30,7 @@ RELEVANT = {
     "override": lambda r: True,
     "combo8": lambda r: True, "combo16": lambda r: True,
     "skipx8": lambda r: True, "skipx16": lambda r: True,
-    "combo16m": lambda r: True,
+    "combo16m": lambda r: True, "ported": lambda r: True,
     "combo8x": lambda r: True, "combo16x": lambda r: True,
 }
 

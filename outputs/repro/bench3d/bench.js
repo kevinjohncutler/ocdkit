@@ -23,7 +23,8 @@
     const HAS_TS = feats.length > 0;
     const info = adapter.info || {};
     log("adapter", info.vendor, info.architecture, info.description, "timestamps:", HAS_TS);
-    const SHIPPED = await (await fetch("/js/raymarch_compute.wgsl")).text();
+    const SHIPPED = await (await fetch("/baseline/raymarch_compute.wgsl")).text();
+    const PORTED = await (await fetch("/js/raymarch_compute.wgsl")).text();   // current source
     const V = window.BenchVariants;
     const U = GPUTextureUsage;
 
@@ -211,8 +212,10 @@
         ["skipx8", V.skipx(SHIPPED, 8), "skip"], ["skipx16", V.skipx(SHIPPED, 16), "skip"],
         ["combo8x", V.combo(SHIPPED, 8, true), "skip"], ["combo16x", V.combo(SHIPPED, 16, true), "skip"],
         ["combo16m", V.combo(SHIPPED, 16, false, true), "skip"],
+        ["ported", PORTED, "skip"],
+        ["combo_ea", V.combo(V.eaExp(SHIPPED), 16, false, true), "skip"],
       ].filter((d) => !ONLY || d[0] === "base" || ONLY.includes(d[0]));
-      const PER_STATE = { override: ["base", null], combo8: ["skip", 8], combo16: ["skip", 16], combo8x: ["skip", 8], combo16x: ["skip", 16], combo16m: ["skip", 16] };  // override-constant pipelines
+      const PER_STATE = { override: ["base", null], combo8: ["skip", 8], combo16: ["skip", 16], combo8x: ["skip", 8], combo16x: ["skip", 16], combo16m: ["skip", 16], ported: ["skip", 16], combo_ea: ["skip", 16] };  // override-constant pipelines
       const pipes = {};
       for (const [name, code, kind] of defs) if (!PER_STATE[name]) pipes[name] = await mkPipeline(code, kind);
       const outTex = device.createTexture({ size: [W, H], format: "rgba16float", usage: U.STORAGE_BINDING | U.COPY_SRC });
@@ -252,7 +255,8 @@
         const ovCache = {};
 
         const MODESEL = (Q.get("modes") || "0,1,2").split(",").map(Number);
-        for (const view of VIEWS) for (const cfgName of Object.keys(CFGS)) for (const mode of MODESEL) {
+        const CFGSEL = Q.get("cfgs") ? Q.get("cfgs").split(",") : Object.keys(CFGS);
+        for (const view of VIEWS) for (const cfgName of CFGSEL) for (const mode of MODESEL) {
           if (cfgName === "lab" && !MODESEL.includes(1)) continue;
           if (cfgName === "lab" && mode !== 1) continue;          // mode is irrelevant without the image
           const cfg = CFGS[cfgName];

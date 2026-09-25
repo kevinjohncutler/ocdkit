@@ -15,7 +15,7 @@
   catch (e) { ctx.configure({ device, format: FORMAT, alphaMode: "premultiplied" }); }
   const M = window.Mat4, V = window.BenchVariants, U = GPUTextureUsage, B = 16;
 
-  const [SHIPPED, BLIT] = await Promise.all(["/js/raymarch_compute.wgsl", "/js/blit.wgsl"].map((u) => fetch(u).then((r) => r.text())));
+  const [SHIPPED, BLIT] = await Promise.all(["/baseline/raymarch_compute.wgsl", "/js/blit.wgsl"].map((u) => fetch(u).then((r) => r.text())));
   const CODE = {
     base: [SHIPPED, false], ea: [V.eaExp(SHIPPED), false], clip: [V.clipAtLabel(SHIPPED), false],
     combo: [V.combo(SHIPPED, B, false, true), true], combo_ea: [V.combo(V.eaExp(SHIPPED), B, false, true), true],

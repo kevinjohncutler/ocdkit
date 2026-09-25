@@ -117,6 +117,19 @@ def tx_f16(ds: str, gz: int = 0):
     return Response(body, media_type="application/octet-stream", headers=headers)
 
 
+# Pinned baseline: the benchmark's "Shipped" shader is the pre-port version, read
+# from git, so the A/B pages keep working after the source shader changes.
+BASELINE_REV = "c53d245"
+
+
+@app.get("/baseline/{name}")
+def baseline(name: str):
+    import subprocess
+    code = subprocess.run(["git", "-C", str(HERE), "show", f"{BASELINE_REV}:src/ocdkit/viewer/web/js/{name}"],
+                          capture_output=True, check=True).stdout
+    return Response(code, media_type="text/plain")
+
+
 app.mount("/js", StaticFiles(directory=JS), name="js")
 app.mount("/data", StaticFiles(directory=DATA), name="data")
 app.mount("/", StaticFiles(directory=HERE, html=True), name="bench")
