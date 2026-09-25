@@ -548,6 +548,41 @@ def make_app():
                 return Response(content=gz, media_type=media, headers=h)
         return Response(content=blob, media_type=media, headers=h)
 
+    @app.get("/encode/{sid}/{name}")
+    async def encode_get(sid: str, name: str, fmt: str = "png"):
+        """Re-encode a RAW-float16 tile attachment (8-byte ``<II`` header +
+        w*h*4 float16 RGBA linear-P3, as ``image_grid`` attaches HDR cells) to a
+        downloadable image: ``fmt=png`` (SDR), ``uhdr``/``jpg`` (Ultra-HDR JPEG),
+        or ``jxl`` (lossless P3+PQ JPEG-XL). Serves the workbench zoom modal's
+        Save picker, which can't call opencodecs from the browser. Non-raw
+        (already-encoded) attachments → 415; missing → 204 (retry)."""
+        import struct as _struct
+        src = get_source(sid)
+        a = src.attachments.get(name) if src else None
+        if a is None:
+            return Response(status_code=204)
+        blob, _headers, media = a
+        try:
+            if media != "application/octet-stream" or len(blob) < 8:
+                raise ValueError("not raw")
+            w, h = _struct.unpack_from("<II", blob, 0)
+            if len(blob) != 8 + w * h * 4 * 2:
+                raise ValueError("not a raw-f16 RGBA tile")
+            rgba = np.frombuffer(blob, dtype="<f2", offset=8).reshape(h, w, 4)
+            rgb = np.ascontiguousarray(rgba[:, :, :3].astype(np.float32))
+        except Exception:
+            return Response(status_code=415)   # not a re-encodable raw tile
+        from ..io.figure_server import ArraySource
+        _fmt = {"jpg": "uhdr", "jpeg": "uhdr", "uhdr": "uhdr",
+                "jxl": "jxl", "jxl-hdr-pq": "jxl"}.get(fmt, "png")
+        enc = ArraySource(rgb, fmt=_fmt)
+        try:
+            out = enc.get_bytes()
+        except Exception as e:                          # noqa: BLE001
+            return Response(status_code=500, content=str(e)[:200])
+        return Response(content=out, media_type=enc.content_type,
+                        headers={"Cache-Control": "no-store"})
+
     # ── generic viewer HTML (the zoomable colormap tile grid + LinkedPanel) ──
     from fastapi.responses import HTMLResponse
     from .viewer import grid_html

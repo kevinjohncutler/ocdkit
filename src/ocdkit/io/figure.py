@@ -777,6 +777,45 @@ _SHELL_HDR_ICON = (
 
 
 _SHELL_JS = r"""
+  // ── SHARED SAVE (single source of truth) ──────────────────────────────
+  // ONE save implementation for the whole-figure toolbar AND the tile zoom
+  // modal (the VS Code workbench modal embeds this same function verbatim).
+  // `formats` = [{ext, mime, desc, getBytes: () => Promise<Blob|null>}]. Passing
+  // more than one type makes the NATIVE save dialog show its "File Format"
+  // dropdown; the extension the user picks selects which provider we encode.
+  window.ocdSaveViaPicker = window.ocdSaveViaPicker || async function (baseName, formats) {
+    if (window.showSaveFilePicker) {
+      var handle = null;
+      try {
+        var types = formats.map(function (f) { var a = {}; a[f.mime] = [f.ext]; return { description: f.desc, accept: a }; });
+        handle = await window.showSaveFilePicker({ suggestedName: baseName + formats[0].ext, types: types });
+      } catch (e) {
+        // AbortError = the user cancelled → done. Anything else (notably the
+        // SecurityError "Cross origin sub frames aren't allowed to show a file
+        // picker" inside a VS Code output webview) → fall through to download.
+        if (e && e.name === 'AbortError') return false;
+        handle = null;
+      }
+      if (handle) {
+        var nm = (handle.name || '').toLowerCase(), fmt = null;
+        for (var i = 0; i < formats.length; i++) { if (nm.slice(-formats[i].ext.length) === formats[i].ext) { fmt = formats[i]; break; } }
+        if (!fmt) fmt = formats[0];
+        var blob = await fmt.getBytes();
+        if (!blob) throw new Error('encode unavailable');
+        var w = await handle.createWritable(); await w.write(blob); await w.close();
+        return true;
+      }
+    }
+    // Fallback: download the default (first) format. No "File Format" dropdown —
+    // showSaveFilePicker is absent (old host) or blocked (cross-origin sub-frame).
+    var b = await formats[0].getBytes();
+    if (!b) throw new Error('encode unavailable');
+    var a = document.createElement('a'); a.href = URL.createObjectURL(b);
+    a.download = baseName + formats[0].ext; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    return true;
+  };
+
   window.__ocdInitFig = function(OCD_UID) {
     const wrapper = document.querySelector('.ocd-svgfig[data-uid="' + OCD_UID + '"]');
     if (!wrapper) return;
@@ -849,10 +888,53 @@ _SHELL_JS = r"""
             bottomLimit, statusBar.getBoundingClientRect().top);
         }
       }
+      // VS Code notebook webview: no JupyterLab pane exists, so resolvePane()
+      // falls back to document.body — which in that webview is ~0px tall
+      // (outputs live in absolutely-positioned containers). Sizing the overlay
+      // from that collapses it to height:0, so it goes `active` but renders as
+      // an invisible zero-height strip. When we don't have a real pane (or the
+      // pane rect is degenerate), drop the explicit sizing and let the CSS
+      // `position:fixed; inset:0` fill the fixed viewport instead.
+      const paneRect = pane.getBoundingClientRect();
+      const _inner0 = overlay.querySelector('.ocd-zoom-inner');
+      if (_inner0) { _inner0.style.position = ''; _inner0.style.top = ''; _inner0.style.height = ''; }
+      // VS Code notebook webview: the zoom CANNOT be a full-window modal. Code-
+      // cell inputs are native, absolutely-positioned elements composited ABOVE
+      // the output webview (which is position:static), so any overlay we draw
+      // inside the output sits BELOW them — a full-bleed overlay gets "punched
+      // through" by every code cell it spans, and it can never cover them.
+      // Nothing inside the output HTML can change that cross-layer compositing
+      // (only a VS Code extension could). So confine the zoom to the clicked
+      // figure's OWN output box, which never overlaps a code cell — a clean,
+      // centered in-place zoom instead of a broken cross-cell overlay.
+      const _fig = (currentTile && currentTile.closest) ? currentTile.closest('.ocd-svgfig') : null;
+      if (location.protocol === 'vscode-webview:' && _fig) {
+        const fr = _fig.getBoundingClientRect();
+        overlay.style.top = fr.top + 'px';
+        overlay.style.left = fr.left + 'px';
+        overlay.style.width = fr.width + 'px';
+        overlay.style.height = fr.height + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        return;
+      }
+      if (pane === document.body || paneRect.height < 1 || paneRect.width < 1) {
+        // Non-VS-Code host with no JupyterLab pane (e.g. classic Notebook /
+        // plain browser): document.body can be 0-height, which would collapse an
+        // explicitly-sized overlay to height:0. Fall back to the CSS
+        // `position:fixed; inset:0` full-viewport modal.
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.right = '0';
+        overlay.style.bottom = '0';
+        overlay.style.width = '';
+        overlay.style.height = '';
+        return;
+      }
       // No inset margin — extend the dim backdrop all the way to the
       // notebook pane's edges (clamped to the JupyterLab main content
       // area so it doesn't bleed under side panels / status bar).
-      const rect = pane.getBoundingClientRect();
+      const rect = paneRect;
       const top = Math.max(rect.top, topLimit);
       const left = Math.max(rect.left, leftLimit);
       const right = Math.min(rect.right, rightLimit);
@@ -2211,14 +2293,31 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         // than correctness on HDR content.
         // HDR tile → WebGPU HDR viewer (glow in the zoom). Falls through to the
         // CSS-img / WebGL paths if WebGPU is unavailable (SDR, but not dark).
+        // Each viewer factory can THROW (not just return null) when its GPU
+        // backend is unavailable or blocked — e.g. WebGPU context creation
+        // under a restrictive webview/CSP (VS Code notebook output). openZoom
+        // has no outer catch and the safety-net setTimeout(showPopup) is
+        // scheduled AFTER this block, so an uncaught throw here aborts the
+        // whole open and the zoom overlay never appears (click looks dead,
+        // while CSS hover still works). Guard every factory and always leave a
+        // working CSS-img fallback so the popup opens regardless.
+        const _tryViewer = (fn) => {
+          try { return fn(); }
+          catch (e) { console.warn('ocd zoom: viewer init failed, falling back', e); return null; }
+        };
         if (!webglViewer && isHdrTile) {
-          webglViewer = createPopupWebgpuHdrViewer(canvasEl);
+          webglViewer = _tryViewer(() => createPopupWebgpuHdrViewer(canvasEl));
+          // WebGPU HDR viewer unavailable → degrade to the SDR path so the
+          // thumb selection below picks the PNG tier the CSS-img viewer can load
+          // (the raw-float16 disp tier is only decodable by the WebGPU viewer).
+          if (!webglViewer) isHdrTile = false;
         }
         if (!webglViewer && (viewerHint === 'webgl' || viewerHint === 'worker')) {
-          webglViewer = createPopupWorkerViewer(canvasEl)
-                     || createPopupWebglViewer(canvasEl);
-        } else if (!webglViewer) {
-          webglViewer = createCssImgViewer(canvasEl);
+          webglViewer = _tryViewer(() => createPopupWorkerViewer(canvasEl))
+                     || _tryViewer(() => createPopupWebglViewer(canvasEl));
+        }
+        if (!webglViewer) {
+          webglViewer = _tryViewer(() => createCssImgViewer(canvasEl));
         }
         if (!webglViewer) {
           // Legacy fallback: SVG re-raster path. Marked isLegacy so
@@ -2309,6 +2408,11 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         overlay.classList.add('active');
         attachOverlayResizeTracking();
       };
+      // Schedule the safety-net BEFORE the load dispatch below (not after), so
+      // that even a synchronous throw in a viewer's loadImage can't prevent the
+      // overlay from eventually opening. Worst case the user gets a dismissable
+      // (possibly empty) popup instead of a dead click.
+      setTimeout(showPopup, 1000);
       const upgradeToHires = () => {
         if (hiresHref && hiresHref !== thumbHref) {
           viewerAtOpen.loadImage(hiresHref, () => {
@@ -2351,10 +2455,8 @@ struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         // Nothing to load (e.g., legacy SVG-only tile) -- show empty.
         showPopup();
       }
-      // Safety net: if both loads error out, show the popup anyway
-      // after 1 s so the user can dismiss it. Caps the worst-case
-      // ``invisible click`` interval if a load fails silently.
-      setTimeout(showPopup, 1000);
+      // (safety-net setTimeout(showPopup, 1000) scheduled above, before the
+      // load dispatch, so a synchronous throw can't skip it.)
 
       // Warm the adjacent tiles' thumbs so the NEXT arrow-key step is an instant cache
       // hit — the low-res shows immediately and upgrades, instead of a blank/decode gap.
@@ -5199,18 +5301,21 @@ fn oetf(c: f32) -> f32 { let x = max(c,0.0); if (x <= 0.0031308) { return 12.92*
       return out;
     }
 
-    // Save: PNG of exactly what we see (composited). Button may be absent.
+    // Save via the shared native picker (ocdSaveViaPicker — the SAME function the
+    // tile zoom modal uses). compositeFigure() is an SDR sRGB snapshot, so the
+    // whole-figure formats are PNG (lossless) + JPEG; the two types make the OS
+    // dialog show its "File Format" dropdown. (Per-tile HDR export lives on the
+    // tile itself, which has a real linear source; the composite doesn't.)
     const _savebtn = wrapper.querySelector('.ocd-savebtn');
     if (_savebtn) _savebtn.addEventListener('click', async (e) => {
       const btn = e.currentTarget; btn.disabled = true;
       try {
-        const out = await compositeFigure();
-        const png = await new Promise(res => out.toBlob(res, 'image/png'));
-        const url = URL.createObjectURL(png);
-        const a = document.createElement('a');
-        a.href = url; a.download = 'figure.png';
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        await window.ocdSaveViaPicker('figure', [
+          { ext: '.png', mime: 'image/png', desc: 'PNG image (SDR)',
+            getBytes: async () => { const o = await compositeFigure(); return await new Promise(r => o.toBlob(r, 'image/png')); } },
+          { ext: '.jpg', mime: 'image/jpeg', desc: 'JPEG image (SDR)',
+            getBytes: async () => { const o = await compositeFigure(); return await new Promise(r => o.toBlob(r, 'image/jpeg', 0.95)); } },
+        ]);
       } catch (err) { console.error('SvgFigure save failed:', err); alert('Save failed: ' + err.message); }
       finally { btn.disabled = false; }
     });
@@ -6627,11 +6732,19 @@ def interactive_shell(content_html: str, *,
     # ~242 KB base definition). Strip the base out of this cell's script when so.
     if not include_base_shell:
         js = js.replace(_base_shell_js(), "")
-    # Invoke this figure's controller once the base shell is defined. The base is
-    # either inline just above (include_base_shell) or emitted once by a grid; in
-    # the grid case a cell's <script> may run before the shared base, so retry.
-    js += (f"\n  (function(){{var u='{uid}';(function go(){{"
-           f"if(window.__ocdInitFig){{window.__ocdInitFig(u);}}else{{setTimeout(go,0);}}"
+    # Invoke this figure's controller once BOTH the base shell is defined AND
+    # this figure's wrapper is in the DOM. The base may be emitted once by a
+    # grid (so a cell's <script> can run before it), and — critically for VS
+    # Code notebooks — the output <script> can execute before its own wrapper
+    # <div> is attached. __ocdInitFig() bails at `if(!wrapper) return` and does
+    # NOT self-retry, so gating only on the function being defined leaves the
+    # figure permanently uninitialized (no click-to-expand listeners) whenever
+    # the script wins that race. Retry until the wrapper resolves too. Bounded
+    # (~10 s) so a cleared/removed output can't spin forever.
+    js += (f"\n  (function(){{var u='{uid}',n=0;(function go(){{"
+           f"var w=document.querySelector('.ocd-svgfig[data-uid=\"'+u+'\"]');"
+           f"if(window.__ocdInitFig&&w){{window.__ocdInitFig(u);}}"
+           f"else if(n++<600){{setTimeout(go,16);}}"
            f"}})();}})();")
     actions = ''
     if save_button or copy_button or hdr_button:
@@ -6644,7 +6757,7 @@ def interactive_shell(content_html: str, *,
                 f'{_SHELL_HDR_ICON.replace("__UID__", uid)}</button>')
         if save_button:
             buttons.append(
-                f'<button class="ocd-savebtn" title="Save as PNG">'
+                f'<button class="ocd-savebtn" title="Save…">'
                 f'{_SHELL_SAVE_ICON}</button>')
         if copy_button:
             buttons.append(
