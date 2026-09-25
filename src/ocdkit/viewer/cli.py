@@ -32,6 +32,14 @@ def _add_common_plugin_arg(parser: argparse.ArgumentParser) -> None:
         help="Window/tab/docs title (default: 'ocdkit.viewer'). "
         "Also overridable via OCDKIT_VIEWER_TITLE env var.",
     )
+    parser.add_argument(
+        "--sample",
+        choices=["3d"],
+        default=None,
+        help="Open with a built-in sample instead of the default 2D one: '3d' is a "
+        "small synthetic widefield stack with labels, to try the 3D view. Same as "
+        "OCDKIT_VIEWER_SAMPLE_IMAGE=3d.",
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -101,6 +109,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if getattr(args, "sample", None):
+        import os
+        # the env var reaches the server even when it runs in a reload subprocess
+        os.environ["OCDKIT_VIEWER_SAMPLE_IMAGE"] = args.sample
 
     if args.command in (None, "serve"):
         from .app import run_server
