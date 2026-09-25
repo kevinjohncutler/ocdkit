@@ -93,14 +93,47 @@ def _pick_free_port(host: str = "127.0.0.1") -> int:
         return int(s.getsockname()[1])
 
 
-def _wait_for_port(host: str, port: int, timeout: float = 5.0) -> None:
+def _startup_timeout(default: float = 90.0) -> float:
+    """Seconds to wait for the viewer server to bind its port.
+
+    Importing the app pulls in the full scientific stack (torch, plugins) and
+    can take 30s+ on a cold cache or a network-mounted checkout, so the wait
+    has to be generous. Override with ``OCDKIT_VIEWER_STARTUP_TIMEOUT``.
+    """
+    raw = os.environ.get("OCDKIT_VIEWER_STARTUP_TIMEOUT")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("ignoring non-numeric OCDKIT_VIEWER_STARTUP_TIMEOUT=%r", raw)
+    return default
+
+
+def _wait_for_port(
+    host: str,
+    port: int,
+    timeout: float = 5.0,
+    proc: "subprocess.Popen | None" = None,
+) -> None:
+    """Block until ``host:port`` accepts a connection.
+
+    ``proc`` (the uvicorn reload subprocess, when used) is polled too so a
+    server that dies on an import error fails immediately with its exit code
+    instead of stalling for the whole timeout.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
             with closing(socket.create_connection((host, port), timeout=0.5)):
                 return
         except OSError:
-            time.sleep(0.05)
+            pass
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(
+                f"viewer server process exited with code {proc.returncode} "
+                f"before binding {host}:{port}"
+            )
+        time.sleep(0.05)
     raise RuntimeError(f"server at {host}:{port} did not become ready within {timeout}s")
 
 
@@ -636,7 +669,9 @@ def run_desktop(
                 if not server_thread.is_alive():
                     raise RuntimeError("uvicorn server thread exited prematurely")
                 time.sleep(0.05)
-        _wait_for_port(serve_host, serve_port, timeout=10.0)
+        _wait_for_port(
+            serve_host, serve_port, timeout=_startup_timeout(), proc=server_proc
+        )
     except Exception:
         if server_proc:
             server_proc.terminate()
