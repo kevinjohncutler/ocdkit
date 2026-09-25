@@ -88,6 +88,10 @@ def main():
                 pg.evaluate(f"window.__volumeMode.setProj({proj})")
                 pg.wait_for_timeout(500)
                 checks[f"std_{name}"] = round(shot(pg, f"e2e_{name}.png"), 2)
+            # the A/B render paths are built lazily on first use: each must still draw
+            for rm in ("raymarch", "cubes", "compute"):
+                pg.evaluate(f"{g}.setRenderMode('{rm}')"); pg.wait_for_timeout(600)
+                checks[f"std_render_{rm}"] = round(shot(pg, f"e2e_render_{rm}.png"), 2)
             pg.evaluate(f"{g}.setShowLabels(0)"); pg.wait_for_timeout(400)
             checks["std_labels_hidden"] = round(shot(pg, "e2e_labels_hidden.png"), 2)
             pg.evaluate(f"{g}.setShowLabels(1)"); pg.wait_for_timeout(400)
@@ -134,7 +138,8 @@ def main():
     for k, v in checks.items():
         print(f"{k}: {v}")
     ok = (checks.get("used_binary_f16") and checks.get("bricks") and not checks.get("errors")
-          and all(checks.get(f"std_{n}", 0) > 1.0 for n in ("EA", "MIP", "mean", "labels_hidden", "after_fill"))
+          and all(checks.get(f"std_{n}", 0) > 1.0 for n in ("EA", "MIP", "mean", "labels_hidden", "after_fill",
+                                                             "render_raymarch", "render_cubes", "render_compute"))
           and checks.get("fill_label") and checks.get("fill_changed_volume")
           and checks.get("fill_pixels_changed", 0) > 0)
     print("RESULT:", "PASS" if ok else "FAIL")
