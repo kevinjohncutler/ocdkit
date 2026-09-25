@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>3D Renderer A/B</title>
+<style>
+  :root { --bg:#fafafa; --panel:#ffffffe6; --fg:#171717; --muted:#525252; --line:#d4d4d4; --btn:#e5e5e5; --btnOn:#404040; --btnOnFg:#fafafa; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#171717; --panel:#262626e6; --fg:#e5e5e5; --muted:#a3a3a3; --line:#404040; --btn:#404040; --btnOn:#e5e5e5; --btnOnFg:#171717; } }
+  :root[data-theme="dark"] { --bg:#171717; --panel:#262626e6; --fg:#e5e5e5; --muted:#a3a3a3; --line:#404040; --btn:#404040; --btnOn:#e5e5e5; --btnOnFg:#171717; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px -apple-system, system-ui, sans-serif; overflow:hidden; }
+  canvas { position:fixed; inset:0; width:100vw; height:100vh; display:block; touch-action:none; }
+  #panel { position:fixed; top:12px; left:12px; width:300px; background:var(--panel); border:1px solid var(--line);
+           border-radius:10px; padding:12px; backdrop-filter:blur(8px); }
+  #panel h1 { font-size:14px; margin:0 0 8px; }
+  .row { display:flex; align-items:center; gap:6px; margin:6px 0; flex-wrap:wrap; }
+  .row label { color:var(--muted); width:64px; }
+  select, input[type=range] { flex:1; min-width:0; }
+  input[type=range] { accent-color:var(--btnOn); }
+  select { background:var(--btn); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 4px; }
+  .seg button { background:var(--btn); color:var(--fg); border:1px solid var(--line); padding:3px 8px; border-radius:6px; cursor:pointer; }
+  .seg button.on { background:var(--btnOn); color:var(--btnOnFg); }
+  #stats { font:12px ui-monospace, monospace; margin-top:8px; line-height:1.5; }
+  #stats b { font-weight:600; }
+  .hint { color:var(--muted); font-size:11px; margin-top:8px; line-height:1.4; }
+</style></head>
+<body>
+<canvas id="c"></canvas>
+<div id="panel">
+  <h1>3D renderer A/B</h1>
+  <div class="row"><label>Dataset</label><select id="ds">
+    <option value="dnaA_xy1">dnaA 133x302x302</option><option value="5I">5I 141x348x325 (316 labels)</option>
+    <option value="ftsN_xy1">ftsN 241x603x234</option><option value="cells3d">cells3d 60x256x256</option></select></div>
+  <div class="row"><label>Shader</label><select id="variant">
+    <option value="base">Shipped</option>
+    <option value="combo" selected>Combined (override + label-first + bricks)</option>
+    <option value="combo_ea">Combined + EA 1-exp(-tau)</option>
+    <option value="ea">Shipped + EA 1-exp(-tau)</option>
+    <option value="clip">Clip at label (rejected)</option></select></div>
+  <div class="row"><label>Mode</label><span class="seg" id="mode">
+    <button data-v="0">EA</button><button data-v="1" class="on">MIP</button><button data-v="2">Mean</button></span></div>
+  <div class="row"><label>Layers</label><span class="seg" id="layers">
+    <button data-v="img">Image</button><button data-v="imglab" class="on">Image + labels</button><button data-v="lab">Labels</button></span></div>
+  <div class="row"><label>Label alpha</label><input id="opacity" type="range" min="0" max="1" step="0.05" value="1"></div>
+  <div class="row"><label>Density</label><input id="density" type="range" min="0.05" max="3" step="0.05" value="1"></div>
+  <div class="row"><label>Resolution</label><select id="res"><option value="1" selected>Native</option><option value="0.5">Half</option></select></div>
+  <div class="row"><label>Spin</label><span class="seg" id="spin"><button data-v="0" class="on">Off</button><button data-v="1">On</button></span></div>
+  <div id="stats">loading...</div>
+  <div class="hint">Drag to orbit, wheel to zoom. <b>V</b> flips between Shipped and the selected shader.
+    <b>Z</b> jumps to the zoomed-in view, <b>H</b> home. Spin On renders every frame so the GPU time is steady.</div>
+</div>
+<script src="/js/mat4.js"></script>
+<script src="variants.js"></script>
+<script src="view.js"></script>
+</body></html>

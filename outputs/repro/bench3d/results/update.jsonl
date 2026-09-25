@@ -1,0 +1,4 @@
+{"ds":"dnaA_xy1","voxels":12130132,"max_label":40,"group_volume_reupload_ms":1.5,"lut_one_entry_ms":0.09999999962747097,"lut_full_ms":0.09999999962747097,"label_tex_bytes_groups":12130132,"label_tex_bytes_ids":12130132}
+{"ds":"5I","voxels":15947100,"max_label":316,"group_volume_reupload_ms":1.800000000745058,"lut_one_entry_ms":0.09999999962747097,"lut_full_ms":0.09999999962747097,"label_tex_bytes_groups":15947100,"label_tex_bytes_ids":31894200}
+{"ds":"ftsN_xy1","voxels":34005582,"max_label":8,"group_volume_reupload_ms":3.900000000372529,"lut_one_entry_ms":0.09999999962747097,"lut_full_ms":0.09999999962747097,"label_tex_bytes_groups":34005582,"label_tex_bytes_ids":34005582}
+{"ds":"cells3d","voxels":3932160,"max_label":40,"group_volume_reupload_ms":1.300000000745058,"lut_one_entry_ms":0.09999999962747097,"lut_full_ms":0,"label_tex_bytes_groups":3932160,"label_tex_bytes_ids":3932160}
