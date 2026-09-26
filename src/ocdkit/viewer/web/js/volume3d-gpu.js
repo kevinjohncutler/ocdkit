@@ -217,7 +217,10 @@
       // faster at high resolution (holds frame rate on fast orbits where the
       // fragment path floors its adaptive resolution). Fall back if it failed init.
       if (this._renderMode === "compute" && !this.computePipeline) this._renderMode = "raymarch";
-      this.density = opts.density != null ? opts.density : 1.0;
+      // EA density = absorption only (0 = pure glow, nothing occludes)
+      this.density = opts.density != null ? opts.density : 0.0;
+      this._eaExposure = 1.0;                      // set from the data (_updateExposure)
+      this._lutPeakAll = 1.0;                      // brightest colormap channel, as stored
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = (decoded.image || decoded.imageF16) ? 1.0 : 0.0;   // grayscale intensity layer
       this.showLabels = decoded.mask ? 1.0 : 0.0;          // coloured labels, composited on top
@@ -338,6 +341,17 @@
         const a = HCMa.transparentAlpha(name);
         for (let i = 0; i < N && i < a.length; i += 1) out[i * 4 + 3] = a[i];
       }
+      // brightest stored channel (the EA exposure curve rolls off to it) and a
+      // per-entry emission table for the exposure estimate
+      let peak = 0;
+      this._lutMaxc = new Float32Array(N); this._lutAlpha = new Float32Array(N);
+      for (let i = 0; i < N; i += 1) {
+        const m = Math.max(out[4 * i], out[4 * i + 1], out[4 * i + 2]);
+        this._lutMaxc[i] = m; this._lutAlpha[i] = out[4 * i + 3];
+        if (m > peak) peak = m;
+      }
+      this._lutPeakAll = peak > 0 ? peak : 1;
+      this._scheduleExposure();
       this.device.queue.writeTexture({ texture: this.lutTex }, _toF16(out).buffer,
         { bytesPerRow: N * 8, rowsPerImage: 1 }, [N, 1, 1]);
     }
@@ -386,7 +400,7 @@
         }
         f16 = _toF16(f);
       }
-      this._volF16 = f16;            // kept for the lazily-built cube renderer
+      this._volF16 = f16;            // kept for the cube renderer and the EA exposure estimate
       this._cubesBuilt = false;
       this.volTex = device.createTexture({
         size: [NX, NY, NZ], dimension: "3d", format: "r16float",
@@ -395,6 +409,7 @@
       device.queue.writeTexture({ texture: this.volTex }, f16.buffer,
         { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
       if (this._renderMode === "cubes" || this._renderMode === "minimal") this._ensureCubes();
+      this._scheduleExposure();
 
       // brick grids for the compute march's empty-space skipping
       const bd = brickDims(NX, NY, NZ, BRICK);
@@ -822,6 +837,32 @@
       }, { passive: false });
     }
 
+    /** Spin continuously about the volume's vertical (z) axis, a turntable
+     *  (degrees per second; time-based, so the speed is the same on any display).
+     *  Dragging still works while spinning. */
+    setSpin(on, degPerSec) {
+      this._spin = !!on;
+      this._spinRate = ((degPerSec > 0 ? degPerSec : 30) * Math.PI) / 180;
+      if (!this._spin || this._spinRaf || typeof requestAnimationFrame !== "function") {
+        if (!this._spin && this._onCam) this._onCam();          // remember where it stopped
+        return;
+      }
+      let last = 0;
+      const tick = (t) => {
+        if (!this._spin) { this._spinRaf = 0; return; }
+        const dt = last ? Math.min(0.1, (t - last) / 1000) : 0;
+        last = t;
+        if (dt > 0) {
+          const q = Mat4.quatFromAxisAngle([0, 0, 1], this._spinRate * dt);
+          this.orient = Mat4.quatNormalize(Mat4.quatMul(q, this.orient));
+          this.render();
+        }
+        this._spinRaf = requestAnimationFrame(tick);
+      };
+      this._spinRaf = requestAnimationFrame(tick);
+    }
+    isSpinning() { return !!this._spin; }
+
     /** Serializable camera state (for persistence across refresh). */
     getCamera() {
       return { orient: Array.from(this.orient), radius: this.radius, target: Array.from(this.target) };
@@ -846,7 +887,7 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      u.set([this._win[0], this._win[1], 0, 0], 44);                            // display window
+      u.set([this._win[0], this._win[1], this._eaExposure, this._lutPeakAll], 44);  // window, EA exposure, LUT peak
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -865,6 +906,7 @@
     }
 
     render() {
+      if (!this.orient) return;   // a deferred render (exposure update) can land before the camera exists
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
       // Render at native device pixels. CRUCIAL: cap the backing to the device's
       // max 2D texture size — on a big Retina display clientWidth*dpr can exceed
@@ -970,7 +1012,45 @@
     setMode(m) { this.mode = m | 0; this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
-    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._requestRender(); }
+    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._scheduleExposure(); this._requestRender(); }
+
+    /** EA exposure from the data, so emission-absorption is as bright as the data
+     *  allows without a manual gain: the glow summed along z for each (x, y)
+     *  (subsampled 2x2), and the exposure that brings the brightest 0.5% of those
+     *  sums to 95% of the colormap peak. Recomputed when the window, gamma or
+     *  colormap change (never per frame, so it cannot flicker while rotating). */
+    _scheduleExposure() {
+      if (this._expPending) return;
+      this._expPending = true;
+      const run = () => { this._expPending = false; this._updateExposure(); this._requestRender(); };
+      if (typeof setTimeout === "function") setTimeout(run, 0); else run();
+    }
+    _updateExposure() {
+      const v = this._volF16, maxc = this._lutMaxc;
+      if (!v || !maxc) return;
+      const { NX, NY, NZ } = this, H = halfTable(), N = maxc.length;
+      const tl = this._win ? this._win[0] : 0, inv = this._win ? this._win[1] : 1, g = this.gamma || 1;
+      const alpha = this._transparent ? this._lutAlpha : null;
+      const emit = new Float32Array(65536);               // half-float bits -> glow per unit length
+      for (let h = 0; h < 65536; h += 1) {
+        let q = (H[h] - tl) * inv;
+        if (!(q > 0)) continue;
+        if (q > 1) q = 1;
+        q = Math.pow(q, g);
+        const i = Math.min(N - 1, Math.round(q * (N - 1)));
+        emit[h] = q * maxc[i] * (alpha ? alpha[i] : 1);
+      }
+      const sx = Math.ceil(NX / 2), sy = Math.ceil(NY / 2), sums = new Float32Array(sx * sy);
+      for (let z = 0; z < NZ; z += 1) {
+        for (let y = 0, k = 0; y < NY; y += 2) {
+          const row = (z * NY + y) * NX;
+          for (let x = 0; x < NX; x += 2, k += 1) sums[k] += emit[v[row + x]];
+        }
+      }
+      sums.sort();
+      const p = sums[Math.min(sums.length - 1, Math.floor(0.995 * (sums.length - 1)))];
+      this._eaExposure = p > 0 ? -Math.log(0.05) * this._lutPeakAll / p : 1.0;
+    }
     /** Display window from the 2D histogram, in the volume's data units (the
      *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in
      *  emission-absorption (values below lo turn transparent), and to the
@@ -983,6 +1063,7 @@
       const span = vmax > vmin ? vmax - vmin : 1;
       const tl = (lo - vmin) / span, th = (hi - vmin) / span;
       this._win = [tl, 1 / Math.max(th - tl, 1e-6)];
+      this._scheduleExposure();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
@@ -996,6 +1077,7 @@
     setZScale(z) { this.zScale = +z; this._requestRender(); }
 
     destroy() {
+      this._spin = false;
       try { this.ctx.unconfigure(); } catch (_) {}
       try { this.device.destroy(); } catch (_) {}
     }

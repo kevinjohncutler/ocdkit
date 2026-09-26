@@ -32,7 +32,7 @@ struct U {
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
-  win         : vec4<f32>,   // display window: lo, 1/(hi-lo) in normalized units (the 2D histogram bounds)
+  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; colormap peak
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -214,9 +214,17 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
         let segLen = max(tExit - tPrev, 0.0);
         let c4 = lutRGBA(sg);
-        let a = (1.0 - exp(-sg * density * segLen)) * select(1.0, c4.a, TRANSP);   // exact for any segment chopping
-        let om = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * a * om, imgAcc.w + a * om);
+        // Emission-absorption with density = ABSORPTION only: every voxel glows in
+        // proportion to its (windowed) intensity whatever the density, and density
+        // sets how much nearer glow hides farther glow (0 = pure glow, nothing
+        // occludes). Exact per segment: emission is self-absorbed by
+        // S(tau) = (1 - e^-tau) / tau. The accumulated glow is shaded by the
+        // soft exposure curve after the march.
+        let ta = select(1.0, c4.a, TRANSP);
+        let tau = sg * density * segLen * ta;
+        let S = select(1.0 - 0.5 * tau, (1.0 - exp(-tau)) / tau, tau > 1e-4);
+        let T = 1.0 - imgAcc.w;
+        imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * (sg * segLen * S * ta * T), imgAcc.w + (1.0 - exp(-tau)) * T);
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
@@ -237,7 +245,19 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
-    else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
+    else {
+      // soft exposure: 1 - e^-x rolls the accumulated glow off to the colormap's
+      // peak P (1 in SDR, the display headroom x gain in HDR) instead of clipping;
+      // win.z = exposure (set from the data by the host), win.w = P
+      // Hue-preserving: the curve is applied to the brightest channel and all three
+      // are scaled by the same factor. (Per-channel, a summed yellow saturated
+      // red and green first while blue kept rising, washing out to white.)
+      let P = max(u.win.w, 1e-3);
+      let m = max(imgAcc.r, max(imgAcc.g, imgAcc.b));
+      let mc = P * (1.0 - exp(-u.win.z * m / P));
+      imgPC = select(vec3<f32>(0.0), imgAcc.rgb * (mc / max(m, 1e-12)), m > 1e-9);
+      imgA = max(imgAcc.w, clamp(mc / P, 0.0, 1.0));
+    }
   }
 
   return vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA));

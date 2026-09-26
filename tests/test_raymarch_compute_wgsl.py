@@ -65,7 +65,8 @@ def _ortho(yaw, pitch, half):
     return inv, d, right, up
 
 
-def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0)):
+def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0),
+             exposure=1.0, peak=1.0):
     NX, NY, NZ = dims
     u = np.zeros(48, np.float32)
     u[0:16] = inv
@@ -75,7 +76,7 @@ def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, 
     u[32:36] = [2 * max(dims), density, opacity, show_lab]
     u[36:40] = [1.0, show_img, 1.0, 1.0]
     u[40:44] = [0.4, 0.0, 24.0, 1.0]
-    u[44:48] = [window[0], 1.0 / (window[1] - window[0]), 0, 0]
+    u[44:48] = [window[0], 1.0 / (window[1] - window[0]), exposure, peak]
     return u
 
 
@@ -267,3 +268,45 @@ def test_transparent_low_end(dev):
     clear = Scene(dev, vol, lab, lut_alpha=np.zeros(256))
     out = clear.compute(_uniform(inv, (n, n, NZ), 0, density=5.0, show_lab=0), 0, 1, 0, n, n, transp=1)
     assert out[..., 3].max() == 0.0 and out[..., :3].max() == 0.0
+
+
+@pytest.mark.parametrize("density", [0.0, 0.3])
+def test_emission_absorption_glow_matches_analytic(dev, density):
+    """EA color through a constant cube (gray colormap, so color(s) = s): the glow
+    is c*s*(1 - e^-tau)/(density*s) per unit (pure c*s*chord at density 0, where
+    nothing absorbs), shaded by the soft exposure 1 - e^(-k*acc)."""
+    N, W, s_val, k = 48, 128, 0.5, 0.08
+    sc = Scene(dev, np.full((N, N, N), s_val, np.float16), np.zeros((N, N, N), np.uint8))
+    half = N * 0.95
+    inv, d, right, up = _ortho(0.6, 0.4, half)
+    out = sc.compute(_uniform(inv, (N, N, N), 0, density=density, show_lab=0, exposure=k), 0, 1, 0, W, W)
+    ys, xs = np.mgrid[0:W, 0:W]
+    ndx, ndy = (xs + 0.5) / W * 2 - 1, 1 - (ys + 0.5) / W * 2
+    ro = (ndx[..., None] * right + ndy[..., None] * up) * half - d * BIG
+    with np.errstate(divide="ignore"):
+        iv = 1.0 / np.where(d == 0, 1e-12, d)
+    t1, t2 = (-N / 2 - ro) * iv, (N / 2 - ro) * iv
+    chord = np.clip(np.maximum(t1, t2).min(-1) - np.minimum(t1, t2).max(-1), 0, None)
+    if density == 0:
+        acc = s_val * s_val * chord
+    else:
+        acc = s_val * (1 - np.exp(-density * s_val * chord)) / density
+    exact = 1 - np.exp(-k * acc)
+    inside = chord > 1.0
+    tol = 0.006 if density == 0 else 0.01     # (with absorption: early termination at 99.5%)
+    assert np.abs(out[..., 0][inside] - exact[inside]).max() < tol
+
+
+def test_emission_absorption_keeps_hue(dev):
+    """A summed saturated color keeps its hue under the exposure curve: with a
+    yellow colormap (1, 1, 0.1) the output's blue/red ratio stays 0.1 however
+    bright the glow gets, rather than drifting to white."""
+    N, W = 48, 64
+    sc = Scene(dev, np.full((N, N, N), 1.0, np.float16), np.zeros((N, N, N), np.uint8))
+    yellow = np.tile(np.array([1.0, 1.0, 0.1, 1.0], np.float16), (256, 1))
+    sc.lut = _tex(dev, "rgba16float", (256, 1, 1), yellow.tobytes(), 256 * 8, dim="2d")
+    inv, *_ = _ortho(0.5, 0.3, N * 0.95)
+    out = sc.compute(_uniform(inv, (N, N, N), 0, density=0.0, show_lab=0, exposure=5.0), 0, 1, 0, W, W)
+    lit = out[..., 0] > 0.5
+    assert lit.sum() > 100
+    np.testing.assert_allclose(out[..., 2][lit] / out[..., 0][lit], 0.1, atol=0.01)

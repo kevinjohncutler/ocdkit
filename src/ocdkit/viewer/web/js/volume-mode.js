@@ -121,12 +121,14 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, density: curDensity, proj: curProj }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, proj: curProj }));
       } catch (e) {}
     }
     const _vs = loadVolState();
     let camState = _vs.camera || null;   // remembered 3D rotation/zoom/pan
-    let curDensity = (typeof _vs.density === "number" && _vs.density > 0) ? _vs.density : 1.0;   // EA density
+    // EA density (absorption only; 0 = pure glow). Saved under a new key: values
+    // saved before meant something else (they also scaled the glow).
+    let curDensity = (typeof _vs.eaAbsorption === "number" && _vs.eaAbsorption >= 0) ? _vs.eaAbsorption : 0.0;
     if (_vs.proj === 0 || _vs.proj === 1 || _vs.proj === 2) curProj = _vs.proj;              // remembered projection
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
@@ -619,7 +621,7 @@
     const densRange = document.getElementById("eaDensitySlider");
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
-      v = Math.max(0.05, Math.min(5, Number(v) || 1));
+      v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
       curDensity = v;
       if (densRange && from !== "range") {
         densRange.value = String(v);
@@ -629,7 +631,30 @@
       if (vgpu) vgpu.setDensity(v);
       saveVolState();
     }
-    function syncDensityRow() { if (densRow) densRow.hidden = !(mode === "3d" && curProj === 0); }
+    // ── Spin (3D only): a turntable about the volume's vertical axis ──
+    const spinRow = document.getElementById("spinRow");
+    const spinToggle = document.getElementById("spinToggle");
+    if (spinToggle) spinToggle.addEventListener("change", () => { if (vgpu) vgpu.setSpin(spinToggle.checked); });
+    function syncSpinRow() {
+      if (spinRow) spinRow.hidden = mode !== "3d";
+      if (mode !== "3d" && spinToggle && spinToggle.checked) {       // leaving 3D stops the spin
+        spinToggle.checked = false;
+        if (vgpu) vgpu.setSpin(false);
+      }
+    }
+
+    function syncDensityRow() {
+      syncSpinRow();
+      if (!densRow) return;
+      const show = mode === "3d" && curProj === 0;
+      const wasHidden = densRow.hidden;
+      densRow.hidden = !show;
+      // the slider measures its track (rounded ends, fill, thumb) when refreshed;
+      // measured while hidden it is 0 wide, so re-measure once it is visible
+      if (show && wasHidden && window.ViewerUI && ViewerUI.refreshSlider) {
+        requestAnimationFrame(() => ViewerUI.refreshSlider("eaDensitySlider"));
+      }
+    }
     // segmented control (same component as the segmentation / label-style modes)
     function syncProjButtons() {
       if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) => {
