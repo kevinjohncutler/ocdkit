@@ -43,6 +43,26 @@ def read_edr_headroom():
         return None
 
 
+def read_edr_headroom_info():
+    """``{"current", "potential"}`` headroom of the main screen (multiples of SDR
+    white), or ``None`` if unavailable. ``current`` is what the display can show
+    right now (it drops as screen brightness rises); ``potential`` is its maximum.
+    Works from a process with no window (e.g. the viewer server), so a browser
+    on the same Mac can be told the real value that it is not allowed to read."""
+    try:
+        from AppKit import NSScreen
+    except Exception:
+        return None
+    try:
+        scr = NSScreen.mainScreen()
+        if scr is None:
+            return None
+        return {"current": float(scr.maximumExtendedDynamicRangeColorComponentValue()),
+                "potential": float(scr.maximumPotentialExtendedDynamicRangeColorComponentValue())}
+    except Exception:
+        return None
+
+
 def start_edr_pump(window, interval: float = 0.5, on_value=None):
     """Poll the EDR headroom and inject it into ``window`` as
     ``window.__edrHeadroom`` every ``interval`` seconds (only when it changes).

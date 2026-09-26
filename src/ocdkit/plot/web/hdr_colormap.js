@@ -202,6 +202,30 @@
     return out;
   }
 
+  // Brightest channel of a linear LUT (multiple of SDR white).
+  function lutPeak(lut) {
+    let m = 0;
+    for (let i = 0; i < lut.length; i += 4) m = Math.max(m, lut[i], lut[i + 1], lut[i + 2]);
+    return m;
+  }
+
+  // HDR LUT whose brightest channel is exactly `headroom * gain` (x SDR white).
+  // The perceptual lift alone stops well short of its target (measured 40-54% of
+  // the headroom at gain 1, never reaching it even at gain 2), so a gain of 1
+  // left the display's top range unused and no gain ever clipped. Here the lift
+  // is computed at the headroom (fixing the colormap's shape) and then scaled
+  // linearly, which keeps every hue and saturation: gain 1 touches the display
+  // limit exactly, gain > 1 exceeds it (clips), gain < 1 is dimmer.
+  function hdrLutForHeadroom(cmapName, headroom, gain) {
+    const lut = generateImageCmapLutHdr(cmapName, { auto: true, peakNits: headroom * HDR_SDR_WHITE_NITS });
+    const m = lutPeak(lut);
+    if (m > 0) {
+      const k = (headroom * (gain > 0 ? gain : 1)) / m;
+      for (let i = 0; i < lut.length; i += 4) { lut[i] *= k; lut[i + 1] *= k; lut[i + 2] *= k; }
+    }
+    return lut;
+  }
+
   // Gamma-encoded uint8 SDR colormap LUT (256*4 RGBA, Display-P3 transfer) — the
   // unlifted colormap for the WebGL2 SDR backend, matching the WebGPU colours at
   // SDR brightness (same lift source). Written directly to a display-p3 canvas.
@@ -401,10 +425,10 @@
     setGain(g) { this._gain = g > 0 ? g : 1; this._uploadLut(); this.requestRedraw(); }
 
     _uploadLut() {
-      const peak = this._headroomVal * (this._gain || 1) * HDR_SDR_WHITE_NITS;
       const lut = this._hdr
-        ? generateImageCmapLutHdr(this._cmap, { auto: true, peakNits: peak })
+        ? hdrLutForHeadroom(this._cmap, this._headroomVal, this._gain || 1)
         : generateImageCmapLutHdr(this._cmap, { lift: false });
+      this._lutPeak = lutPeak(lut);                      // brightest channel (x SDR white)
       this.device.queue.writeBuffer(this.lutBuf, 0, lut);
     }
 
@@ -436,7 +460,7 @@
 
   return {
     IMAGE_CMAP_LUT_SIZE, HDR_SDR_WHITE_NITS, HDR_PEAK_NITS_DEFAULT, COLORMAP_STOPS,
-    generateImageCmapLutHdr, computeOptimalHdrJz, hdrCmapStats, sdrLutU8,
+    generateImageCmapLutHdr, computeOptimalHdrJz, hdrCmapStats, sdrLutU8, lutPeak, hdrLutForHeadroom,
     getDevice, HdrColormapRenderer,
   };
 }));

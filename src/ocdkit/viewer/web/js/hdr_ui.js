@@ -105,7 +105,9 @@
   }
 
   // Persist the user's HDR choice (enabled + gain) so it survives a refresh.
-  const HDR_STORE = 'ocdkit-hdr';
+  // v2: gain is now a multiple of the display's headroom (1 = exactly the
+  // headroom), so a gain saved under the old meaning is not reused.
+  const HDR_STORE = 'ocdkit-hdr-v2';
   function _persist() {
     try { localStorage.setItem(HDR_STORE, JSON.stringify({ enabled: api.enabled, gain: api.gain })); } catch (e) {}
   }
@@ -161,11 +163,43 @@
     slider.addEventListener('input', function () { api.setGain(parseFloat(slider.value)); });
     const val = document.createElement('span'); val.id = 'hdrGainVal'; val.textContent = api.gain.toFixed(2) + '×';
     gainRow.appendChild(lab); gainRow.appendChild(slider); gainRow.appendChild(val);
-    row.appendChild(btn); row.appendChild(gainRow); panel.appendChild(row);
+    slider.title = 'Multiple of the display headroom: 1 = brightest color exactly at the display limit, above 1 clips';
+    const hr = document.createElement('div'); hr.id = 'hdrHeadroomVal';
+    hr.style.cssText = 'font-size:10px;opacity:.75;letter-spacing:.02em;';
+    row.appendChild(btn); row.appendChild(gainRow); row.appendChild(hr); panel.appendChild(row);
+  }
+
+  // ── Live display headroom ──────────────────────────────────────────────
+  // Browsers hide it, but when the viewer server runs on this same Mac it can
+  // read it from macOS (GET /api/display_headroom). Publishing it as
+  // window.__edrHeadroom lets every HdrHeadroom consumer (2D image, colormap
+  // preview, 3D volume) follow it live; the desktop app injects the same value.
+  const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  function showHeadroom() {
+    const el = document.getElementById('hdrHeadroomVal');
+    if (!el) return;
+    const v = window.__edrHeadroom;
+    el.textContent = (typeof v === 'number' && v > 0)
+      ? 'display headroom ' + v.toFixed(1) + '× (measured' +
+        (window.__edrHeadroomPotential ? ', max ' + window.__edrHeadroomPotential.toFixed(1) + '×' : '') + ')'
+      : 'display headroom unknown (assuming 4×)';
+  }
+  function pollHeadroom() {
+    if (!LOCAL) { showHeadroom(); return; }
+    fetch('/api/display_headroom').then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.available) {
+        window.__edrHeadroom = d.current;
+        window.__edrHeadroomPotential = d.potential;
+        showHeadroom();
+        setTimeout(pollHeadroom, 1000);      // follows brightness changes
+      } else {
+        showHeadroom();                      // no EDR display here: keep the fallback
+      }
+    }).catch(function () { showHeadroom(); });
   }
 
   function start() {
-    injectStyle(); injectControls();
+    injectStyle(); injectControls(); pollHeadroom();
     let tries = 0;
     (function poll() {
       api.available = available();

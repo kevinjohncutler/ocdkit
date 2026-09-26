@@ -17,6 +17,24 @@ def api_system_info() -> dict:
     return get_system_info(ACTIVE_PLUGIN.current())
 
 
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+@router.get("/display_headroom")
+def api_display_headroom(request: Request) -> dict:
+    """The live HDR headroom of this machine's display (macOS), for HDR
+    rendering in a browser, which may not read it itself. Only answered for a
+    client on this same machine: a remote browser's display is a different one."""
+    host = request.client.host if request.client else ""
+    if host not in _LOOPBACK:
+        return {"available": False, "reason": "not a local client"}
+    from ..edr_bridge import read_edr_headroom_info
+    info = read_edr_headroom_info()
+    if not info or not info.get("current"):
+        return {"available": False, "reason": "no EDR display"}
+    return {"available": True, **info}
+
+
 @router.post("/use_gpu")
 def api_use_gpu(payload: UseGpuPayload) -> dict:
     plugin = ACTIVE_PLUGIN.current()

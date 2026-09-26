@@ -305,10 +305,12 @@
       const out = new Float32Array(N * 4);
       const CM = (typeof window !== "undefined") ? window.ViewerColormap : null;
       let filled = false;
-      if (this._hdr && CM && CM.generateImageCmapLutHdr) {
+      const HCM = (typeof window !== "undefined") ? window.HdrColormap : null;
+      if (this._hdr && HCM && HCM.hdrLutForHeadroom) {
         try {
-          const peak = this._headroomVal * (this._gain || 1) * 203.0;  // ×BT.2408 white
-          const lin = CM.generateImageCmapLutHdr(name, { auto: true, peakNits: peak });
+          // brightest channel = headroom x gain exactly (shared with the 2D image)
+          const lin = HCM.hdrLutForHeadroom(name, this._headroomVal, this._gain || 1);
+          this._lutPeak = HCM.lutPeak(lin);
           if (lin && lin.length >= N * 4) {
             for (let i = 0; i < N * 4; i += 4) {
               out[i]     = _l2gExt(lin[i]);
