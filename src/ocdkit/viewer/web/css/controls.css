@@ -170,8 +170,9 @@
 }
 
 
+/* dual: the fill is a pill spanning the two thumbs (end caps included) */
 .slider[data-slider-type='dual'] .slider-track::before {
-  content: none;
+  left: var(--slider-fill-left, 0px);
 }
 
 
@@ -192,9 +193,18 @@
   z-index: 2;
 }
 
-.slider[data-slider-type='dual'] .slider-track {
-  background: rgba(255, 255, 255, 0.15);
+.control-heading.control-heading--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--slider-track-height);
 }
+.control-heading.control-heading--icon svg { width: 16px; height: 16px; display: block; }
+
+/* clip row: the dual slider full width, its two percentiles under its ends */
+.clip-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.slider:focus { outline: none; }   /* the pressed thumb already shows focus */
 
 
 .slider[data-active='true'] .slider-thumb,
@@ -2347,24 +2357,6 @@ button:not(:disabled):hover {
 }
 
 /* Scissors (clip to percentiles) in the histogram's corner */
-.histogram-clip-button {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 6px;
-  border: 1px solid var(--control-border);
-  background: var(--control-surface);
-  color: var(--panel-text-color);
-  cursor: pointer;
-  opacity: 0.8;
-}
-.histogram-clip-button:hover { opacity: 1; background: var(--accent-hover); color: var(--accent-ink, #161616); }
 
 /* Right-click menu on the histogram */
 .histogram-menu {

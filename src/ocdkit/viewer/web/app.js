@@ -2159,6 +2159,11 @@ window.addEventListener('resize', () => {
 });
 
 const gammaSlider = document.getElementById('gamma');
+// looked up before the slider component registers (it detaches the range inputs)
+const clipLoSlider = document.getElementById('clipLo');
+const clipHiSlider = document.getElementById('clipHi');
+const clipLoInput = document.getElementById('clipLoInput');
+const clipHiInput = document.getElementById('clipHiInput');
 const gammaValue = document.getElementById('gammaValue');
 const maskLabel = document.getElementById('maskLabel');
 const labelValueInput = document.getElementById('labelValueInput');
@@ -2395,6 +2400,7 @@ attachNumberInputStepper(brushSizeInput, (delta) => {
 attachNumberInputStepper(gammaInput, (delta) => {
   setGamma(currentGamma + delta);
 });
+
 
 const HISTORY_LIMIT = 200;
 if (typeof ViewerHistory.init === 'function') {
@@ -7776,7 +7782,7 @@ function computeHistogram() {
 // ── Display-window policy + histogram options ─────────────────────────────
 let windowInitialized = false;
 const HIST_PREFS_KEY = 'ocdkit-histogram-prefs';
-let histPrefs = { log: false, autoScale: false };
+let histPrefs = { log: false, autoScale: false, clipLo: 1, clipHi: 99 };   // clip bounds in percent
 try { Object.assign(histPrefs, JSON.parse(localStorage.getItem(HIST_PREFS_KEY) || '{}')); } catch (e) {}
 function saveHistPrefs() { try { localStorage.setItem(HIST_PREFS_KEY, JSON.stringify(histPrefs)); } catch (e) {} }
 
@@ -7790,21 +7796,72 @@ function quantileOf(counts, q) {
   return counts.length - 1;
 }
 
-// Clip the display window to the 1st..99th percentile: of the whole volume for a
-// stack (fetched once from the server; the current slice's histogram is used
-// until it arrives), else of the image.
+// Clip the display window to the percentiles on the clip slider: of the whole
+// volume for a stack (its histogram is fetched once per session and cached; the
+// current slice's histogram stands in until it arrives), else of the image.
+let volumeHistCounts = null;
+let volumeHistSession = null;
+let volumeHistPending = null;
 function clipWindowToPercentiles({ emit = true } = {}) {
-  if (histogramData) setWindowBounds(histogramQuantile(0.01), histogramQuantile(0.99), { emit });
-  else notifyWindowChange();
-  if (CONFIG && CONFIG.isVolume && CONFIG.sessionId) {
-    fetch('/api/volume_histogram/' + encodeURIComponent(CONFIG.sessionId))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (j && j.counts) setWindowBounds(quantileOf(j.counts, 0.01), quantileOf(j.counts, 0.99));
-      })
-      .catch(() => {});
+  const lo = histPrefs.clipLo / 100;
+  const hi = histPrefs.clipHi / 100;
+  const isVolume = !!(CONFIG && CONFIG.isVolume && CONFIG.sessionId);
+  if (isVolume && volumeHistCounts && volumeHistSession === CONFIG.sessionId) {
+    setWindowBounds(quantileOf(volumeHistCounts, lo), quantileOf(volumeHistCounts, hi), { emit });
+    return;
   }
+  if (histogramData) setWindowBounds(histogramQuantile(lo), histogramQuantile(hi), { emit });
+  else notifyWindowChange();
+  if (!isVolume || volumeHistPending === CONFIG.sessionId) return;
+  const sid = CONFIG.sessionId;
+  volumeHistPending = sid;
+  fetch('/api/volume_histogram/' + encodeURIComponent(sid))
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      volumeHistPending = null;
+      if (!j || !j.counts) return;
+      volumeHistCounts = j.counts;
+      volumeHistSession = sid;
+      setWindowBounds(quantileOf(j.counts, histPrefs.clipLo / 100), quantileOf(j.counts, histPrefs.clipHi / 100));
+    })
+    .catch(() => { volumeHistPending = null; });
 }
+
+// The clip slider (two percentiles) and its two number fields. Moving either
+// re-clips the window live; the bounds persist with the histogram options.
+function formatPercent(v) { return String(Math.round(v * 100) / 100); }
+function syncClipControls() {
+  if (clipLoSlider) clipLoSlider.value = String(histPrefs.clipLo);
+  if (clipHiSlider) clipHiSlider.value = String(histPrefs.clipHi);
+  if (clipLoInput) clipLoInput.value = formatPercent(histPrefs.clipLo);
+  if (clipHiInput) clipHiInput.value = formatPercent(histPrefs.clipHi);
+  refreshSlider('clipPercentile');
+}
+function setClipPercentiles(lo, hi, { apply = true } = {}) {
+  lo = Math.min(100, Math.max(0, Number(lo)));
+  hi = Math.min(100, Math.max(0, Number(hi)));
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) { syncClipControls(); return; }
+  if (lo > hi) { const t = lo; lo = hi; hi = t; }
+  histPrefs.clipLo = lo; histPrefs.clipHi = hi; saveHistPrefs();
+  syncClipControls();
+  if (apply) clipWindowToPercentiles();
+}
+
+if (clipLoSlider && clipHiSlider) {
+  // the slider component keeps lo <= hi; either thumb re-clips live
+  const onClipSlide = () => setClipPercentiles(clipLoSlider.value, clipHiSlider.value);
+  clipLoSlider.addEventListener('input', onClipSlide);
+  clipHiSlider.addEventListener('input', onClipSlide);
+}
+if (clipLoInput) {
+  clipLoInput.addEventListener('change', () => setClipPercentiles(clipLoInput.value, histPrefs.clipHi));
+  attachNumberInputStepper(clipLoInput, (delta) => setClipPercentiles(histPrefs.clipLo + delta, histPrefs.clipHi));
+}
+if (clipHiInput) {
+  clipHiInput.addEventListener('change', () => setClipPercentiles(histPrefs.clipLo, clipHiInput.value));
+  attachNumberInputStepper(clipHiInput, (delta) => setClipPercentiles(histPrefs.clipLo, histPrefs.clipHi + delta));
+}
+syncClipControls();
 
 // Right-click on the histogram: log-scale counts, and auto-scale (re-clip on every
 // new image). A small menu of switches, styled like the panel.
@@ -7830,7 +7887,7 @@ function openHistogramMenu(evt) {
     return r;
   };
   m.appendChild(row('log', 'Log scale', 'Draw the histogram counts on a log scale (small populations become visible next to a large background peak)'));
-  m.appendChild(row('autoScale', 'Auto-scale', 'Re-clip the window to the 1st-99th percentile every time a new image or field of view loads (otherwise it is set once and kept)'));
+  m.appendChild(row('autoScale', 'Auto-scale', 'Re-clip the window to the clip slider percentiles every time a new image or field of view loads (otherwise it is set once and kept)'));
   document.body.appendChild(m);
   const w = m.offsetWidth, h = m.offsetHeight;
   m.style.left = Math.min(evt.clientX, window.innerWidth - w - 8) + 'px';
@@ -10277,10 +10334,10 @@ function initialize() {
     originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
     if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);  // HDR image layer
     computeHistogram();
-    // The window is set ONCE (from percentiles; of the whole volume for a stack)
-    // and then kept across slices, axes and fields of view, so the display does
-    // not jump. "Auto-scale" in the histogram's right-click menu re-clips every
-    // new image instead (the old behavior); the scissors button re-clips now.
+    // The window is set ONCE (from the clip slider's percentiles; of the whole
+    // volume for a stack) and then kept across slices, axes and fields of view,
+    // so the display does not jump. "Auto-scale" in the histogram's right-click
+    // menu re-clips every new image instead; moving the clip slider re-clips now.
     if (!windowInitialized || histPrefs.autoScale) {
       if (!windowInitialized) currentGamma = DEFAULT_GAMMA;
       clipWindowToPercentiles({ emit: false });
@@ -10590,8 +10647,6 @@ updateToolOptions();
 initTooltips();
 if (histogramCanvas) {
   histogramCanvas.addEventListener('contextmenu', openHistogramMenu);
-  const clipBtn = document.getElementById('histogramClipButton');
-  if (clipBtn) clipBtn.addEventListener('click', () => clipWindowToPercentiles());
   histogramCanvas.addEventListener('pointerdown', handleHistogramPointerDown);
   histogramCanvas.addEventListener('pointermove', handleHistogramPointerMove);
   histogramCanvas.addEventListener('pointerup', handleHistogramPointerUp);

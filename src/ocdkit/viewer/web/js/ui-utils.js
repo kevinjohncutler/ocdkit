@@ -376,12 +376,14 @@
     return clamp(Math.round(snapped * factor) / factor, min, max);
   }
 
-  function pointerPercent(evt, container) {
+  function pointerPercent(evt, container, inset) {
     var rect = container.getBoundingClientRect();
-    if (rect.width <= 0) {
+    var pad = inset > 0 ? inset : 0;
+    var usable = rect.width - 2 * pad;
+    if (usable <= 0) {
       return 0;
     }
-    var ratio = (evt.clientX - rect.left) / rect.width;
+    var ratio = (evt.clientX - rect.left - pad) / usable;
     return clamp(ratio, 0, 1);
   }
 
@@ -458,6 +460,11 @@
       return thumb;
     });
 
+    var trackRadiusOf = function (e) {
+      return parseFloat(getComputedStyle(e.track).getPropertyValue('--slider-track-radius'))
+        || Math.round(e.track.clientHeight / 2);
+    };
+
     var entry = {
       id: id,
       type: type === 'dual' ? 'dual' : 'single',
@@ -488,18 +495,19 @@
         }
         var minPercent = valueToPercent(minInput);
         var maxPercent = valueToPercent(maxInput);
-        var left = (minPercent * 100).toFixed(3) + '%';
-        var rightPercent = (maxPercent * 100).toFixed(3) + '%';
-        entry.track.style.setProperty('--slider-fill-start', left);
-        entry.track.style.setProperty('--slider-fill-end', rightPercent);
-        entry.thumbs[0].style.left = left;
-        entry.thumbs[1].style.left = rightPercent;
+        var dualRadius = trackRadiusOf(entry);
+        var dualUsable = Math.max(0, entry.track.clientWidth - dualRadius * 2);
+        var x0 = Math.round(dualUsable * minPercent);
+        var x1 = Math.round(dualUsable * maxPercent);
+        entry.track.style.setProperty('--slider-track-radius', dualRadius + 'px');
+        entry.track.style.setProperty('--slider-fill-left', x0 + 'px');
+        entry.track.style.setProperty('--slider-fill-px', (x1 - x0) + 'px');
+        entry.thumbs[0].style.left = (dualRadius + x0) + 'px';
+        entry.thumbs[1].style.left = (dualRadius + x1) + 'px';
       } else {
         var input = entry.inputs[0];
         var percent = valueToPercent(input);
-        var trackStyle = getComputedStyle(entry.track);
-        var trackRadius = parseFloat(trackStyle.getPropertyValue('--slider-track-radius'))
-          || Math.round(entry.track.clientHeight / 2);
+        var trackRadius = trackRadiusOf(entry);
         var usable = Math.max(0, entry.track.clientWidth - trackRadius * 2);
         var fillPx = Math.round(usable * percent);
         entry.track.style.setProperty('--slider-fill-px', fillPx + 'px');
@@ -571,7 +579,7 @@
 
     var onPointerDown = function (evt) {
       evt.preventDefault();
-      var percent = pointerPercent(evt, entry.root);
+      var percent = pointerPercent(evt, entry.root, trackRadiusOf(entry));
       var thumbIndex = entry.type === 'dual' ? pickThumb(percent) : 0;
       entry.activePointer = evt.pointerId;
       entry.activeThumb = thumbIndex;
@@ -591,7 +599,7 @@
       if (entry.activePointer === null || evt.pointerId !== entry.activePointer) {
         return;
       }
-      var percent = pointerPercent(evt, entry.root);
+      var percent = pointerPercent(evt, entry.root, trackRadiusOf(entry));
       setValueFromPercent(entry.activeThumb != null ? entry.activeThumb : 0, percent);
     };
 
@@ -640,7 +648,7 @@
       } catch (_) {
         /* ignore */
       }
-      var percent = pointerPercent(evt, entry.root);
+      var percent = pointerPercent(evt, entry.root, trackRadiusOf(entry));
       setValueFromPercent(entry.activeThumb != null ? entry.activeThumb : 0, percent);
       entry.activePointer = null;
       entry.activeThumb = null;

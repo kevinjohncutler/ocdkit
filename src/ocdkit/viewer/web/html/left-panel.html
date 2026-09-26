@@ -37,14 +37,26 @@
             <div class="control">
               <div class="histogram-surface">
                 <canvas id="histogram" class="histogram" width="220" height="80" data-tooltip-dynamic="true"></canvas>
-                <button type="button" id="histogramClipButton" class="histogram-clip-button"
-                        title="Clip: set the window to the 1st-99th percentile (of the whole volume for a stack). Right-click the histogram for log scale and auto-scale."
-                        aria-label="Clip window to percentiles">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <circle cx="6" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><path d="M8.6 8.6 19 19M8.6 15.4 19 5"/>
-                  </svg>
-                </button>
                 <div id="histogramValueMarker" class="histogram-value-marker" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="control slider-inline" id="clipRow">
+              <span class="control-heading control-heading--lower control-heading--icon" title="Clip: set the display window to these lower and upper percentiles of the intensities (of the whole volume for a stack). Right-click the histogram for log scale and auto-scale."><svg viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M236.52,187.09l-143-97.87a36,36,0,1,0-14.38,17.27l21.39,21.69L79.15,149.54l0,0a35.91,35.91,0,1,0,14.38,17.27l26.91-18.41L170,198.64a32.26,32.26,0,0,0,22.7,9.37,31.52,31.52,0,0,0,4.11-.27l.28,0,36.27-6.11a8,8,0,0,0,3.19-14.5Zm-162.38-97A20,20,0,1,1,80,76,20,20,0,0,1,74.14,90.13Zm0,104A20,20,0,1,1,80,180,20,20,0,0,1,74.14,194.15Zm61-101.5L169.94,57.4a32.19,32.19,0,0,1,26.84-9.14l.28,0,36,6.07a8.21,8.21,0,0,1,6.09,4.42,8,8,0,0,1-2.67,10.12l-69.93,47.85a4,4,0,0,1-4.51,0l-26.31-18A4,4,0,0,1,135.18,92.65Z"/></svg></span>
+              <div class="clip-stack">
+                <div class="slider-row">
+                  <div class="slider" data-slider-id="clipPercentile" data-slider-type="dual">
+                    <input type="range" id="clipLo" min="0" max="100" step="0.1" value="1" aria-label="Lower percentile" />
+                    <input type="range" id="clipHi" min="0" max="100" step="0.1" value="99" aria-label="Upper percentile" />
+                  </div>
+                </div>
+                <div class="clip-values">
+                  <div class="number-field" data-number-id="clipLoInput">
+                    <input type="number" id="clipLoInput" min="0" max="100" step="0.1" value="1" aria-label="Lower percentile" />
+                  </div>
+                  <div class="number-field" data-number-id="clipHiInput">
+                    <input type="number" id="clipHiInput" min="0" max="100" step="0.1" value="99" aria-label="Upper percentile" />
+                  </div>
+                </div>
               </div>
             </div>
             <div class="control slider-inline">
