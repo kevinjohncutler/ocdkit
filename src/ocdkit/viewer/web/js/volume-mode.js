@@ -121,7 +121,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, proj: curProj }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, proj: curProj, spinAxis: curSpinAxis }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -130,6 +130,7 @@
     // saved before meant something else (they also scaled the glow).
     let curDensity = (typeof _vs.eaAbsorption === "number" && _vs.eaAbsorption >= 0) ? _vs.eaAbsorption : 0.0;
     if (_vs.proj === 0 || _vs.proj === 1 || _vs.proj === 2) curProj = _vs.proj;              // remembered projection
+    let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
     // colour-maps its intensity through the SAME LUT so both views match.
@@ -631,10 +632,33 @@
       if (vgpu) vgpu.setDensity(v);
       saveVolState();
     }
-    // ── Spin (3D only): a turntable about the volume's vertical axis ──
+    // ── Spin (3D only): continuous rotation about x, y or z. The icon is a
+    // button that cycles the axis (and shows it); the switch starts and stops. ──
     const spinRow = document.getElementById("spinRow");
     const spinToggle = document.getElementById("spinToggle");
-    if (spinToggle) spinToggle.addEventListener("change", () => { if (vgpu) vgpu.setSpin(spinToggle.checked); });
+    const spinAxisButton = document.getElementById("spinAxisButton");
+    function syncSpinAxis() {
+      if (spinAxisButton) {
+        spinAxisButton.querySelectorAll("svg[data-spin-axis]").forEach((svg) => {
+          svg.toggleAttribute("hidden", Number(svg.dataset.spinAxis) !== curSpinAxis);   // SVG has no .hidden property
+        });
+        const name = "XYZ"[curSpinAxis];
+        spinAxisButton.title = "Spin axis: " + name + ". Click to cycle X, Y, Z.";
+        spinAxisButton.setAttribute("aria-label", "Spin axis " + name);
+      }
+      if (vgpu) vgpu.setSpinAxis(curSpinAxis);
+    }
+    if (spinAxisButton) spinAxisButton.addEventListener("click", () => {
+      curSpinAxis = (curSpinAxis + 1) % 3;
+      syncSpinAxis();
+      saveVolState();
+    });
+    syncSpinAxis();
+    if (spinToggle) spinToggle.addEventListener("change", () => {
+      if (!vgpu) return;
+      vgpu.setSpinAxis(curSpinAxis);
+      vgpu.setSpin(spinToggle.checked);
+    });
     function syncSpinRow() {
       if (spinRow) spinRow.hidden = mode !== "3d";
       if (mode !== "3d" && spinToggle && spinToggle.checked) {       // leaving 3D stops the spin

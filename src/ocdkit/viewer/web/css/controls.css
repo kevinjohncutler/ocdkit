@@ -199,7 +199,21 @@
   justify-content: center;
   height: var(--slider-track-height);
 }
-.control-heading.control-heading--icon svg { width: 16px; height: 16px; display: block; }
+/* Icon labels (Material Design Icons, Apache 2.0): the meaning is in the tooltip */
+.control-heading.control-heading--icon svg { width: 20px; height: 20px; display: block; }
+.control-heading.control-heading--icon svg[hidden] { display: none; }
+.control-heading.control-heading--icon[title] { cursor: help; }
+/* the spin label is a button that cycles the rotation axis */
+.control-heading.spin-axis-button {
+  padding: 0 2px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.control-heading.spin-axis-button:hover { background: var(--control-surface, rgba(128, 128, 128, 0.2)); }
 
 /* clip row: the dual slider full width, its two percentiles under its ends */
 .clip-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -2346,17 +2360,6 @@ button:not(:disabled):hover {
   animation: ocdkit-progress-snake 1.8s linear infinite;
   z-index: 1;
 }
-
-/* Greek-letter labels (gamma, alpha, rho): a symbol instead of a word, with the
-   meaning in the tooltip. Not upper-cased, a little larger, help cursor. */
-.control-heading.control-heading--symbol {
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 1.05rem;
-  cursor: help;
-}
-
-/* Scissors (clip to percentiles) in the histogram's corner */
 
 /* Right-click menu on the histogram */
 .histogram-menu {

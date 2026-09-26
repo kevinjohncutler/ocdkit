@@ -837,9 +837,10 @@
       }, { passive: false });
     }
 
-    /** Spin continuously about the volume's vertical (z) axis, a turntable
-     *  (degrees per second; time-based, so the speed is the same on any display).
-     *  Dragging still works while spinning. */
+    /** Spin continuously about one of the volume's axes (0 = x, 1 = y, 2 = z,
+     *  set with setSpinAxis; z by default, a turntable), in degrees per second.
+     *  Time-based, so the speed is the same on any display. Dragging still works
+     *  while spinning, and the axis can change mid-spin. */
     setSpin(on, degPerSec) {
       this._spin = !!on;
       this._spinRate = ((degPerSec > 0 ? degPerSec : 30) * Math.PI) / 180;
@@ -853,7 +854,8 @@
         const dt = last ? Math.min(0.1, (t - last) / 1000) : 0;
         last = t;
         if (dt > 0) {
-          const q = Mat4.quatFromAxisAngle([0, 0, 1], this._spinRate * dt);
+          const a = this._spinAxis == null ? 2 : this._spinAxis;
+          const q = Mat4.quatFromAxisAngle([a === 0 ? 1 : 0, a === 1 ? 1 : 0, a === 2 ? 1 : 0], this._spinRate * dt);
           this.orient = Mat4.quatNormalize(Mat4.quatMul(q, this.orient));
           this.render();
         }
@@ -862,6 +864,7 @@
       this._spinRaf = requestAnimationFrame(tick);
     }
     isSpinning() { return !!this._spin; }
+    setSpinAxis(a) { this._spinAxis = (a === 0 || a === 1) ? a : 2; }
 
     /** Serializable camera state (for persistence across refresh). */
     getCamera() {
