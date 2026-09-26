@@ -7466,8 +7466,16 @@ function syncHdrImageLayer() {
   // its red/blue clip markers are an SDR diagnostic.
   const realCmap = imageColormap !== 'gray' && imageColormap !== 'gray-clip';
   const hdrOn = !!(window.OcdHdrUI && OcdHdrUI.available && OcdHdrUI.enabled);
-  const grayHdr = imageColormap === 'gray' && hdrOn;
-  OcdHdr.setActive(OcdHdr.supported() && (realCmap || grayHdr));
+  // the transparent low end is drawn by this layer too (the native path is opaque)
+  const transparentOn = !!(window.OcdHdrUI && OcdHdrUI.transparent);
+  const grayLayer = imageColormap === 'gray' && (hdrOn || transparentOn);
+  const want = OcdHdr.supported() && (realCmap || grayLayer);
+  const changed = want !== OcdHdr.isActive();
+  OcdHdr.setActive(want);
+  // The layer only gets its view transform (and the native image its alpha) on a
+  // frame; without a redraw, switching the layer on from the HDR panel left the
+  // previous native frame on screen until the next pan or zoom.
+  if (changed && typeof scheduleDraw === 'function') scheduleDraw();
 }
 // hdr_ui.js re-evaluates the gate when HDR is switched on/off.
 window.__viewerSyncHdrImageLayer = syncHdrImageLayer;
@@ -7909,9 +7917,14 @@ function updateHistogramCursor(evt) {
   }
 }
 
-// Let the 3D volume view apply the same display window as the 2D image (it
-// has no access to this module's state otherwise; same pattern as gamma).
-function notifyWindow3D() {
+// Push the display window to the renderers that draw the image outside the
+// native WebGL path: the 2D HDR/colormap layer (it used to receive the window
+// only on colormap changes, so dragging the histogram did nothing while it was
+// drawing) and the 3D volume view (same pattern as gamma).
+function notifyWindowChange() {
+  if (window.OcdHdr && OcdHdr.setRange) {
+    OcdHdr.setRange((windowLow || 0) / 255, (windowHigh == null ? 255 : windowHigh) / 255);
+  }
   if (typeof window.__viewerOnWindow === 'function') {
     try { window.__viewerOnWindow(windowLow, windowHigh); } catch (e) {}
   }
@@ -7936,7 +7949,7 @@ function setWindowBounds(low, high, { emit = true } = {}) {
   }
   windowLow = clampedLow;
   windowHigh = clampedHigh;
-  notifyWindow3D();
+  notifyWindowChange();
   updateHistogramUI();
   if (emit) {
     applyImageAdjustments();
@@ -10172,7 +10185,7 @@ function initialize() {
       const highQ = histogramQuantile(0.99);
       setWindowBounds(lowQ, highQ, { emit: false });
     } else {
-      notifyWindow3D();
+      notifyWindowChange();
     }
     setGamma(currentGamma, { emit: false });
     updateHistogramUI();
