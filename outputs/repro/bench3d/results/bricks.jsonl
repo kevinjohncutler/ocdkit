@@ -94,3 +94,15 @@
 {"ds":"cells3d","B":4,"build_ms":12.5,"lab_brick_occupancy":0.243603515625,"dims":[64,64,15]}
 {"ds":"cells3d","B":8,"build_ms":5.600000001490116,"lab_brick_occupancy":0.3316650390625,"dims":[32,32,8]}
 {"ds":"cells3d","B":16,"build_ms":5.100000001490116,"lab_brick_occupancy":0.5263671875,"dims":[16,16,4]}
+{"ds":"dnaA_xy1","B":4,"build_ms":24.5,"lab_brick_occupancy":0.1263443050350334,"dims":[76,76,34]}
+{"ds":"dnaA_xy1","B":8,"build_ms":15.400000002235174,"lab_brick_occupancy":0.1514583672804302,"dims":[38,38,17]}
+{"ds":"dnaA_xy1","B":16,"build_ms":13.700000002980232,"lab_brick_occupancy":0.21052631578947367,"dims":[19,19,9]}
+{"ds":"5I","B":4,"build_ms":29.300000000745058,"lab_brick_occupancy":0.07707223623960377,"dims":[82,87,36]}
+{"ds":"5I","B":8,"build_ms":20.400000002235174,"lab_brick_occupancy":0.08890736634639074,"dims":[41,44,18]}
+{"ds":"5I","B":16,"build_ms":17.400000002235174,"lab_brick_occupancy":0.11471861471861472,"dims":[21,22,9]}
+{"ds":"dnaA_xy1","B":4,"build_ms":25.100000001490116,"lab_brick_occupancy":0.1263443050350334,"dims":[76,76,34]}
+{"ds":"dnaA_xy1","B":8,"build_ms":15.400000002235174,"lab_brick_occupancy":0.1514583672804302,"dims":[38,38,17]}
+{"ds":"dnaA_xy1","B":16,"build_ms":13.799999997019768,"lab_brick_occupancy":0.21052631578947367,"dims":[19,19,9]}
+{"ds":"5I","B":4,"build_ms":29.699999999254942,"lab_brick_occupancy":0.07707223623960377,"dims":[82,87,36]}
+{"ds":"5I","B":8,"build_ms":19.199999999254942,"lab_brick_occupancy":0.08890736634639074,"dims":[41,44,18]}
+{"ds":"5I","B":16,"build_ms":17.399999998509884,"lab_brick_occupancy":0.11471861471861472,"dims":[21,22,9]}
