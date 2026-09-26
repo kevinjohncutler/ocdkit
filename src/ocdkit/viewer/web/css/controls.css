@@ -79,6 +79,12 @@
   color: currentColor;
 }
 
+/* The hidden attribute must win over the display these classes set (e.g. the
+   3D-only projection and EA-density rows). */
+.control[hidden] {
+  display: none !important;
+}
+
 .slider-inline {
   flex-direction: row;
   align-items: center;
@@ -1291,6 +1297,19 @@ button:not(:disabled):hover {
   cursor: not-allowed;
 }
 
+
+/* 3D projection selector (EA / MIP / Mean): text labels in the segmented style.
+   The label is positioned so it paints above the active-option highlight
+   (an absolutely positioned ::before), like the icon selectors' content. */
+.proj-mode-toggle .kernel-option {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  padding: 0;
+}
+
+.proj-mode-toggle .kernel-option > span {
+  position: relative;
+}
 
 .seg-mode-toggle .kernel-option {
   font-size: 0.75rem;

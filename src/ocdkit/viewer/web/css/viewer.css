@@ -98,6 +98,7 @@ canvas.histogram {
 
 /* View pane toggles (2D/3D, projection, load masks) — themed to match the app */
 .view-mode-row { display: flex; gap: 4px; }
+.view-mode-row[hidden] { display: none; }   /* hidden must win over display:flex (2D-only axis row in 3D) */
 .view-mode-row + .view-mode-row { margin-top: 4px; }
 .view-mode-btn {
   flex: 1;

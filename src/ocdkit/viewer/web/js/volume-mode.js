@@ -95,7 +95,7 @@
     let mode = "2d";
     let vgpu = null;
     let loading = null;
-    let curProj = 1;        // projection: 1=MIP, 2=mean, 0=additive
+    let curProj = 0;        // projection: 0=emission-absorption (default), 1=MIP, 2=mean
     let hasMask = !!cfg.hasVolumeMask;
     let mask3dStale = false; // 2D edits not yet reflected in the 3D bundle
     let saved2dMode = null, saved3dMode = null;   // remembered label style per view
@@ -121,12 +121,13 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, density: curDensity }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, density: curDensity, proj: curProj }));
       } catch (e) {}
     }
     const _vs = loadVolState();
     let camState = _vs.camera || null;   // remembered 3D rotation/zoom/pan
     let curDensity = (typeof _vs.density === "number" && _vs.density > 0) ? _vs.density : 1.0;   // EA density
+    if (_vs.proj === 0 || _vs.proj === 1 || _vs.proj === 2) curProj = _vs.proj;              // remembered projection
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
     // colour-maps its intensity through the SAME LUT so both views match.
@@ -598,10 +599,10 @@
 
     function setProj(p) {
       curProj = p | 0;
-      if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) =>
-        x.classList.toggle("is-active", parseInt(x.getAttribute("data-proj"), 10) === curProj));
+      syncProjButtons();
       if (vgpu) vgpu.setMode(curProj);
       syncDensityRow();
+      saveVolState();
     }
 
     // ── EA density: a filled slider + number field (same component as the other
@@ -623,6 +624,14 @@
       saveVolState();
     }
     function syncDensityRow() { if (densRow) densRow.hidden = !(mode === "3d" && curProj === 0); }
+    // segmented control (same component as the segmentation / label-style modes)
+    function syncProjButtons() {
+      if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) => {
+        if (parseInt(x.getAttribute("data-proj"), 10) === curProj) x.setAttribute("data-active", "true");
+        else x.removeAttribute("data-active");
+      });
+    }
+    syncProjButtons();
     if (densRange) {
       densRange.value = String(curDensity);
       densRange.addEventListener("input", () => setDensity(densRange.value, "range"));

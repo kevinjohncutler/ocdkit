@@ -85,10 +85,12 @@
             <button type="button" class="view-mode-btn is-active" data-brush="2">2D brush</button>
             <button type="button" class="view-mode-btn" data-brush="3">3D brush</button>
           </div>
-          <div class="view-mode-row" id="projModeRow" hidden>
-            <button type="button" class="view-mode-btn is-active" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray">MIP</button>
-            <button type="button" class="view-mode-btn" data-proj="2" title="Mean intensity along each ray">Mean</button>
-            <button type="button" class="view-mode-btn" data-proj="0" title="Emission-absorption: a translucent volume whose opacity follows intensity (the histogram's lower bound sets what is transparent)">EA</button>
+          <div class="control" id="projModeRow" hidden>
+            <div id="projModeToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="3D projection">
+              <button type="button" class="kernel-option" data-proj="0" data-active="true" title="Emission-absorption: a translucent volume whose opacity follows intensity (the histogram's lower bound sets what is transparent)"><span>EA</span></button>
+              <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
+              <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
+            </div>
           </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
                title="Emission-absorption opacity per unit of ray length: higher is more opaque (you see the surface), lower is more translucent (you see inside)">

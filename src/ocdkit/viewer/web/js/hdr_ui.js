@@ -108,8 +108,13 @@
       const vg = window.__volumeMode && window.__volumeMode.gpu && window.__volumeMode.gpu();
       if (vg && vg.setHdr) { vg.setGain(api.enabled ? api.gain : 1); vg.setHdr(api.enabled); }
     } catch (e) { /* volume not in 3D mode */ }
-    const btn = document.getElementById('hdrToggleBtn');
-    if (btn) { btn.setAttribute('aria-pressed', api.enabled ? 'true' : 'false'); btn.classList.toggle('is-on', api.enabled); }
+    const sw = document.getElementById('hdrToggle');
+    if (sw) sw.checked = api.enabled;
+    // gain + measured headroom only matter while HDR is on
+    for (const id of ['hdrGainRow', 'hdrHeadroomVal']) {
+      const el = document.getElementById(id);
+      if (el) el.style.display = api.enabled ? '' : 'none';
+    }
     // (the range input is detached once the slider component registers it, so
     // keep references instead of looking it up by id)
     if (gainSliderEl) {
@@ -117,8 +122,7 @@
       if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider('hdrGainSlider');
     }
     if (gainNumEl) { gainNumEl.value = api.gain.toFixed(2); gainNumEl.disabled = !api.enabled; }
-    const gr = document.getElementById('hdrGainRow');
-    if (gr) { gr.style.opacity = api.enabled ? '' : '.45'; gr.style.pointerEvents = api.enabled ? '' : 'none'; }
+
   }
 
   // Persist the user's HDR choice (enabled + gain) so it survives a refresh.
@@ -160,10 +164,7 @@
       'calc(var(--accent-lb, 1) * var(--hdr-gain))); }\n' +
       '#hdrToggleRow { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }\n' +
       ':root.hdr-available #hdrToggleRow { display: flex; }\n' +
-      '#hdrToggleBtn { width: 100%; padding: 4px 10px; border-radius: 999px; cursor: pointer;\n' +
-      '  border: 1px solid var(--control-border, #444); background: var(--control-surface, #1a1a1a);\n' +
-      '  color: var(--panel-text-color, #ccc); font: inherit; font-size: 11px; letter-spacing: .04em; }\n' +
-      '#hdrToggleBtn.is-on { background: var(--accent-color); color: var(--accent-ink, #161616); border-color: transparent; }\n' +
+
       '#hdrHeadroomVal { font-size: 10px; opacity: .75; letter-spacing: .02em; }\n';
     const s = document.createElement('style'); s.id = 'hdrUiStyle'; s.textContent = css;
     document.head.appendChild(s);
@@ -174,9 +175,13 @@
     if (!panel) return;
     ensurePreview();
     const row = document.createElement('div'); row.id = 'hdrToggleRow'; row.className = 'control';
-    const btn = document.createElement('button');
-    btn.id = 'hdrToggleBtn'; btn.type = 'button'; btn.textContent = 'HDR'; btn.setAttribute('aria-pressed', 'false');
-    btn.addEventListener('click', function () { api.setEnabled(!api.enabled); });
+    // HDR on/off: a switch, like the "transparent" row above it
+    const btn = document.createElement('div');
+    btn.className = 'control label-style-row';
+    btn.innerHTML = '<span class="control-heading control-heading--lower">HDR</span>' +
+      '<label class="toggle toggle-left" title="Render the image in HDR, up to the display\'s measured headroom">' +
+      '<input type="checkbox" id="hdrToggle" /><span class="toggle-switch"></span></label>';
+    btn.querySelector('#hdrToggle').addEventListener('change', function (e) { api.setEnabled(e.target.checked); });
     // Same markup as the other panel sliders (filled track + number field).
     const gainRow = document.createElement('div');
     gainRow.id = 'hdrGainRow'; gainRow.className = 'control slider-inline';
