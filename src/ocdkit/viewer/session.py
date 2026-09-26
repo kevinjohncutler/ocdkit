@@ -1056,6 +1056,13 @@ class SessionManager:
                                            else _narrow_labels(state.current_mask_volume))
         return bundle
 
+    def volume_histogram(self, state: SessionState) -> Optional[list[int]]:
+        """256-bin histogram of the whole 8-bit volume (None if not a volume)."""
+        vol = state.current_volume
+        if vol is None:
+            return None
+        return np.bincount(np.asarray(vol, np.uint8).ravel(), minlength=256)[:256].tolist()
+
     def encode_volume_raw(self, state: SessionState) -> Optional[tuple[bytes, dict[str, str]]]:
         """The 3D view's volume as one binary body, or None if not a volume.
 

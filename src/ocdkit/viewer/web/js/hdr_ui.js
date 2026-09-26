@@ -115,6 +115,10 @@
       const el = document.getElementById(id);
       if (el) el.style.display = api.enabled ? '' : 'none';
     }
+    // re-measure the gain slider once visible (measured while hidden it is 0 wide)
+    if (api.enabled && window.ViewerUI && ViewerUI.refreshSlider) {
+      requestAnimationFrame(function () { ViewerUI.refreshSlider('hdrGainSlider'); });
+    }
     // (the range input is detached once the slider component registers it, so
     // keep references instead of looking it up by id)
     if (gainSliderEl) {

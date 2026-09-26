@@ -7773,6 +7773,76 @@ function computeHistogram() {
 }
 
 
+// ── Display-window policy + histogram options ─────────────────────────────
+let windowInitialized = false;
+const HIST_PREFS_KEY = 'ocdkit-histogram-prefs';
+let histPrefs = { log: false, autoScale: false };
+try { Object.assign(histPrefs, JSON.parse(localStorage.getItem(HIST_PREFS_KEY) || '{}')); } catch (e) {}
+function saveHistPrefs() { try { localStorage.setItem(HIST_PREFS_KEY, JSON.stringify(histPrefs)); } catch (e) {} }
+
+function quantileOf(counts, q) {
+  let total = 0;
+  for (let i = 0; i < counts.length; i += 1) total += counts[i];
+  if (!total) return 0;
+  const target = total * q;
+  let cum = 0;
+  for (let i = 0; i < counts.length; i += 1) { cum += counts[i]; if (cum >= target) return i; }
+  return counts.length - 1;
+}
+
+// Clip the display window to the 1st..99th percentile: of the whole volume for a
+// stack (fetched once from the server; the current slice's histogram is used
+// until it arrives), else of the image.
+function clipWindowToPercentiles({ emit = true } = {}) {
+  if (histogramData) setWindowBounds(histogramQuantile(0.01), histogramQuantile(0.99), { emit });
+  else notifyWindowChange();
+  if (CONFIG && CONFIG.isVolume && CONFIG.sessionId) {
+    fetch('/api/volume_histogram/' + encodeURIComponent(CONFIG.sessionId))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (j && j.counts) setWindowBounds(quantileOf(j.counts, 0.01), quantileOf(j.counts, 0.99));
+      })
+      .catch(() => {});
+  }
+}
+
+// Right-click on the histogram: log-scale counts, and auto-scale (re-clip on every
+// new image). A small menu of switches, styled like the panel.
+let histMenuEl = null;
+function closeHistogramMenu() { if (histMenuEl) { histMenuEl.remove(); histMenuEl = null; } }
+function openHistogramMenu(evt) {
+  evt.preventDefault();
+  evt.stopPropagation();   // the left panel's own context menu would open on top
+  closeHistogramMenu();
+  const m = document.createElement('div');
+  m.id = 'histogramMenu';
+  m.className = 'histogram-menu';
+  const row = (key, label, tip) => {
+    const r = document.createElement('label');
+    r.className = 'histogram-menu-row'; r.title = tip;
+    r.innerHTML = '<span>' + label + '</span><span class="toggle toggle-left"><input type="checkbox" data-pref="' + key +
+      '"' + (histPrefs[key] ? ' checked' : '') + ' /><span class="toggle-switch"></span></span>';
+    r.querySelector('input').addEventListener('change', (e) => {
+      histPrefs[key] = e.target.checked; saveHistPrefs();
+      if (key === 'log') renderHistogram();
+      if (key === 'autoScale' && histPrefs.autoScale) clipWindowToPercentiles();
+    });
+    return r;
+  };
+  m.appendChild(row('log', 'Log scale', 'Draw the histogram counts on a log scale (small populations become visible next to a large background peak)'));
+  m.appendChild(row('autoScale', 'Auto-scale', 'Re-clip the window to the 1st-99th percentile every time a new image or field of view loads (otherwise it is set once and kept)'));
+  document.body.appendChild(m);
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.min(evt.clientX, window.innerWidth - w - 8) + 'px';
+  m.style.top = Math.min(evt.clientY, window.innerHeight - h - 8) + 'px';
+  histMenuEl = m;
+  setTimeout(() => {
+    const off = (e) => { if (histMenuEl && !histMenuEl.contains(e.target)) { closeHistogramMenu(); document.removeEventListener('pointerdown', off, true); } };
+    document.addEventListener('pointerdown', off, true);
+  }, 0);
+}
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHistogramMenu(); });
+
 function histogramQuantile(q) {
   if (!histogramData) {
     return 0;
@@ -7808,7 +7878,7 @@ function renderHistogram() {
     ctx.fillStyle = accentColor;
     const binWidth = Math.max(width / 256, 1);
     for (let i = 0; i < 256; i += 1) {
-      const value = histogramData[i] / maxCount;
+      const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
       const barHeight = Math.max(1, Math.round(value * (height - 4)));
       const x = Math.floor(i * binWidth);
       ctx.fillRect(x, height - barHeight, Math.ceil(binWidth), barHeight);
@@ -10206,14 +10276,15 @@ function initialize() {
     }
     originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
     if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);  // HDR image layer
-    windowLow = 0;
-    windowHigh = 255;
-    currentGamma = DEFAULT_GAMMA;
     computeHistogram();
-    if (histogramData) {
-      const lowQ = histogramQuantile(0.01);
-      const highQ = histogramQuantile(0.99);
-      setWindowBounds(lowQ, highQ, { emit: false });
+    // The window is set ONCE (from percentiles; of the whole volume for a stack)
+    // and then kept across slices, axes and fields of view, so the display does
+    // not jump. "Auto-scale" in the histogram's right-click menu re-clips every
+    // new image instead (the old behavior); the scissors button re-clips now.
+    if (!windowInitialized || histPrefs.autoScale) {
+      if (!windowInitialized) currentGamma = DEFAULT_GAMMA;
+      clipWindowToPercentiles({ emit: false });
+      windowInitialized = true;
     } else {
       notifyWindowChange();
     }
@@ -10518,6 +10589,9 @@ updateToolButtons();
 updateToolOptions();
 initTooltips();
 if (histogramCanvas) {
+  histogramCanvas.addEventListener('contextmenu', openHistogramMenu);
+  const clipBtn = document.getElementById('histogramClipButton');
+  if (clipBtn) clipBtn.addEventListener('click', () => clipWindowToPercentiles());
   histogramCanvas.addEventListener('pointerdown', handleHistogramPointerDown);
   histogramCanvas.addEventListener('pointermove', handleHistogramPointerMove);
   histogramCanvas.addEventListener('pointerup', handleHistogramPointerUp);

@@ -464,6 +464,20 @@ def api_volume_bundle(session_id: str) -> dict:
     return bundle
 
 
+@router.get("/volume_histogram/{session_id}")
+def api_volume_histogram(session_id: str) -> dict:
+    """256-bin histogram of the whole (8-bit) volume, so the display window can be
+    set from percentiles of the entire stack rather than of one slice."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    counts = SESSION_MANAGER.volume_histogram(state)
+    if counts is None:
+        raise NotFound("not_a_volume")
+    return {"counts": counts}
+
+
 @router.get("/volume_raw/{session_id}")
 def api_volume_raw(session_id: str) -> Response:
     """Binary 3D volume for the WebGPU view: float16 intensity (normalized)

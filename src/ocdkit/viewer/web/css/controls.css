@@ -2336,3 +2336,58 @@ button:not(:disabled):hover {
   animation: ocdkit-progress-snake 1.8s linear infinite;
   z-index: 1;
 }
+
+/* Greek-letter labels (gamma, alpha, rho): a symbol instead of a word, with the
+   meaning in the tooltip. Not upper-cased, a little larger, help cursor. */
+.control-heading.control-heading--symbol {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 1.05rem;
+  cursor: help;
+}
+
+/* Scissors (clip to percentiles) in the histogram's corner */
+.histogram-clip-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--control-border);
+  background: var(--control-surface);
+  color: var(--panel-text-color);
+  cursor: pointer;
+  opacity: 0.8;
+}
+.histogram-clip-button:hover { opacity: 1; background: var(--accent-hover); color: var(--accent-ink, #161616); }
+
+/* Right-click menu on the histogram */
+.histogram-menu {
+  position: fixed;
+  z-index: 9500;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  min-width: 170px;
+  border-radius: var(--control-inset-radius);
+  background: var(--control-surface);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
+  color: var(--panel-text-color);
+  font-size: 12px;
+}
+.histogram-menu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
