@@ -7689,6 +7689,7 @@ function applyImageAdjustments() {
 // caller preload the image and the mask, then apply both back-to-back so the 2.5D
 // view never paints a new image against the previous slice's mask.
 window.__viewerSetSliceImageEl = function (img) {
+  if (!img || !img.naturalWidth) return;          // a failed load (e.g. lost session): keep the current image
   offCtx.drawImage(img, 0, 0);
   originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
   if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
@@ -10230,6 +10231,10 @@ function initialize() {
   img.onerror = (evt) => {
     const detail = evt?.message || 'unknown error';
     log('image load failed: ' + detail);
+    // an axis switch or reload after a server restart: say so instead of just failing
+    if (window.__viewerCheckSession && typeof imageDataUrl === 'string' && imageDataUrl.startsWith('/api/')) {
+      window.__viewerCheckSession(imageDataUrl);
+    }
     setLoadingOverlay('Failed to load image', true);
     (document.getElementById('app') || document.documentElement).style.opacity = '1';
   };

@@ -222,6 +222,10 @@
       }
       const [, mask] = await Promise.all([imgReady, maskReady]);
       if (seq !== _scrubSeq) return;                    // a newer scrub superseded us
+      if (!img.naturalWidth) {                          // failed to load: don't draw a broken image;
+        if (window.__viewerCheckSession) window.__viewerCheckSession(url);   // lost session -> reload banner
+        return;
+      }
       if (typeof window.__viewerSetSliceImageEl === "function") window.__viewerSetSliceImageEl(img);
       else if (typeof window.__viewerSetSliceImage === "function") window.__viewerSetSliceImage(url);
       if (hasMask) {

@@ -20,6 +20,7 @@ INDEX_HTML = WEB_DIR / "index.html"
 APP_JS = WEB_DIR / "app.js"
 HTML_DIR = WEB_DIR / "html"
 CSS_DIR = WEB_DIR / "css"
+SESSION_GUARD_JS = WEB_DIR / "js" / "session-guard.js"   # first: sees every API request
 POINTER_JS = WEB_DIR / "js" / "pointer-state.js"
 LOGGING_JS = WEB_DIR / "js" / "logging.js"
 HISTORY_JS = WEB_DIR / "js" / "history.js"
@@ -72,6 +73,7 @@ CSS_LINKS = (
 )
 
 JS_FILES = [
+    SESSION_GUARD_JS,
     POINTER_JS,
     LOGGING_JS,
     HISTORY_JS,
@@ -100,6 +102,7 @@ JS_FILES = [
 ]
 
 JS_STATIC_PATHS = (
+    "/static/js/session-guard.js",
     "/static/js/pointer-state.js",
     "/static/js/logging.js",
     "/static/js/history.js",
