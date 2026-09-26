@@ -132,13 +132,18 @@ canvas.histogram {
   gap: 8px;
   width: min(60%, 520px);
   padding: 6px 12px;
-  background: rgba(20, 22, 26, 0.72);
-  border-radius: 8px;
+  /* same surface as the side panels (was a hard-coded blue-tinted dark) */
+  background: var(--control-surface);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--control-inset-radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(var(--control-blur));
+  -webkit-backdrop-filter: blur(var(--control-blur));
 }
 #sliceBar[hidden] { display: none; }
 #sliceBar input[type="range"] { flex: 1; }
 #sliceLabel {
-  color: #cdd4db;
+  color: var(--panel-text-color);
   font-size: 12px;
   min-width: 70px;
   text-align: right;
