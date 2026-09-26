@@ -83,6 +83,18 @@
             <button type="button" class="view-mode-btn" data-proj="2" title="Mean intensity along each ray">Mean</button>
             <button type="button" class="view-mode-btn" data-proj="0" title="Emission-absorption: a translucent volume whose opacity follows intensity (the histogram's lower bound sets what is transparent)">EA</button>
           </div>
+          <div class="control slider-inline" id="eaDensityRow" hidden
+               title="Emission-absorption opacity per unit of ray length: higher is more opaque (you see the surface), lower is more translucent (you see inside)">
+            <span class="control-heading control-heading--lower">density</span>
+            <div class="slider-row">
+              <div class="slider" id="eaDensitySliderRoot" data-slider-type="single">
+                <input type="range" id="eaDensitySlider" min="0.05" max="5" step="0.05" value="1" />
+              </div>
+              <div class="number-field" data-number-id="eaDensityInput">
+                <input type="number" id="eaDensityInput" min="0.05" max="5" step="0.05" value="1.00" />
+              </div>
+            </div>
+          </div>
           <div class="view-mode-row">
             <button type="button" class="view-mode-btn" id="loadMasksButton">Load masks…</button>
           </div>

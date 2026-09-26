@@ -121,11 +121,12 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, density: curDensity }));
       } catch (e) {}
     }
     const _vs = loadVolState();
     let camState = _vs.camera || null;   // remembered 3D rotation/zoom/pan
+    let curDensity = (typeof _vs.density === "number" && _vs.density > 0) ? _vs.density : 1.0;   // EA density
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
     // colour-maps its intensity through the SAME LUT so both views match.
@@ -482,6 +483,7 @@
           renderMode: "compute",   // default to the faster compute-shader march (toggle with 'c')
           colormap: currentImageColormap(),
           gamma: currentGamma(),
+          density: curDensity,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -534,6 +536,7 @@
       sliceBar.hidden = is3d;
       if (axisRow) axisRow.hidden = is3d;               // axis picker is a 2D control
       if (projRow) projRow.hidden = !is3d;
+      syncDensityRow();
       setStyleButtonsFor3D(is3d);
       // 3D → solid (or the remembered 3D style); 2D → the remembered 2D style.
       if (window.__viewerSetMaskDisplayMode) {
@@ -597,6 +600,43 @@
       if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) =>
         x.classList.toggle("is-active", parseInt(x.getAttribute("data-proj"), 10) === curProj));
       if (vgpu) vgpu.setMode(curProj);
+      syncDensityRow();
+    }
+
+    // ── EA density: a filled slider + number field (same component as the other
+    // panel sliders), shown only in 3D with EA selected. Registered here rather
+    // than by app.js so this module keeps the range input's reference (the
+    // slider component detaches it from the DOM).
+    const densRow = document.getElementById("eaDensityRow");
+    const densRange = document.getElementById("eaDensitySlider");
+    const densNum = document.getElementById("eaDensityInput");
+    function setDensity(v, from) {
+      v = Math.max(0.05, Math.min(5, Number(v) || 1));
+      curDensity = v;
+      if (densRange && from !== "range") {
+        densRange.value = String(v);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("eaDensitySlider");
+      }
+      if (densNum && from !== "num") densNum.value = v.toFixed(2);
+      if (vgpu) vgpu.setDensity(v);
+      saveVolState();
+    }
+    function syncDensityRow() { if (densRow) densRow.hidden = !(mode === "3d" && curProj === 0); }
+    if (densRange) {
+      densRange.value = String(curDensity);
+      densRange.addEventListener("input", () => setDensity(densRange.value, "range"));
+      const droot = document.getElementById("eaDensitySliderRoot");
+      if (droot && window.ViewerUI && ViewerUI.registerSlider) {
+        droot.dataset.sliderId = "eaDensitySlider";
+        ViewerUI.registerSlider(droot);
+      }
+    }
+    if (densNum) {
+      densNum.value = curDensity.toFixed(2);
+      densNum.addEventListener("change", () => setDensity(densNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(densNum, (d) => setDensity(curDensity + d));
+      }
     }
     if (projRow) {
       projRow.querySelectorAll("[data-proj]").forEach((b) =>
@@ -656,6 +696,7 @@
           btn3d.classList.toggle("is-active", true);
           if (axisRow) axisRow.hidden = true;
           if (projRow) projRow.hidden = false;
+          syncDensityRow();
           setStyleButtonsFor3D(true);
           if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved3dMode || "solid");
           mask3dStale = false;
@@ -668,7 +709,7 @@
             canvas2d.style.visibility = ""; if (brush) brush.style.visibility = "";
             vcanvas.hidden = true; sliceBar.hidden = false;
             btn2d.classList.toggle("is-active", true); btn3d.classList.toggle("is-active", false);
-            if (axisRow) axisRow.hidden = false; if (projRow) projRow.hidden = true;
+            if (axisRow) axisRow.hidden = false; if (projRow) projRow.hidden = true; syncDensityRow();
             setStyleButtonsFor3D(false);
             await showSlice(slice);
             if (window.__viewerSetMaskDisplayMode) window.__viewerSetMaskDisplayMode(saved2dMode || "outline");
