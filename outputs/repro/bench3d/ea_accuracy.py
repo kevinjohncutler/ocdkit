@@ -52,13 +52,14 @@ def render(p, inv, s, density):
               .astype(np.float16).tobytes(), 256 * 8, dim="2d")
     out = dev.create_texture(size=(W, H, 1), format="rgba16float",
                              usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
-    u = np.zeros(44, np.float32)
+    u = np.zeros(48, np.float32)
     u[0:16] = inv
     u[20:24] = [-N / 2, -N / 2, -N / 2, 0]; u[24:28] = [N / 2, N / 2, N / 2, 0]
     u[28:32] = [N, N, N, 0]                                   # mode 0 = emission-absorption
     u[32:36] = [2 * N, density, 1.0, 0.0]                     # labels off
     u[36:40] = [1.0, 1.0, 1.0, 1.0]
     u[40:44] = [0.4, 0.0, 24.0, 1.0]
+    u[44:48] = [0.0, 1.0, 0.0, 0.0]                           # identity display window
     ub = dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
     bg = dev.create_bind_group(layout=p.get_bind_group_layout(0), entries=[
         {"binding": 0, "resource": {"buffer": ub}}, {"binding": 1, "resource": vol.create_view()},

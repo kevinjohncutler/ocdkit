@@ -57,7 +57,7 @@
   const lutTex = device.createTexture({ size: [256, 1], format: "rgba16float", usage: U.TEXTURE_BINDING | U.COPY_DST });
   { const r = new Float32Array(1024); for (let i = 0; i < 256; i++) r.set([i / 255, i / 255, i / 255, 1], 4 * i);
     device.queue.writeTexture({ texture: lutTex }, new Uint16Array(new Float16Array(r).buffer), { bytesPerRow: 2048 }, [256, 1]); }
-  const ub = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const ub = device.createBuffer({ size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const F16 = new Float32Array(65536);
   { const u = new Uint16Array(65536); for (let i = 0; i < 65536; i++) u[i] = i; F16.set(Float32Array.from(new Float16Array(u.buffer))); }
 
@@ -127,11 +127,11 @@
     const eye = M.quatRotate(orient, [0, 0, radius]), up = M.quatRotate(orient, [0, 1, 0]);
     const d = Math.hypot(...eye), near = Math.max(d * 0.05, d - diag * 0.6), far = d + diag * 0.6;
     const vp = M.multiply(M.perspective(Math.PI / 4, w / h, near, far), M.lookAt(eye, [0, 0, 0], up));
-    const u = new Float32Array(44);
+    const u = new Float32Array(48);
     u.set(M.invert(vp), 0); u.set([...eye, 1], 16);
     u.set([-NX / 2, -NY / 2, -NZ / 2, 0], 20); u.set([NX / 2, NY / 2, NZ / 2, 0], 24);
     u.set([NX, NY, NZ, st.mode], 28); u.set([512, st.density, st.opacity, st.lab], 32);
-    u.set([1, st.img, 1, 1], 36); u.set([0.4, 0, 24, 1], 40);
+    u.set([1, st.img, 1, 1], 36); u.set([0.4, 0, 24, 1], 40); u.set([0, 1, 0, 0], 44);
     device.queue.writeBuffer(ub, 0, u);
     const enc = device.createCommandEncoder();
     const doTs = HAS_TS && !qBusy;

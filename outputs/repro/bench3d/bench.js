@@ -62,7 +62,7 @@
     }
     // _writeUniform() layout from volume3d-gpu.js (44 floats)
     function uniformData(cam, NX, NY, NZ, mode, cfg) {
-      const u = new Float32Array(44);
+      const u = new Float32Array(48);   // 44 used by the pinned baseline; 44..47 = display window
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([...cam.box.min, 0], 20); u.set([...cam.box.max, 0], 24);
@@ -70,6 +70,7 @@
       u.set([Math.min(512, Math.max(NX, NY, NZ) * 2), 1.0, cfg.opacity, cfg.lab], 32);
       u.set([1.0, cfg.img, 1.0, 1.0], 36);
       u.set([0.4, 0.0, 24.0, 1.0], 40);
+      u.set([0.0, 1.0, 0.0, 0.0], 44);
       return u;
     }
     const labelColorJS = (g) => { if (!g) return [0, 0, 0]; const a = 6.28318530718 * ((g * 0.61803398875) % 1);
@@ -223,7 +224,7 @@
       const lutTex = device.createTexture({ size: [256, 1], format: "rgba16float", usage: U.TEXTURE_BINDING | U.COPY_DST });
       { const r = new Float32Array(256 * 4); for (let i = 0; i < 256; i++) r.set([i / 255, i / 255, i / 255, 1], 4 * i);
         device.queue.writeTexture({ texture: lutTex }, new Uint16Array(new Float16Array(r).buffer), { bytesPerRow: 256 * 8 }, [256, 1]); }
-      const ub = device.createBuffer({ size: 44 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const ub = device.createBuffer({ size: 48 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
       for (const ds of DS) {
         const d = await loadDs(ds), { NX, NY, NZ } = d.meta;
@@ -317,7 +318,7 @@
       const outTex = device.createTexture({ size: [W, H], format: "rgba16float", usage: U.STORAGE_BINDING | U.COPY_SRC });
       const idTex = device.createTexture({ size: [W, H], format: "r32uint", usage: U.STORAGE_BINDING | U.COPY_SRC });
       const lutTex = device.createTexture({ size: [256, 1], format: "rgba16float", usage: U.TEXTURE_BINDING | U.COPY_DST });
-      const ub = device.createBuffer({ size: 44 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const ub = device.createBuffer({ size: 48 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
       const io = device.createBuffer({ size: 32, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
       const iorb = device.createBuffer({ size: 32, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       for (const ds of DS) {
