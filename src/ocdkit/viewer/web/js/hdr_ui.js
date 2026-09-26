@@ -16,7 +16,7 @@
   'use strict';
   const root = document.documentElement;
   const HC = window.HdrColormap, CI = window.ColormapImage, HH = window.HdrHeadroom;
-  const api = { available: false, enabled: true, gain: 1.0 };
+  const api = { available: false, enabled: true, gain: 1.0, transparent: false };
   window.OcdHdrUI = api;
 
   function available() {
@@ -92,7 +92,14 @@
       if (OcdHdr.setHdr) OcdHdr.setHdr(api.enabled);
       if (OcdHdr.setGain) OcdHdr.setGain(api.enabled ? api.gain : 1);
     }
-    // grayscale uses the 2D HDR layer only while HDR is on: re-check the gate
+    if (window.OcdHdr && OcdHdr.setTransparent) OcdHdr.setTransparent(api.transparent);
+    try {
+      const vt = window.__volumeMode && window.__volumeMode.gpu && window.__volumeMode.gpu();
+      if (vt && vt.setTransparent) vt.setTransparent(api.transparent);
+    } catch (e) { /* volume not in 3D mode */ }
+    const tt = document.getElementById('cmapTransparentToggle');
+    if (tt) tt.checked = api.transparent;
+    // grayscale uses the 2D HDR layer only while HDR is on (or transparency): re-check the gate
     if (typeof window.__viewerSyncHdrImageLayer === 'function') {
       try { window.__viewerSyncHdrImageLayer(); } catch (e) { /* app not ready */ }
     }
@@ -128,6 +135,14 @@
 
   api.setEnabled = function (on) { api.enabled = !!on && api.available; _persist(); apply(); };
   api.setGain = function (g) { api.gain = Math.max(0.25, Math.min(4, g)); _persist(); apply(); };
+  // Transparent low end, for 2D and 3D; independent of HDR, so saved on its own.
+  const TRANSP_STORE = 'ocdkit-cmap-transparent';
+  try { api.transparent = localStorage.getItem(TRANSP_STORE) === '1'; } catch (e) {}
+  api.setTransparent = function (on) {
+    api.transparent = !!on;
+    try { localStorage.setItem(TRANSP_STORE, api.transparent ? '1' : '0'); } catch (e) {}
+    apply();
+  };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
 
   function injectStyle() {
@@ -220,6 +235,12 @@
 
   function start() {
     injectStyle(); injectControls(); pollHeadroom();
+    const tt = document.getElementById('cmapTransparentToggle');
+    if (tt) {
+      tt.checked = api.transparent;
+      tt.addEventListener('change', function () { api.setTransparent(tt.checked); });
+    }
+    if (api.transparent) apply();          // restore the saved choice even without HDR
     let tries = 0;
     (function poll() {
       api.available = available();

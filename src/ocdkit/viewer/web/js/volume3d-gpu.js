@@ -229,6 +229,7 @@
       // HDR. Off = the plain SDR colormap. Driven by the central OcdHdrUI toggle.
       this._hdr = !!opts.hdr;
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
+      this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -331,6 +332,12 @@
           for (let i = 0; i < N; i += 1) { const v = i / 255; out[i * 4] = v; out[i * 4 + 1] = v; out[i * 4 + 2] = v; out[i * 4 + 3] = 1.0; }
         }
       }
+      // transparent low end: alpha from the colormap's lightness (else 1)
+      const HCMa = (typeof window !== "undefined") ? window.HdrColormap : null;
+      if (this._transparent && HCMa && HCMa.transparentAlpha) {
+        const a = HCMa.transparentAlpha(name);
+        for (let i = 0; i < N && i < a.length; i += 1) out[i * 4 + 3] = a[i];
+      }
       this.device.queue.writeTexture({ texture: this.lutTex }, _toF16(out).buffer,
         { bytesPerRow: N * 8, rowsPerImage: 1 }, [N, 1, 1]);
     }
@@ -341,6 +348,15 @@
     /** HDR on/off — swaps the LUT between the plain SDR colormap and the lifted
      *  Display-P3 one. Driven by the shared OcdHdrUI toggle. */
     setHdr(on) { this._hdr = !!on; this._uploadLut(this.colormap); this._requestRender(); }
+    /** Transparent low end: dark colormap values fade out instead of drawing as
+     *  black (in EA they also stop dimming what is behind them). */
+    setTransparent(on) {
+      const was = this._transparent;
+      this._transparent = !!on;
+      this._uploadLut(this.colormap);
+      if (was !== this._transparent) this._prewarmComputePipelines();   // the other states, in the background
+      this._requestRender();
+    }
     /** HDR gain (0.25–4): scales the lift's peak-nits target, like the 2D slider. */
     setGain(g) { this._gain = g > 0 ? g : 1.0; if (this._hdr) { this._uploadLut(this.colormap); this._requestRender(); } }
 
@@ -417,13 +433,14 @@
 
     /** Pipeline for one render state (override constants), built on first use. */
     _computePipelineFor(mode, showImg, showLab, shade) {
-      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}`;
+      const tr = this._transparent ? 1 : 0;
+      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}`;
       if (!this._computePipes[key]) {
         this._computePipes[key] = this.device.createComputePipeline({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
                      constants: { MODE: mode, SHOW_IMG: showImg ? 1 : 0, SHOW_LAB: showLab ? 1 : 0,
-                                  SHADE_LAB: shade ? 1 : 0, BRICK } },
+                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr } },
         });
       }
       return this._computePipes[key];
@@ -433,13 +450,14 @@
      *  layers never stalls on a shader compile. */
     _prewarmComputePipelines() {
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
+      const tr = this._transparent ? 1 : 0;              // the current transparency state
       for (const mode of [0, 1, 2]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
-        const key = `${mode}|${img}|${lab}|${sh}`;
+        const key = `${mode}|${img}|${lab}|${sh}|${tr}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
-                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK } },
+                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr } },
         }).then((p) => { if (!this._computePipes[key]) this._computePipes[key] = p; }).catch(() => {});
       }
     }

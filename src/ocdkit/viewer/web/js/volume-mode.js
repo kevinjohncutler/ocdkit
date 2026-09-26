@@ -490,6 +490,7 @@
           // the display-capability probe has resolved.
           hdr: !!(window.OcdHdrUI && window.OcdHdrUI.enabled && window.OcdHdrUI.available),
           gain: (window.OcdHdrUI && window.OcdHdrUI.gain) || 1,
+          transparent: !!(window.OcdHdrUI && window.OcdHdrUI.transparent),   // transparent low end
           onCameraChange: () => { if (vgpu) camState = vgpu.getCamera(); saveVolState(); },
           onFps: (fps, scale) => showFps(fps, scale),
         });

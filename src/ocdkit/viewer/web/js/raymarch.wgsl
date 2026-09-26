@@ -60,13 +60,16 @@ fn hsv(h : f32, s : f32, v : f32) -> vec3<f32> {
 }
 // Colormap the scalar intensity v in [0,1] via the 256-entry LUT (linear
 // interp). For the grayscale LUT (entry i = i/255) this returns exactly v.
-fn lutColor(v : f32) -> vec3<f32> {
+// Colormap color (rgb) and alpha (a). Alpha is 1 unless the transparent-low-end
+// option is on, in which case it follows the colormap's lightness, so dark values
+// fade out instead of drawing as black (and, in EA, stop dimming what's behind).
+fn lutRGBA(v : f32) -> vec4<f32> {
   let f = clamp(v, 0.0, 1.0) * 255.0;
   let i0 = i32(floor(f));
   let i1 = min(i0 + 1, 255);
   let fr = f - f32(i0);
-  let c0 = textureLoad(lutTex, vec2<i32>(i0, 0), 0).rgb;
-  let c1 = textureLoad(lutTex, vec2<i32>(i1, 0), 0).rgb;
+  let c0 = textureLoad(lutTex, vec2<i32>(i0, 0), 0);
+  let c1 = textureLoad(lutTex, vec2<i32>(i1, 0), 0);
   return mix(c0, c1, fr);
 }
 fn labelColor(lab : u32) -> vec3<f32> {
@@ -142,9 +145,10 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       if (mode == 0) {                                        // additive (emission-absorption)
         let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);                     // gamma per voxel
         let segLen = max(tExit - tPrev, 0.0);                 // path length through this voxel
-        let a = 1.0 - exp(-sg * density * segLen);            // exact for any segment chopping
+        let c4 = lutRGBA(sg);
+        let a = (1.0 - exp(-sg * density * segLen)) * c4.a;   // exact for any segment chopping
         let om = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
+        imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * a * om, imgAcc.w + a * om);
         if (imgAcc.w >= 0.995) { break; }                     // early ray termination
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
@@ -162,8 +166,8 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (mode == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
-    else if (mode == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
+    if (mode == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); imgA = v * c4.a; imgPC = c4.rgb * c4.a; }
+    else if (mode == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); imgA = m * c4.a; imgPC = c4.rgb * c4.a; }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 

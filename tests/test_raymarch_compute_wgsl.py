@@ -80,7 +80,7 @@ def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, 
 
 
 class Scene:
-    def __init__(self, dev, vol16, lab):
+    def __init__(self, dev, vol16, lab, lut_alpha=None):
         self.dev = dev
         NZ, NY, NX = vol16.shape
         self.dims = (NX, NY, NZ)
@@ -91,8 +91,9 @@ class Scene:
         self.bimg = _tex(dev, "r16float", (bx, by, bz), bi.tobytes(), bx * 2)
         self.blab = _tex(dev, "r8uint", (bx, by, bz), bl.tobytes(), bx)
         ramp = np.linspace(0, 1, 256, dtype=np.float32)
+        alpha = np.ones(256, np.float32) if lut_alpha is None else np.asarray(lut_alpha, np.float32)
         self.lut = _tex(dev, "rgba16float", (256, 1, 1),
-                        np.stack([ramp, ramp, ramp, np.ones(256, np.float32)], 1).astype(np.float16).tobytes(),
+                        np.stack([ramp, ramp, ramp, alpha], 1).astype(np.float16).tobytes(),
                         256 * 8, dim="2d")
         self.cmod = dev.create_shader_module(code=_read(COMPUTE))
         fmod = dev.create_shader_module(code=_read(FRAGMENT))
@@ -110,14 +111,14 @@ class Scene:
         rb.unmap()
         return out
 
-    def compute_pipeline(self, mode, show_img, show_lab, shade=1):
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0):
         return self.dev.create_compute_pipeline(layout="auto", compute={
             "module": self.cmod, "entry_point": "cs",
             "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
-                          "BRICK": float(BRICK)}})
+                          "BRICK": float(BRICK), "TRANSP": transp}})
 
-    def compute(self, u, mode, show_img, show_lab, W, H):
-        p = self.compute_pipeline(mode, show_img, show_lab)
+    def compute(self, u, mode, show_img, show_lab, W, H, transp=0):
+        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp)
         out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
                                       usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
         ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
@@ -245,3 +246,24 @@ def test_display_window_matches_numpy(dev):
     out = s.compute(_uniform(inv, (n, n, NZ), 0, density=5.0, show_lab=0, window=(floor, floor + 0.1)),
                     0, 1, 0, n, n)
     assert out[..., 3].max() == 0.0
+
+
+def test_transparent_low_end(dev):
+    """Colormap alpha (the transparent-low-end option) reaches the render: MIP
+    alpha is value x alpha(value) with premultiplied color, and a colormap that
+    is fully transparent makes emission-absorption draw nothing at all."""
+    vol, lab = _sparse_scene()
+    vol, lab = np.ascontiguousarray(vol[:, :32, :32]), np.ascontiguousarray(lab[:, :32, :32])
+    NZ, n = vol.shape[0], 32
+    ramp = np.linspace(0, 1, 256, dtype=np.float32)
+    s = Scene(dev, vol, lab, lut_alpha=ramp)             # alpha = lightness (gray ramp)
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    colmax = vol.astype(np.float32)[:, ::-1, :].max(axis=0)
+    off = s.compute(_uniform(inv, (n, n, NZ), 1, show_lab=0), 1, 1, 0, n, n)          # option off: alpha ignored
+    np.testing.assert_allclose(off[..., 3], colmax, atol=3e-3)
+    out = s.compute(_uniform(inv, (n, n, NZ), 1, show_lab=0), 1, 1, 0, n, n, transp=1)
+    np.testing.assert_allclose(out[..., 3], colmax * colmax, atol=4e-3)
+    np.testing.assert_allclose(out[..., 0], colmax * colmax, atol=4e-3)   # gray color x alpha
+    clear = Scene(dev, vol, lab, lut_alpha=np.zeros(256))
+    out = clear.compute(_uniform(inv, (n, n, NZ), 0, density=5.0, show_lab=0), 0, 1, 0, n, n, transp=1)
+    assert out[..., 3].max() == 0.0 and out[..., :3].max() == 0.0

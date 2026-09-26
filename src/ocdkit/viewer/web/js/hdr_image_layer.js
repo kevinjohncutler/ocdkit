@@ -29,7 +29,7 @@
   }
 
   let canvas = null, renderer = null, headroom = null, ready = false;
-  const pending = { img: null, cmap: 'viridis', range: null, gamma: null, matrix: null };
+  const pending = { img: null, cmap: 'viridis', range: null, gamma: null, matrix: null, transparent: false };
   // originalImageData is already top-row-first (same as the displayed image), and
   // the viewer's matrix maps image-px→clip upright — so NO extra flip (an earlier
   // FLIP_Y guess mirrored the image vs the native render).
@@ -56,6 +56,7 @@
     api.setColormap(pending.cmap);
     if (pending.range) api.setRange(pending.range[0], pending.range[1]);
     if (pending.gamma != null) api.setGamma(pending.gamma);
+    if (pending.transparent) api.setTransparent(true);
     if (pending.matrix) api.draw(pending.matrix);
   })().catch(function (e) { console.warn('[OcdHdr] init failed:', e); });
 
@@ -92,6 +93,12 @@
   // the image too. No-op on the WebGL2 backend (already SDR).
   api.setHdr = function (on) { this.hdr = !!on; if (ready && renderer.setHdr) renderer.setHdr(!!on); };
   api.setGain = function (g) { this._gain = g; if (ready && renderer.setGain) renderer.setGain(g); };
+  // Transparent low end (the colormap's alpha follows its lightness).
+  api.setTransparent = function (on) {
+    this.transparent = !!on;
+    if (!ready) { pending.transparent = !!on; return; }
+    if (renderer.setTransparent) renderer.setTransparent(!!on);
+  };
   api.setActive = function (on) {
     this.active = !!on;
     if (canvas) canvas.style.display = on ? 'block' : 'none';

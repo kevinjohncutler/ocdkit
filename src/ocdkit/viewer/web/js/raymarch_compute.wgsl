@@ -47,14 +47,20 @@ override SHOW_IMG : bool = true;
 override SHOW_LAB : bool = true;
 override SHADE_LAB : bool = true;
 override BRICK : f32 = 16.0;         // brick edge in voxels (must match the host's brick grid)
+// Transparent low end (colormap alpha). A pipeline constant, not a uniform: with
+// it off the alpha multiply compiles away (as a runtime value it cost EA ~3%).
+override TRANSP : bool = false;
 
-fn lutColor(v : f32) -> vec3<f32> {
+// Colormap color (rgb) and alpha (a). Alpha is 1 unless the transparent-low-end
+// option is on, in which case it follows the colormap's lightness, so dark values
+// fade out instead of drawing as black (and, in EA, stop dimming what's behind).
+fn lutRGBA(v : f32) -> vec4<f32> {
   let f = clamp(v, 0.0, 1.0) * 255.0;
   let i0 = i32(floor(f));
   let i1 = min(i0 + 1, 255);
   let fr = f - f32(i0);
-  let c0 = textureLoad(lutTex, vec2<i32>(i0, 0), 0).rgb;
-  let c1 = textureLoad(lutTex, vec2<i32>(i1, 0), 0).rgb;
+  let c0 = textureLoad(lutTex, vec2<i32>(i0, 0), 0);
+  let c1 = textureLoad(lutTex, vec2<i32>(i1, 0), 0);
   return mix(c0, c1, fr);
 }
 fn labelColor(lab : u32) -> vec3<f32> {
@@ -207,9 +213,10 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       if (MODE == 0) {
         let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
         let segLen = max(tExit - tPrev, 0.0);
-        let a = 1.0 - exp(-sg * density * segLen);
+        let c4 = lutRGBA(sg);
+        let a = (1.0 - exp(-sg * density * segLen)) * select(1.0, c4.a, TRANSP);   // exact for any segment chopping
         let om = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + lutColor(sg) * a * om, imgAcc.w + a * om);
+        imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * a * om, imgAcc.w + a * om);
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
@@ -228,8 +235,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
-    else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
+    if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
+    else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 

@@ -226,6 +226,26 @@
     return lut;
   }
 
+  // Transparent low end: alpha per LUT entry = rescale(lightness)^gamma, where
+  // lightness is the HSV value (max channel) of the display-encoded SDR colormap,
+  // so the colormap's dark end fades to transparent. Same ramp as
+  // ocdkit.wgpu.lines._transparent_lut. Computed from the unlifted colormap, so it
+  // is identical with HDR on or off (the HDR lift changes brightness, not alpha).
+  function transparentAlpha(cmapName, gamma) {
+    const g = gamma > 0 ? gamma : 0.5;
+    const sdr = generateImageCmapLutHdr(cmapName, { lift: false });     // linear P3 <= 1
+    const enc = function (c) { c = Math.max(0, Math.min(1, c)); return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; };
+    const n = sdr.length / 4, v = new Float32Array(n);
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < n; i += 1) {
+      v[i] = enc(Math.max(sdr[4 * i], sdr[4 * i + 1], sdr[4 * i + 2]));
+      if (v[i] < lo) lo = v[i]; if (v[i] > hi) hi = v[i];
+    }
+    const out = new Float32Array(n), span = hi > lo ? hi - lo : 1;
+    for (let i = 0; i < n; i += 1) out[i] = Math.pow((v[i] - lo) / span, g);
+    return out;
+  }
+
   // Gamma-encoded uint8 SDR colormap LUT (256*4 RGBA, Display-P3 transfer) — the
   // unlifted colormap for the WebGL2 SDR backend, matching the WebGPU colours at
   // SDR brightness (same lift source). Written directly to a display-p3 canvas.
@@ -296,7 +316,9 @@
     let t = pow(t0, u.gamma);
     let idx = min(u32(t * (u.count - 1.0) + 0.5), u32(u.count) - 1u);
     let cc = lut[idx];
-    return vec4f(l2g(cc.r), l2g(cc.g), l2g(cc.b), 1.0);
+    // premultiplied (the canvas is alphaMode 'premultiplied'); a = 1 unless the
+    // transparent-low-end option is on
+    return vec4f(vec3f(l2g(cc.r), l2g(cc.g), l2g(cc.b)) * cc.a, cc.a);
   }`;
 
   class HdrColormapRenderer {
@@ -420,6 +442,9 @@
 
     setHeadroom(mult) { this._headroomVal = mult; this._uploadLut(); this.requestRedraw(); }
 
+    // Transparent low end: the colormap's alpha follows its lightness.
+    setTransparent(on) { this._transparent = !!on; this._uploadLut(); this.requestRedraw(); }
+
     // Manual HDR gain — scales the lift's peak target (× the live headroom). 1 =
     // the auto/adaptive behavior; <1 dimmer, >1 brighter (clamped by the display).
     setGain(g) { this._gain = g > 0 ? g : 1; this._uploadLut(); this.requestRedraw(); }
@@ -429,6 +454,10 @@
         ? hdrLutForHeadroom(this._cmap, this._headroomVal, this._gain || 1)
         : generateImageCmapLutHdr(this._cmap, { lift: false });
       this._lutPeak = lutPeak(lut);                      // brightest channel (x SDR white)
+      if (this._transparent) {
+        const a = transparentAlpha(this._cmap);
+        for (let i = 0; i < a.length; i += 1) lut[4 * i + 3] = a[i];
+      }
       this.device.queue.writeBuffer(this.lutBuf, 0, lut);
     }
 
@@ -460,7 +489,7 @@
 
   return {
     IMAGE_CMAP_LUT_SIZE, HDR_SDR_WHITE_NITS, HDR_PEAK_NITS_DEFAULT, COLORMAP_STOPS,
-    generateImageCmapLutHdr, computeOptimalHdrJz, hdrCmapStats, sdrLutU8, lutPeak, hdrLutForHeadroom,
+    generateImageCmapLutHdr, computeOptimalHdrJz, hdrCmapStats, sdrLutU8, lutPeak, hdrLutForHeadroom, transparentAlpha,
     getDevice, HdrColormapRenderer,
   };
 }));

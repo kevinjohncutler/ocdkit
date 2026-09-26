@@ -117,6 +117,7 @@
     setGamma(g) { this._gamma = g || 1.0; this.requestRedraw(); }
     setHdr() { /* WebGL2 is SDR-only; no-op for interface parity */ }
     setGain() { /* SDR can't exceed white; no-op for interface parity */ }
+    setTransparent() { /* WebGL2 fallback draws opaque; no-op for interface parity */ }
     setTransform(mat3col9) { this._matrix = mat3col9 || null; this.requestRedraw(); }
     _fillMatrix() { const W = this._w || 1, H = this._h || 1; return [2 / W, 0, 0, 0, -2 / H, 0, -1, 1, 1]; }
 
