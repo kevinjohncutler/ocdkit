@@ -1408,6 +1408,21 @@ function uploadBaseTextureFromCanvas() {
   pipelineGl.bindTexture(pipelineGl.TEXTURE_2D, null);
 }
 
+// The Affinity Graph toggle is enabled by the plugin panel only when a
+// segmentation run reports a graph, but the graph is also built locally from
+// loaded masks (and rebuilt on edits), which left the toggle disabled over a
+// visible graph. Mirror the actual state: whenever a graph exists, the toggle is
+// usable and shows whether it is visible. Cheap: touches the DOM only on change.
+function syncAffinityToggle() {
+  if (!affinityGraphToggle) affinityGraphToggle = document.getElementById('affinityGraphToggle');
+  const t = affinityGraphToggle;
+  if (!t) return;
+  const has = !!(affinityGraphInfo && affinityGraphInfo.values);
+  if (!has) return;                       // no graph: leave the panel's disabled state
+  if (t.disabled) t.disabled = false;
+  if (t.checked !== showAffinityGraph) t.checked = showAffinityGraph;
+}
+
 function computeAffinityAlpha() {
   if (!showAffinityGraph || !affinityGraphInfo || !affinityGraphInfo.values) {
     return 0;
@@ -6908,6 +6923,7 @@ function draw() {
   const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
   updateFps(now);
   lastDrawCompletedAt = now;
+  syncAffinityToggle();
   if (shouldLogDraw()) {
     log('draw start scale=' + viewState.scale.toFixed(3) + ' offset=' + viewState.offsetX.toFixed(1) + ',' + viewState.offsetY.toFixed(1));
   }
