@@ -1424,7 +1424,8 @@ function syncAffinityToggle() {
 }
 
 function computeAffinityAlpha() {
-  if (!showAffinityGraph || !affinityGraphInfo || !affinityGraphInfo.values) {
+  // the graph is part of the labels: hidden labels hide it too
+  if (!showAffinityGraph || !maskVisible || !affinityGraphInfo || !affinityGraphInfo.values) {
     return 0;
   }
   const scale = Math.max(0.0001, Number(viewState && viewState.scale ? viewState.scale : 1.0));
@@ -1669,7 +1670,7 @@ function updateOverlayVisibility() {
   if (!webglOverlay || !webglOverlay.enabled) {
     return;
   }
-  const hasLines = showAffinityGraph && webglOverlay.edgeCount > 0;
+  const hasLines = showAffinityGraph && maskVisible && webglOverlay.edgeCount > 0;
   const visible = hasLines;
   const alpha = hasLines
     ? (Number.isFinite(webglOverlay.displayAlpha) ? webglOverlay.displayAlpha : 1)
@@ -1683,7 +1684,7 @@ function drawAffinityGraphShared(matrix) {
     return;
   }
   const glCanvas = getOverlayCanvasElement();
-  const showLines = showAffinityGraph && affinityGraphInfo && affinityGraphInfo.values;
+  const showLines = showAffinityGraph && maskVisible && affinityGraphInfo && affinityGraphInfo.values;
   const showPoints = false;
   if (!showLines && !showPoints) {
     clearWebglOverlaySurface();
@@ -3936,6 +3937,7 @@ function setMaskDisplayMode(nextMode, { silent = false } = {}) {
     outlinesVisible = maskDisplayMode === MASK_DISPLAY_MODES.OUTLINED || maskDisplayMode === MASK_DISPLAY_MODES.OUTLINE;
     setPanelCollapsed(labelStylePanel, false);
   }
+  updateOverlayVisibility();          // the affinity graph shows/hides with the labels
   if (outlinesVisible) {
     if (affinityGraphInfo && affinityGraphInfo.values) {
       rebuildOutlineFromAffinity();
@@ -3984,6 +3986,7 @@ function setBrushKernelMode(nextMode) {
 }
 
 function floodFill(point) {
+  if (labelsHiddenBlock()) return;
   // Volume mode: fill is a whole-3D-cell op on the server (merge / delete).
   if (window.__viewerVolumeFill && window.__viewerVolumeFill(point.x, point.y)) return;
   if (typeof paintingApi.floodFill === 'function') {
@@ -5907,7 +5910,7 @@ function drawAffinityGraphWebgl() {
   if (!ensureWebglOverlayReady() || !webglOverlay || !webglOverlay.enabled) {
     return false;
   }
-  const showLines = showAffinityGraph && affinityGraphInfo && affinityGraphInfo.values;
+  const showLines = showAffinityGraph && maskVisible && affinityGraphInfo && affinityGraphInfo.values;
   const showPoints = false;
   if (webglOverlay.shared) {
     const matrix = computeWebglMatrix(webglOverlay.matrixCache, canvas.width, canvas.height);
@@ -9354,7 +9357,33 @@ function startPointerPan(evt) {
   renderHoverPreview();
 }
 
+// Editing labels you cannot see is never intended: block strokes and fills while
+// labels are hidden, and say why.
+function labelsHiddenBlock() {
+  if (maskVisible) return false;
+  showViewerHint('Labels are hidden: show them to paint or fill');
+  return true;
+}
+window.__viewerLabelsVisible = () => maskVisible;
+let _hintEl = null, _hintT = 0;
+function showViewerHint(text) {
+  if (!_hintEl) {
+    _hintEl = document.createElement('div');
+    _hintEl.id = 'viewerHint';
+    _hintEl.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:9000;' +
+      'padding:6px 12px;border-radius:8px;font:12px -apple-system,system-ui,sans-serif;pointer-events:none;' +
+      'background:var(--control-surface);color:var(--panel-text-color);border:1px solid var(--panel-border);' +
+      'backdrop-filter:blur(var(--control-blur));transition:opacity .25s;opacity:0;';
+    document.body.appendChild(_hintEl);
+  }
+  _hintEl.textContent = text;
+  _hintEl.style.opacity = '1';
+  clearTimeout(_hintT);
+  _hintT = setTimeout(() => { _hintEl.style.opacity = '0'; }, 1800);
+}
+
 function beginBrushStroke(evt, worldPoint) {
+  if (labelsHiddenBlock()) return null;
   let result = null;
   if (typeof paintingApi.beginStroke === 'function') {
     result = paintingApi.beginStroke(worldPoint) || null;

@@ -336,6 +336,8 @@
     // (same math as the shader) to find the hit cell, then we pick or fill it.
     window.__viewerVolume3DPick = async function (ray, toolMode) {
       if (!cfg.isVolume || !hasMask || !ray) return;
+      // no 3D fill/erase on labels you cannot see (picking a color is fine)
+      if (toolMode !== "picker" && window.__viewerLabelsVisible && !window.__viewerLabelsVisible()) return;
       try {
         const pr = await fetch("/api/pick_ray/" + encodeURIComponent(cfg.sessionId),
           { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(ray) });
