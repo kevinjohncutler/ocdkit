@@ -44,6 +44,7 @@
   // Safari forces to SDR under position:relative/absolute). CSS color() clamps,
   // so a canvas is the only real HDR surface. ──
   let pCanvas = null, pR = null, pHeadroom = null;
+  let gainSliderEl = null, gainNumEl = null;     // HDR gain slider + number field
   function dropdownToggle() {
     const sel = document.getElementById('imageCmapSelect');
     const wrap = sel && sel.closest('.dropdown--gradient-preview');
@@ -91,6 +92,10 @@
       if (OcdHdr.setHdr) OcdHdr.setHdr(api.enabled);
       if (OcdHdr.setGain) OcdHdr.setGain(api.enabled ? api.gain : 1);
     }
+    // grayscale uses the 2D HDR layer only while HDR is on: re-check the gate
+    if (typeof window.__viewerSyncHdrImageLayer === 'function') {
+      try { window.__viewerSyncHdrImageLayer(); } catch (e) { /* app not ready */ }
+    }
     // Drive the 3D volume too (same lift as the 2D image layer) when it's live.
     try {
       const vg = window.__volumeMode && window.__volumeMode.gpu && window.__volumeMode.gpu();
@@ -98,10 +103,15 @@
     } catch (e) { /* volume not in 3D mode */ }
     const btn = document.getElementById('hdrToggleBtn');
     if (btn) { btn.setAttribute('aria-pressed', api.enabled ? 'true' : 'false'); btn.classList.toggle('is-on', api.enabled); }
-    const sl = document.getElementById('hdrGainSlider');
-    if (sl) { sl.disabled = !api.enabled; sl.value = String(api.gain); }
-    const out = document.getElementById('hdrGainVal');
-    if (out) out.textContent = api.gain.toFixed(2) + '×';
+    // (the range input is detached once the slider component registers it, so
+    // keep references instead of looking it up by id)
+    if (gainSliderEl) {
+      gainSliderEl.value = String(api.gain);
+      if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider('hdrGainSlider');
+    }
+    if (gainNumEl) { gainNumEl.value = api.gain.toFixed(2); gainNumEl.disabled = !api.enabled; }
+    const gr = document.getElementById('hdrGainRow');
+    if (gr) { gr.style.opacity = api.enabled ? '' : '.45'; gr.style.pointerEvents = api.enabled ? '' : 'none'; }
   }
 
   // Persist the user's HDR choice (enabled + gain) so it survives a refresh.
@@ -139,11 +149,7 @@
       '  border: 1px solid var(--control-border, #444); background: var(--control-surface, #1a1a1a);\n' +
       '  color: var(--panel-text-color, #ccc); font: inherit; font-size: 11px; letter-spacing: .04em; }\n' +
       '#hdrToggleBtn.is-on { background: var(--accent-color); color: var(--accent-ink, #161616); border-color: transparent; }\n' +
-      '#hdrGainRow { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--panel-text-color, #aaa); }\n' +
-      '#hdrGainRow label { letter-spacing: .04em; }\n' +
-      '#hdrGainSlider { flex: 1; accent-color: var(--accent-color); }\n' +
-      '#hdrGainSlider:disabled { opacity: .4; }\n' +
-      '#hdrGainVal { min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }\n';
+      '#hdrHeadroomVal { font-size: 10px; opacity: .75; letter-spacing: .02em; }\n';
     const s = document.createElement('style'); s.id = 'hdrUiStyle'; s.textContent = css;
     document.head.appendChild(s);
   }
@@ -156,17 +162,32 @@
     const btn = document.createElement('button');
     btn.id = 'hdrToggleBtn'; btn.type = 'button'; btn.textContent = 'HDR'; btn.setAttribute('aria-pressed', 'false');
     btn.addEventListener('click', function () { api.setEnabled(!api.enabled); });
-    const gainRow = document.createElement('div'); gainRow.id = 'hdrGainRow';
-    const lab = document.createElement('label'); lab.textContent = 'gain'; lab.setAttribute('for', 'hdrGainSlider');
-    const slider = document.createElement('input');
-    slider.id = 'hdrGainSlider'; slider.type = 'range'; slider.min = '0.25'; slider.max = '4'; slider.step = '0.05'; slider.value = String(api.gain);
-    slider.addEventListener('input', function () { api.setGain(parseFloat(slider.value)); });
-    const val = document.createElement('span'); val.id = 'hdrGainVal'; val.textContent = api.gain.toFixed(2) + '×';
-    gainRow.appendChild(lab); gainRow.appendChild(slider); gainRow.appendChild(val);
-    slider.title = 'Multiple of the display headroom: 1 = brightest color exactly at the display limit, above 1 clips';
+    // Same markup as the other panel sliders (filled track + number field).
+    const gainRow = document.createElement('div');
+    gainRow.id = 'hdrGainRow'; gainRow.className = 'control slider-inline';
+    gainRow.title = 'Multiple of the display headroom: 1 = brightest color exactly at the display limit, above 1 clips';
+    gainRow.innerHTML =
+      '<span class="control-heading control-heading--lower">gain</span>' +
+      '<div class="slider-row">' +
+      '<div class="slider" id="hdrGainSliderRoot" data-slider-type="single">' +
+      '<input type="range" id="hdrGainSlider" min="0.25" max="4" step="0.05" /></div>' +
+      '<div class="number-field" data-number-id="hdrGainInput">' +
+      '<input type="number" id="hdrGainInput" min="0.25" max="4" step="0.05" /></div></div>';
+    gainSliderEl = gainRow.querySelector('#hdrGainSlider');
+    gainNumEl = gainRow.querySelector('#hdrGainInput');
+    gainSliderEl.value = String(api.gain); gainNumEl.value = api.gain.toFixed(2);
+    gainSliderEl.addEventListener('input', function () { api.setGain(parseFloat(gainSliderEl.value)); });
+    gainNumEl.addEventListener('change', function () { api.setGain(parseFloat(gainNumEl.value) || 1); });
+    if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+      ViewerUI.attachNumberInputStepper(gainNumEl, function (d) { api.setGain(api.gain + d); });
+    }
     const hr = document.createElement('div'); hr.id = 'hdrHeadroomVal';
-    hr.style.cssText = 'font-size:10px;opacity:.75;letter-spacing:.02em;';
     row.appendChild(btn); row.appendChild(gainRow); row.appendChild(hr); panel.appendChild(row);
+    const sroot = gainRow.querySelector('#hdrGainSliderRoot');
+    if (window.ViewerUI && ViewerUI.registerSlider) {
+      sroot.dataset.sliderId = 'hdrGainSlider';
+      ViewerUI.registerSlider(sroot);
+    }
   }
 
   // ── Live display headroom ──────────────────────────────────────────────
@@ -180,16 +201,15 @@
     if (!el) return;
     const v = window.__edrHeadroom;
     el.textContent = (typeof v === 'number' && v > 0)
-      ? 'display headroom ' + v.toFixed(1) + '× (measured' +
-        (window.__edrHeadroomPotential ? ', max ' + window.__edrHeadroomPotential.toFixed(1) + '×' : '') + ')'
+      ? 'display headroom ' + v.toFixed(1) + '× (measured)'
       : 'display headroom unknown (assuming 4×)';
   }
   function pollHeadroom() {
     if (!LOCAL) { showHeadroom(); return; }
     fetch('/api/display_headroom').then(function (r) { return r.json(); }).then(function (d) {
       if (d && d.available) {
-        window.__edrHeadroom = d.current;
-        window.__edrHeadroomPotential = d.potential;
+        window.__edrHeadroom = d.headroom;     // the potential: never the 'current' value, which
+                                               // reads 1.0 until HDR is already on screen
         showHeadroom();
         setTimeout(pollHeadroom, 1000);      // follows brightness changes
       } else {

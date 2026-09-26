@@ -113,6 +113,7 @@
       cw: renderer._cw, ch: renderer._ch,
       clientW: canvas && canvas.clientWidth, clientH: canvas && canvas.clientHeight,
       display: canvas && canvas.style.display, vmin: renderer._vmin, vmax: renderer._vmax,
-      gamma: renderer._gamma, matrix: renderer._matrix };
+      gamma: renderer._gamma, matrix: renderer._matrix,
+      hdr: renderer._hdr, headroom: renderer._headroomVal, gain: renderer._gain, lutPeak: renderer._lutPeak };
   };
 })();

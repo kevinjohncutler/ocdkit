@@ -38,15 +38,23 @@ def read_edr_headroom():
         scr = NSScreen.mainScreen()
         if scr is None:
             return None
-        return float(scr.maximumExtendedDynamicRangeColorComponentValue())
+        # POTENTIAL, not current: the current value is 1.0 whenever nothing on
+        # screen is using EDR and only rises once HDR content is shown, so a page
+        # that sized its HDR output from it would render SDR, which keeps it at
+        # 1.0 (a deadlock). The potential value is what the display can reach at
+        # its present brightness, i.e. the limit to render up to.
+        return float(scr.maximumPotentialExtendedDynamicRangeColorComponentValue())
     except Exception:
         return None
 
 
 def read_edr_headroom_info():
-    """``{"current", "potential"}`` headroom of the main screen (multiples of SDR
-    white), or ``None`` if unavailable. ``current`` is what the display can show
-    right now (it drops as screen brightness rises); ``potential`` is its maximum.
+    """``{"headroom", "current", "potential"}`` of the main screen (multiples of
+    SDR white), or ``None`` if unavailable. ``potential`` is what the display can
+    reach at its present brightness (it drops as brightness rises); ``current``
+    is what is in use right now (1.0 while nothing shows EDR content).
+    ``headroom`` is the value to render up to: the potential (see
+    :func:`read_edr_headroom` for why never the current value).
     Works from a process with no window (e.g. the viewer server), so a browser
     on the same Mac can be told the real value that it is not allowed to read."""
     try:
@@ -57,8 +65,9 @@ def read_edr_headroom_info():
         scr = NSScreen.mainScreen()
         if scr is None:
             return None
-        return {"current": float(scr.maximumExtendedDynamicRangeColorComponentValue()),
-                "potential": float(scr.maximumPotentialExtendedDynamicRangeColorComponentValue())}
+        pot = float(scr.maximumPotentialExtendedDynamicRangeColorComponentValue())
+        return {"headroom": pot, "potential": pot,
+                "current": float(scr.maximumExtendedDynamicRangeColorComponentValue())}
     except Exception:
         return None
 

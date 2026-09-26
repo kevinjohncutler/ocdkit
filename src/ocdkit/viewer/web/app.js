@@ -7461,9 +7461,16 @@ function syncHdrImageLayer() {
   OcdHdr.setRange((windowLow || 0) / 255, (windowHigh == null ? 255 : windowHigh) / 255);
   OcdHdr.setGamma(typeof currentGamma === 'number' ? currentGamma : 1.0);
   // Active for any real colormap on ANY display: WebGPU backend → HDR, WebGL2 → SDR.
+  // Grayscale uses the layer too while HDR is on (matching the 3D view, which
+  // lifts gray); otherwise gray stays on the native path. gray-clip never does:
+  // its red/blue clip markers are an SDR diagnostic.
   const realCmap = imageColormap !== 'gray' && imageColormap !== 'gray-clip';
-  OcdHdr.setActive(OcdHdr.supported() && realCmap);
+  const hdrOn = !!(window.OcdHdrUI && OcdHdrUI.available && OcdHdrUI.enabled);
+  const grayHdr = imageColormap === 'gray' && hdrOn;
+  OcdHdr.setActive(OcdHdr.supported() && (realCmap || grayHdr));
 }
+// hdr_ui.js re-evaluates the gate when HDR is switched on/off.
+window.__viewerSyncHdrImageLayer = syncHdrImageLayer;
 function colormapHasOffset(cmapValue) {
   return ViewerColormap.colormapHasOffset(cmapValue);
 }

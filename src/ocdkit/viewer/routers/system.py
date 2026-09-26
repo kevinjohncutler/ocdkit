@@ -30,7 +30,7 @@ def api_display_headroom(request: Request) -> dict:
         return {"available": False, "reason": "not a local client"}
     from ..edr_bridge import read_edr_headroom_info
     info = read_edr_headroom_info()
-    if not info or not info.get("current"):
+    if not info or not info.get("headroom") or info["headroom"] <= 1.0:
         return {"available": False, "reason": "no EDR display"}
     return {"available": True, **info}
 
