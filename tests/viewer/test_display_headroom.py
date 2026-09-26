@@ -35,3 +35,13 @@ def test_no_edr_display(monkeypatch):
     monkeypatch.setattr(edr_bridge, "read_edr_headroom_info", lambda: None)
     with TestClient(create_app(), client=("127.0.0.1", 50000)) as c:
         assert c.get("/api/display_headroom").json()["available"] is False
+
+
+def test_poll_is_kept_out_of_the_access_log():
+    import logging
+    from ocdkit.viewer.routers.system import _QuietHeadroomPoll
+    f = _QuietHeadroomPoll()
+    rec = lambda path: logging.LogRecord("uvicorn.access", logging.INFO, "", 0,
+                                         '%s - "%s %s HTTP/%s" %d', ("127.0.0.1:5", "GET", path, "1.1", 200), None)
+    assert f.filter(rec("/api/display_headroom")) is False
+    assert f.filter(rec("/api/segment")) is True

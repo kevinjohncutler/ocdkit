@@ -211,7 +211,7 @@
         window.__edrHeadroom = d.headroom;     // the potential: never the 'current' value, which
                                                // reads 1.0 until HDR is already on screen
         showHeadroom();
-        setTimeout(pollHeadroom, 1000);      // follows brightness changes
+        setTimeout(pollHeadroom, 2000);      // follows brightness changes
       } else {
         showHeadroom();                      // no EDR display here: keep the fallback
       }

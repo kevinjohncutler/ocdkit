@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Request
 
 from ..schemas import OkBody, UseGpuPayload
@@ -18,6 +20,17 @@ def api_system_info() -> dict:
 
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+class _QuietHeadroomPoll(logging.Filter):
+    """Keep the page's periodic headroom poll out of the access log (it would
+    print a line every couple of seconds for as long as the viewer is open)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/display_headroom" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietHeadroomPoll())
 
 
 @router.get("/display_headroom")
