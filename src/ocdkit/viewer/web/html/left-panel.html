@@ -79,9 +79,9 @@
             <button type="button" class="view-mode-btn" data-brush="3">3D brush</button>
           </div>
           <div class="view-mode-row" id="projModeRow" hidden>
-            <button type="button" class="view-mode-btn is-active" data-proj="1">MIP</button>
-            <button type="button" class="view-mode-btn" data-proj="2">Mean</button>
-            <button type="button" class="view-mode-btn" data-proj="0">Additive</button>
+            <button type="button" class="view-mode-btn is-active" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray">MIP</button>
+            <button type="button" class="view-mode-btn" data-proj="2" title="Mean intensity along each ray">Mean</button>
+            <button type="button" class="view-mode-btn" data-proj="0" title="Emission-absorption: a translucent volume whose opacity follows intensity (the histogram's lower bound sets what is transparent)">EA</button>
           </div>
           <div class="view-mode-row">
             <button type="button" class="view-mode-btn" id="loadMasksButton">Load masks…</button>
