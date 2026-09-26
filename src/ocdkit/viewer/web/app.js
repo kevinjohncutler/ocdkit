@@ -7886,6 +7886,15 @@ function updateHistogramCursor(evt) {
   }
 }
 
+// Let the 3D volume view apply the same display window as the 2D image (it
+// has no access to this module's state otherwise; same pattern as gamma).
+function notifyWindow3D() {
+  if (typeof window.__viewerOnWindow === 'function') {
+    try { window.__viewerOnWindow(windowLow, windowHigh); } catch (e) {}
+  }
+}
+window.__viewerGetWindow = () => [windowLow, windowHigh];
+
 function setWindowBounds(low, high, { emit = true } = {}) {
   let clampedLow = Math.round(low);
   let clampedHigh = Math.round(high);
@@ -7904,6 +7913,7 @@ function setWindowBounds(low, high, { emit = true } = {}) {
   }
   windowLow = clampedLow;
   windowHigh = clampedHigh;
+  notifyWindow3D();
   updateHistogramUI();
   if (emit) {
     applyImageAdjustments();
@@ -10138,6 +10148,8 @@ function initialize() {
       const lowQ = histogramQuantile(0.01);
       const highQ = histogramQuantile(0.99);
       setWindowBounds(lowQ, highQ, { emit: false });
+    } else {
+      notifyWindow3D();
     }
     setGamma(currentGamma, { emit: false });
     updateHistogramUI();

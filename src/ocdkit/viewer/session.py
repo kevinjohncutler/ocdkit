@@ -1077,7 +1077,9 @@ class SessionManager:
         f16 = ((a - lo) * sc).astype(np.float32).astype(np.float16)
         parts = [f16.tobytes()]
         headers = {"X-Shape": f"{W},{H},{D}", "X-Image": "float16", "X-Mask-Dtype": "none",
-                   "Cache-Control": "no-store"}
+                   # data range the float16 was normalized from, so the client can map
+                   # the 2D histogram window (data units) onto the texture
+                   "X-Value-Range": f"{lo!r},{hi!r}", "Cache-Control": "no-store"}
         if state.current_mask_volume is not None:
             g = self.ensure_ncolor(state)
             m = np.ascontiguousarray(g if g is not None else _narrow_labels(state.current_mask_volume))

@@ -452,6 +452,8 @@
       const decoded = { meta: { dim: 3, axes: ["t", "y", "x"], depth: D, height: H, width: W },
                         steps: [], trajectories: null, image: null, mask: null,
                         imageF16: { data: new Uint16Array(buf, 0, N), shape: [D, H, W] } };
+      const vr = r.headers.get("X-Value-Range");
+      if (vr) decoded.valueRange = vr.split(",").map(Number);   // data units -> texture units
       const md = r.headers.get("X-Mask-Dtype");
       const C = { uint8: Uint8Array, uint16: Uint16Array, uint32: Uint32Array }[md];
       if (C) {   // typed views need an aligned offset; copy the tail if it isn't
@@ -480,6 +482,7 @@
           renderMode: "compute",   // default to the faster compute-shader march (toggle with 'c')
           colormap: currentImageColormap(),
           gamma: currentGamma(),
+          window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
           // the display-capability probe has resolved.
@@ -586,6 +589,8 @@
     // Keep the 3D volume's gamma in sync with the 2D gamma control (app.js calls
     // this whenever gamma changes, via slider or number input).
     window.__viewerOnGamma = (g) => { if (vgpu) vgpu.setGamma(g); };
+    // ...and the 2D histogram's display window (lower/upper bounds).
+    window.__viewerOnWindow = (lo, hi) => { if (vgpu) vgpu.setWindow(lo, hi); };
 
     function setProj(p) {
       curProj = p | 0;

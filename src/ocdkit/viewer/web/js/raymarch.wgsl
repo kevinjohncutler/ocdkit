@@ -22,6 +22,7 @@ struct U {
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, _
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
+  win         : vec4<f32>,   // display window: lo, 1/(hi-lo) in normalized units (the 2D histogram bounds)
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -139,7 +140,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       let s = textureLoad(volTex, ci, 0).r * iscale;          // exact voxel value (nearest)
       let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (mode == 0) {                                        // additive (emission-absorption)
-        let sg = pow(max(s, 0.0), gamma);                     // gamma per voxel
+        let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);                     // gamma per voxel
         let segLen = max(tExit - tPrev, 0.0);                 // path length through this voxel
         let a = 1.0 - exp(-sg * density * segLen);            // exact for any segment chopping
         let om = 1.0 - imgAcc.w;
@@ -161,8 +162,8 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (mode == 1) { let v = pow(clamp(imgMip, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
-    else if (mode == 2) { let m = pow(clamp(imgSum / max(imgCnt, 1.0), 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
+    if (mode == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = v; imgPC = lutColor(v); }
+    else if (mode == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); imgA = m; imgPC = lutColor(m); }
     else { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
   }
 

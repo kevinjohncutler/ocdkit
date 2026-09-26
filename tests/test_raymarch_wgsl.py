@@ -127,7 +127,7 @@ class Harness:
             inv_vp = _ortho_inv_vp(NX, NY, NZ)       # axis-aligned ortho (exact)
             box_min = (0, 0, 0); box_max = (NX, NY, NZ)
 
-        u = np.zeros(44, np.float32)
+        u = np.zeros(48, np.float32)
         u[0:16] = np.asarray(inv_vp, np.float32)
         u[16:20] = (0, 0, -1000, 1)              # camPos (unused by ray reconstruction)
         u[20:24] = (*box_min, 0)                  # boxMin
@@ -136,6 +136,7 @@ class Harness:
         u[32:36] = (nsteps, density, label_opacity, show_labels)
         u[36:40] = (iscale, show_image, shade_labels, 1.0)   # img.w = gamma (1 = identity)
         u[40:44] = (ambient, specular, shininess, headlight)
+        u[44:48] = (0.0, 1.0, 0.0, 0.0)                 # identity display window
         ubuf = self.dev.create_buffer_with_data(
             data=u, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
 

@@ -65,9 +65,9 @@ def _ortho(yaw, pitch, half):
     return inv, d, right, up
 
 
-def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1):
+def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0)):
     NX, NY, NZ = dims
-    u = np.zeros(44, np.float32)
+    u = np.zeros(48, np.float32)
     u[0:16] = inv
     u[20:24] = [-NX / 2, -NY / 2, -NZ / 2, 0]
     u[24:28] = [NX / 2, NY / 2, NZ / 2, 0]
@@ -75,6 +75,7 @@ def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1):
     u[32:36] = [2 * max(dims), density, opacity, show_lab]
     u[36:40] = [1.0, show_img, 1.0, 1.0]
     u[40:44] = [0.4, 0.0, 24.0, 1.0]
+    u[44:48] = [window[0], 1.0 / (window[1] - window[0]), 0, 0]
     return u
 
 
@@ -226,3 +227,21 @@ def test_emission_absorption_matches_analytic(dev):
         inside = chord > 1.0
         # 0.0055 = early ray termination at alpha 0.995, which is intended
         assert np.abs(out[..., 3][inside] - exact[inside]).max() < 0.0055
+
+
+def test_display_window_matches_numpy(dev):
+    """The 2D histogram window reaches 3D: MIP is the windowed column max, and
+    an emission-absorption floor above the data makes it fully transparent."""
+    vol, lab = _sparse_scene()
+    vol, lab = np.ascontiguousarray(vol[:, :32, :32]), np.ascontiguousarray(lab[:, :32, :32])
+    NZ, n = vol.shape[0], 32
+    s = Scene(dev, vol, lab)
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    lo, hi = 0.2, 0.6
+    colmax = vol.astype(np.float32)[:, ::-1, :].max(axis=0)
+    out = s.compute(_uniform(inv, (n, n, NZ), 1, show_lab=0, window=(lo, hi)), 1, 1, 0, n, n)
+    np.testing.assert_allclose(out[..., 3], np.clip((colmax - lo) / (hi - lo), 0, 1), atol=3e-3)
+    floor = float(vol.max()) + 0.01                      # everything below the window
+    out = s.compute(_uniform(inv, (n, n, NZ), 0, density=5.0, show_lab=0, window=(floor, floor + 0.1)),
+                    0, 1, 0, n, n)
+    assert out[..., 3].max() == 0.0

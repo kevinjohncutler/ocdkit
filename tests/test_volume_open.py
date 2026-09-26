@@ -336,6 +336,8 @@ def test_volume_raw_is_normalized_float16(tmp_path):
     SESSION_MANAGER.set_image(state, _write_volume(tmp_path, (6, 10, 12)))
     body, headers = SESSION_MANAGER.encode_volume_raw(state)
     assert headers["X-Shape"] == "12,10,6" and headers["X-Image"] == "float16"
+    lo, hi = (float(v) for v in headers["X-Value-Range"].split(","))
+    assert (lo, hi) == (float(state.current_volume.min()), float(state.current_volume.max()))
     img, mask = _decode_raw(body, headers)
     assert mask is None
     v = state.current_volume.astype(np.float64)

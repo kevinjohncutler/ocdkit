@@ -191,6 +191,7 @@
 
       self._initState(decoded, opts);
       self._uploadTextures(decoded);
+      if (self._winData) self._applyWindow(self._winData[0], self._winData[1]);
       self._makeBindGroup();
       self._prewarmComputePipelines();
       if (typeof window !== "undefined" && window.OverlayLayer) {
@@ -273,7 +274,12 @@
       // frame rate. The settled frame uses the full step count for a clean still.
       this.nstepsInteract = Math.max(96, Math.round(this.nsteps * 0.5));
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
-      this.uniform = device_buf(this.device, 44 * 4);
+      this.uniform = device_buf(this.device, 48 * 4);
+      // Display window (the 2D histogram bounds), in the volume's data units.
+      // valueRange maps those units to the normalized texture; see setWindow.
+      this.valueRange = decoded.valueRange || null;
+      this._win = [0, 1];                                    // lo, 1/(hi-lo), texture units
+      this._winData = Array.isArray(opts.window) ? opts.window.slice() : null;
       // Intensity colormap LUT (256x1 RGBA), stored FLOAT so HDR entries can
       // exceed 1.0. Values are gamma-encoded (extended-sRGB/P3 transfer), matching
       // what the display-p3 + extended-tone-mapping canvas expects — same as the
@@ -355,6 +361,7 @@
           for (let i = 0; i < a.length; i++) { if (a[i] < lo) lo = a[i]; if (a[i] > hi) hi = a[i]; }
           const sc = hi > lo ? 1 / (hi - lo) : 0;
           for (let i = 0; i < N; i++) f[i] = (a[i] - lo) * sc;
+          this.valueRange = [lo, hi];
         } else if (decoded.mask) {
           const a = decoded.mask.data;            // no intensity: show label occupancy
           for (let i = 0; i < N; i++) f[i] = a[i] > 0 ? 1 : 0;
@@ -809,7 +816,7 @@
 
     _writeUniform(cam) {
       const box = this._box();
-      const u = new Float32Array(44);
+      const u = new Float32Array(48);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([box.min[0], box.min[1], box.min[2], 0], 20);
@@ -819,6 +826,7 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
+      u.set([this._win[0], this._win[1], 0, 0], 44);                            // display window
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -943,6 +951,19 @@
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
     setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._requestRender(); }
+    /** Display window from the 2D histogram, in the volume's data units (the
+     *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in
+     *  emission-absorption (values below lo turn transparent), and to the
+     *  projected value in MIP and mean. */
+    setWindow(lo, hi) { this._applyWindow(lo, hi); this._requestRender(); }
+    // (no render: create() applies the initial window before the camera exists)
+    _applyWindow(lo, hi) {
+      this._winData = [lo, hi];
+      const [vmin, vmax] = this.valueRange || [0, 255];
+      const span = vmax > vmin ? vmax - vmin : 1;
+      const tl = (lo - vmin) / span, th = (hi - vmin) / span;
+      this._win = [tl, 1 / Math.max(th - tl, 1e-6)];
+    }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }
