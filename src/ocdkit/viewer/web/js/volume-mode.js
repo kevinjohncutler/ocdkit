@@ -51,6 +51,13 @@
       if (fpsHideT) clearTimeout(fpsHideT);
       fpsHideT = setTimeout(() => { fpsEl.style.opacity = "0"; }, 1800);
     }
+    // Buttons in segmented toggles show selection with data-active; the axis
+    // buttons still use the is-active class. Set both so either styling works.
+    function setSegActive(el, on) {
+      if (!el) return;
+      el.classList.toggle("is-active", !!on);
+      if (on) el.setAttribute("data-active", "true"); else el.removeAttribute("data-active");
+    }
     const btn2d = panel.querySelector('[data-view="2d"]');
     const btn3d = panel.querySelector('[data-view="3d"]');
     const projRow = document.getElementById("projModeRow");
@@ -377,10 +384,11 @@
     function setBrushDim(d) {
       brushDim = d | 0;
       if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>
-        x.classList.toggle("is-active", parseInt(x.getAttribute("data-brush"), 10) === brushDim));
+        setSegActive(x, parseInt(x.getAttribute("data-brush"), 10) === brushDim));
     }
     const brushDimRow = document.getElementById("brushDimRow");
     if (brushDimRow) {
+      brushDimRow.hidden = false;                       // brush dimension only exists for 3D data
       brushDimRow.querySelectorAll("[data-brush]").forEach((b) =>
         b.addEventListener("click", () => setBrushDim(parseInt(b.getAttribute("data-brush"), 10))));
     }
@@ -397,7 +405,7 @@
       slider.value = String(slice);
       paintLabel();
       if (axisRow) axisRow.querySelectorAll("[data-axis]").forEach((x) =>
-        x.classList.toggle("is-active", parseInt(x.getAttribute("data-axis"), 10) === a));
+        setSegActive(x, parseInt(x.getAttribute("data-axis"), 10) === a));
       const dim = sliceDims(a);
       const url = "/api/volume_slice/" + encodeURIComponent(cfg.sessionId) +
                   "?z=" + slice + "&axis=" + a + "&t=" + Date.now();
@@ -539,8 +547,8 @@
       const curStyle = window.__viewerMaskDisplayMode ? window.__viewerMaskDisplayMode() : null;
       if (curStyle) { if (mode === "3d") saved3dMode = curStyle; else saved2dMode = curStyle; }
       mode = next;
-      btn2d.classList.toggle("is-active", !is3d);
-      btn3d.classList.toggle("is-active", is3d);
+      setSegActive(btn2d, !is3d);
+      setSegActive(btn3d, is3d);
       canvas2d.style.visibility = is3d ? "hidden" : "";
       if (brush) brush.style.visibility = is3d ? "hidden" : "";
       vcanvas.hidden = !is3d;
@@ -757,8 +765,8 @@
         if (hasMask) await fetchNColorMap();
         if (_startIn3D) {
           // 2D already hidden synchronously → go straight to 3D, no 2D-slice flash.
-          btn2d.classList.toggle("is-active", false);
-          btn3d.classList.toggle("is-active", true);
+          setSegActive(btn2d, false);
+          setSegActive(btn3d, true);
           if (axisRow) axisRow.hidden = true;
           if (projRow) projRow.hidden = false;
           syncDensityRow();
@@ -773,7 +781,7 @@
             mode = "2d";
             canvas2d.style.visibility = ""; if (brush) brush.style.visibility = "";
             vcanvas.hidden = true; sliceBar.hidden = false;
-            btn2d.classList.toggle("is-active", true); btn3d.classList.toggle("is-active", false);
+            setSegActive(btn2d, true); setSegActive(btn3d, false);
             if (axisRow) axisRow.hidden = false; if (projRow) projRow.hidden = true; syncDensityRow();
             setStyleButtonsFor3D(false);
             await showSlice(slice);

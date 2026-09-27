@@ -90,19 +90,26 @@
         </div>
 
         <div class="panel-section" id="viewModePanel" hidden>
-          <div class="control-heading">View</div>
-          <div class="view-mode-row">
-            <button type="button" class="view-mode-btn is-active" data-view="2d">2D slices</button>
-            <button type="button" class="view-mode-btn" data-view="3d">3D volume</button>
+          <div class="panel-header">
+            <div class="control-heading">View</div>
+            <div class="spin-controls" id="spinRow" hidden>
+              <button type="button" id="spinAxisButton" class="control-heading control-heading--lower control-heading--icon spin-axis-button" title="Spin axis: Z. Click to cycle X, Y, Z." aria-label="Spin axis Z"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="0" hidden><path d="M12,10H14.91C14.57,6.55 13.4,4 12,4C10.42,4 9.12,7.27 9,11.42L7,12.57V12C7,6.5 9.24,2 12,2C14.42,2 16.44,5.44 16.9,10H20L16,14L12,10M12,22C10.12,22 8.47,19.92 7.62,16.84L9.37,15.83C9.87,18.31 10.86,20 12,20C13.27,20 14.36,17.89 14.79,14.92L16,16.12L16.7,15.42C16,19.26 14.16,22 12,22M2.11,18.87L1.11,17.13L1.06,17.06L11.12,11.25L12.72,12.84L2.15,18.94L2.11,18.87M21.89,5.13L22.89,6.87L19.2,9H17.77L17.5,7.66L21.89,5.13Z"/></svg><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="1" hidden><path d="M12,10L16,14L20,10H16.9C16.44,5.44 14.42,2 12,2C10.12,2 8.47,4.08 7.62,7.16L9.37,8.17C9.87,5.69 10.86,4 12,4C13.4,4 14.57,6.55 14.91,10H12M1.11,6.87L13.89,14.25L13.96,13.46L10.5,10H10.54L2.11,5.13L1.11,6.87M21.89,18.87L22.89,17.13L17.88,14.24C17.79,14.97 17.67,15.67 17.5,16.34L21.89,18.87M12,22C14.3,22 16.23,18.9 16.82,14.68L16,15.5L14.87,14.37C14.5,17.63 13.35,20 12,20C10.42,20 9.12,16.73 9,12.58L7,11.43V12C7,17.5 9.24,22 12,22Z"/></svg><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="2"><path d="M14,12L10,16L14,20V16.9C18.56,16.44 22,14.42 22,12C22,9.58 18.56,7.56 14,7.1V9.09C17.45,9.43 20,10.6 20,12C20,13.4 17.45,14.57 14,14.91V12M4,12C4,10.6 6.55,9.43 10,9.09V7.1C5.44,7.56 2,9.58 2,12C2,14.16 4.74,16 8.58,16.7L7.88,16L9.08,14.79C6.11,14.36 4,13.27 4,12M13,2H11V13L13,11V2M13,22V21L11,19V22H13Z"/></svg></button>
+              <label class="toggle panel-toggle" title="Spin: rotate the volume continuously about the chosen axis (click the icon to change it)">
+                <input type="checkbox" id="spinToggle" />
+                <span class="toggle-switch"></span>
+              </label>
+            </div>
+          </div>
+          <div class="control">
+            <div id="viewDimToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="View">
+              <button type="button" class="kernel-option" data-view="2d" data-active="true" title="2D slices along one axis, with the slice slider"><span>2D slices</span></button>
+              <button type="button" class="kernel-option" data-view="3d" title="3D volume rendering (drag to rotate)"><span>3D volume</span></button>
+            </div>
           </div>
           <div class="view-mode-row" id="sliceAxisRow">
             <button type="button" class="view-mode-btn is-active" data-axis="0">Z</button>
             <button type="button" class="view-mode-btn" data-axis="1">Y</button>
             <button type="button" class="view-mode-btn" data-axis="2">X</button>
-          </div>
-          <div class="view-mode-row" id="brushDimRow">
-            <button type="button" class="view-mode-btn is-active" data-brush="2">2D brush</button>
-            <button type="button" class="view-mode-btn" data-brush="3">3D brush</button>
           </div>
           <div class="control" id="projModeRow" hidden>
             <div id="projModeToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="3D projection">
@@ -110,13 +117,6 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
             </div>
-          </div>
-          <div class="control label-style-row" id="spinRow" hidden>
-            <button type="button" id="spinAxisButton" class="control-heading control-heading--lower control-heading--icon spin-axis-button" title="Spin axis: Z. Click to cycle X, Y, Z." aria-label="Spin axis Z"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="0" hidden><path d="M12,10H14.91C14.57,6.55 13.4,4 12,4C10.42,4 9.12,7.27 9,11.42L7,12.57V12C7,6.5 9.24,2 12,2C14.42,2 16.44,5.44 16.9,10H20L16,14L12,10M12,22C10.12,22 8.47,19.92 7.62,16.84L9.37,15.83C9.87,18.31 10.86,20 12,20C13.27,20 14.36,17.89 14.79,14.92L16,16.12L16.7,15.42C16,19.26 14.16,22 12,22M2.11,18.87L1.11,17.13L1.06,17.06L11.12,11.25L12.72,12.84L2.15,18.94L2.11,18.87M21.89,5.13L22.89,6.87L19.2,9H17.77L17.5,7.66L21.89,5.13Z"/></svg><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="1" hidden><path d="M12,10L16,14L20,10H16.9C16.44,5.44 14.42,2 12,2C10.12,2 8.47,4.08 7.62,7.16L9.37,8.17C9.87,5.69 10.86,4 12,4C13.4,4 14.57,6.55 14.91,10H12M1.11,6.87L13.89,14.25L13.96,13.46L10.5,10H10.54L2.11,5.13L1.11,6.87M21.89,18.87L22.89,17.13L17.88,14.24C17.79,14.97 17.67,15.67 17.5,16.34L21.89,18.87M12,22C14.3,22 16.23,18.9 16.82,14.68L16,15.5L14.87,14.37C14.5,17.63 13.35,20 12,20C10.42,20 9.12,16.73 9,12.58L7,11.43V12C7,17.5 9.24,22 12,22Z"/></svg><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-spin-axis="2"><path d="M14,12L10,16L14,20V16.9C18.56,16.44 22,14.42 22,12C22,9.58 18.56,7.56 14,7.1V9.09C17.45,9.43 20,10.6 20,12C20,13.4 17.45,14.57 14,14.91V12M4,12C4,10.6 6.55,9.43 10,9.09V7.1C5.44,7.56 2,9.58 2,12C2,14.16 4.74,16 8.58,16.7L7.88,16L9.08,14.79C6.11,14.36 4,13.27 4,12M13,2H11V13L13,11V2M13,22V21L11,19V22H13Z"/></svg></button>
-            <label class="toggle toggle-left" title="Spin: rotate the volume continuously about the chosen axis (click the icon to change it)">
-              <input type="checkbox" id="spinToggle" />
-              <span class="toggle-switch"></span>
-            </label>
           </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
                title="Density (absorption): 0 = every voxel glows and nothing blocks; higher = nearer structures hide what is behind them">
@@ -178,6 +178,12 @@
           </div>
           <div class="panel-body">
             <div class="tool-options tool-options--brush" data-tool="draw,erase">
+              <div class="control" id="brushDimRow" hidden>
+                <div class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="Brush dimension">
+                  <button type="button" class="kernel-option" data-brush="2" data-active="true" title="Paint in the current slice only"><span>2D brush</span></button>
+                  <button type="button" class="kernel-option" data-brush="3" title="Paint a ball through neighboring slices (3D data)"><span>3D brush</span></button>
+                </div>
+              </div>
               <div class="brush-slider slider-inline">
                 <span class="control-heading control-heading--lower">size</span>
                 <div class="slider-row">

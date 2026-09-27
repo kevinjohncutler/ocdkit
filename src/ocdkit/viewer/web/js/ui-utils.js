@@ -1198,13 +1198,32 @@
       lastPoint: null,
     };
 
-    document.querySelectorAll('[title]').forEach(function (el) {
+    var adoptTitle = function (el) {
       var title = el.getAttribute('title');
       if (title) {
         el.dataset.tooltip = title;
         el.removeAttribute('title');
       }
-    });
+    };
+    document.querySelectorAll('[title]').forEach(adoptTitle);
+    // Code that sets a title later (a label that changes with state, a node added
+    // after load) would otherwise get the browser's native tooltip on top of
+    // ours: adopt those titles as they appear.
+    if (typeof MutationObserver === 'function') {
+      new MutationObserver(function (records) {
+        records.forEach(function (r) {
+          if (r.type === 'attributes') {
+            if (r.target.nodeType === 1 && r.target.hasAttribute('title')) adoptTitle(r.target);
+            return;
+          }
+          r.addedNodes.forEach(function (node) {
+            if (node.nodeType !== 1) return;
+            if (node.hasAttribute('title')) adoptTitle(node);
+            node.querySelectorAll('[title]').forEach(adoptTitle);
+          });
+        });
+      }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+    }
 
     var getTooltipText = function (el) {
       if (!el) return '';

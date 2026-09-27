@@ -213,6 +213,8 @@
   font: inherit;
   cursor: pointer;
 }
+.spin-controls { display: flex; align-items: center; gap: 6px; }
+.spin-controls[hidden] { display: none; }
 .control-heading.spin-axis-button:hover { background: var(--control-surface, rgba(128, 128, 128, 0.2)); }
 
 /* clip row: the dual slider full width, its two percentiles under its ends */
