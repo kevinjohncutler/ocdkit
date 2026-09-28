@@ -29,7 +29,10 @@
 // f along the ray by delta, what is accumulated in front is faded by
 // beta = 1 - delta, so new maxima show through as in MIP while depth order and
 // translucency are kept. Per voxel opacity is 1 - exp(-density * s * length).
-//   C = beta C + (1 - beta A) a c ;  A = beta A + (1 - beta A) a ;  f = max(f, s)
+//   I = beta I + (1 - beta A) a s ;  A = beta A + (1 - beta A) a ;  f = max(f, s)
+// It composites the INTENSITY and applies the colormap once to I / A at the end,
+// as MIP and mean do, so colors stay on the colormap (and HDR and transparency
+// work as in MIP).
 // Early termination needs A ~ 1 AND f at the top of the window (only a new max
 // could lift the fade), so a dim, dense ray keeps marching.
 
@@ -240,11 +243,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       } else if (MODE == 3) {
         let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
         let segLen = max(tExit - tPrev, 0.0);
-        let c4 = lutRGBA(sg);
-        let a = (1.0 - exp(-sg * density * segLen)) * select(1.0, c4.a, TRANSP);
+        // (with the transparent low end, dark voxels also cover less)
+        let a = (1.0 - exp(-sg * density * segLen)) * select(1.0, lutRGBA(sg).a, TRANSP);
         let beta = 1.0 - max(sg - midaMax, 0.0);
         let keep = beta * imgAcc.w;
-        imgAcc = vec4<f32>(beta * imgAcc.rgb + (1.0 - keep) * a * c4.rgb, keep + (1.0 - keep) * a);
+        imgAcc = vec4<f32>(beta * imgAcc.x + (1.0 - keep) * a * sg, 0.0, 0.0, keep + (1.0 - keep) * a);
         midaMax = max(midaMax, sg);
         if (imgAcc.w >= 0.995 && midaMax >= 0.999) { break; }
       } else if (MODE == 1) {
@@ -266,7 +269,15 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
-    else if (MODE == 3) { imgPC = imgAcc.rgb; imgA = imgAcc.w; }   // already premultiplied, bounded by the peak
+    else if (MODE == 3) {
+      // the colormap is applied ONCE, to the composited intensity (as in MIP and
+      // mean), so every pixel is a true colormap color (blending colormapped
+      // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
+      // and transparency come from the LUT exactly as in MIP
+      let v = select(0.0, clamp(imgAcc.x / imgAcc.w, 0.0, 1.0), imgAcc.w > 1e-6);
+      let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
+      imgA = v * ta; imgPC = c4.rgb * ta;
+    }
     else {
       // soft exposure: 1 - e^-x rolls the accumulated glow off to the colormap's
       // peak P (1 in SDR, the display headroom x gain in HDR) instead of clipping;

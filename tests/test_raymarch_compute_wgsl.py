@@ -81,7 +81,7 @@ def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, 
 
 
 class Scene:
-    def __init__(self, dev, vol16, lab, lut_alpha=None):
+    def __init__(self, dev, vol16, lab, lut_alpha=None, lut_rgb=None):
         self.dev = dev
         NZ, NY, NX = vol16.shape
         self.dims = (NX, NY, NZ)
@@ -93,8 +93,9 @@ class Scene:
         self.blab = _tex(dev, "r8uint", (bx, by, bz), bl.tobytes(), bx)
         ramp = np.linspace(0, 1, 256, dtype=np.float32)
         alpha = np.ones(256, np.float32) if lut_alpha is None else np.asarray(lut_alpha, np.float32)
+        rgb = np.stack([ramp, ramp, ramp], 1) if lut_rgb is None else np.asarray(lut_rgb, np.float32)
         self.lut = _tex(dev, "rgba16float", (256, 1, 1),
-                        np.stack([ramp, ramp, ramp, alpha], 1).astype(np.float16).tobytes(),
+                        np.concatenate([rgb, alpha[:, None]], 1).astype(np.float16).tobytes(),
                         256 * 8, dim="2d")
         self.cmod = dev.create_shader_module(code=_read(COMPUTE))
         fmod = dev.create_shader_module(code=_read(FRAGMENT))
@@ -209,17 +210,18 @@ def test_compute_matches_fragment_reference(dev, mode, layers):
 
 
 def _mida_reference(cols, density):
-    """MIDA along axis 0 (front first), gray colormap, one unit of path per voxel:
-    C = beta C + (1 - beta A) a s, A = beta A + (1 - beta A) a, beta = 1 - max(s - f, 0)."""
-    C = np.zeros(cols.shape[1:]); A = np.zeros(cols.shape[1:]); f = np.zeros(cols.shape[1:])
+    """MIDA along axis 0 (front first), one unit of path per voxel, on intensity:
+    I = beta I + (1 - beta A) a s, A = beta A + (1 - beta A) a, beta = 1 - max(s - f, 0);
+    the displayed value is v = I / A (then colormapped once, alpha v, like MIP)."""
+    I = np.zeros(cols.shape[1:]); A = np.zeros(cols.shape[1:]); f = np.zeros(cols.shape[1:])
     for s in cols.astype(np.float64):
         a = 1 - np.exp(-density * s)
         beta = 1 - np.maximum(s - f, 0)
         keep = beta * A
-        C = beta * C + (1 - keep) * a * s
+        I = beta * I + (1 - keep) * a * s
         A = keep + (1 - keep) * a
         f = np.maximum(f, s)
-    return C, A
+    return np.where(A > 1e-6, np.clip(I / np.maximum(A, 1e-6), 0, 1), 0)
 
 
 @pytest.mark.parametrize("density", [0.3, 2.0])
@@ -233,9 +235,49 @@ def test_mida_matches_reference(dev, density):
     s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.0, 0.0, n / 2)
     out = s.compute(_uniform(inv, (n, n, NZ), 3, density=density, show_lab=0), 3, 1, 0, n, n)
-    C, A = _mida_reference(vol.astype(np.float32)[:, ::-1, :], density)
-    np.testing.assert_allclose(out[..., 0], C, atol=3e-3)
-    np.testing.assert_allclose(out[..., 3], A, atol=3e-3)
+    v = _mida_reference(vol.astype(np.float32)[:, ::-1, :], density)
+    np.testing.assert_allclose(out[..., 3], v, atol=3e-3)          # gray colormap: color = alpha = v
+    np.testing.assert_allclose(out[..., 0], v, atol=3e-3)
+
+
+def _two_color_lut():
+    """teal at the low end to yellow at the top, as encoded colors (like viridis)"""
+    t = np.linspace(0, 1, 256)[:, None]
+    return (1 - t) * np.array([0.1, 0.6, 0.55]) + t * np.array([1.0, 0.9, 0.1])
+
+
+def test_mida_colors_stay_on_the_colormap(dev):
+    """Every MIDA pixel is a true colormap color: rgb = LUT(alpha), as in MIP.
+    (Blending colormapped samples instead produced hues between entries, e.g. an
+    olive from teal + yellow, that are nowhere on the colormap.)"""
+    vol, _ = _sparse_scene(seed=7)
+    n = 32
+    vol = np.ascontiguousarray(vol[:, :n, :n])
+    lut = _two_color_lut()
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8), lut_rgb=lut)
+    for yaw, pitch in ((0.0, 0.0), (0.5, 0.3)):
+        inv, *_ = _ortho(yaw, pitch, n * 0.6)
+        out = s.compute(_uniform(inv, (n, n, vol.shape[0]), 3, density=1.0, show_lab=0), 3, 1, 0, n, n)
+        v = out[..., 3]
+        f = np.clip(v, 0, 1) * 255
+        i0 = np.floor(f).astype(int); i1 = np.minimum(i0 + 1, 255); fr = (f - i0)[..., None]
+        expect = lut[i0] * (1 - fr) + lut[i1] * fr
+        hit = v > 1e-3                           # rays that miss the volume output nothing
+        assert hit.mean() > 0.5
+        np.testing.assert_allclose(out[..., :3][hit], expect[hit], atol=4e-3)
+
+
+def test_mida_keeps_hdr_colors(dev):
+    """An HDR colormap (encoded values above 1) reaches the output unchanged: the
+    top of the colormap shows its full lifted color, as in MIP."""
+    n, NZ = 32, 40
+    vol = np.full((NZ, n, n), 1.0, np.float16)
+    lut = _two_color_lut() * 1.6                 # lifted: the top entry is (1.6, 1.44, 0.16)
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8), lut_rgb=lut)
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    out = s.compute(_uniform(inv, (n, n, NZ), 3, density=1.0, show_lab=0), 3, 1, 0, n, n)
+    np.testing.assert_allclose(out[..., 3], 1.0, atol=2e-3)
+    np.testing.assert_allclose(out[..., :3], np.broadcast_to(lut[255], out[..., :3].shape), rtol=4e-3)
 
 
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
@@ -250,7 +292,7 @@ def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
     mida = s.compute(_uniform(inv, (n, n, NZ), 3, density=2.0, show_lab=0), 3, 1, 0, n, n)[..., 0]
     ea = s.compute(_uniform(inv, (n, n, NZ), 0, density=2.0, show_lab=0, exposure=1.0), 0, 1, 0, n, n)[..., 0]
     inside, outside = mida[12:20, 12:20].mean(), mida[2:6, 2:6].mean()
-    assert inside > 0.6 and inside > 2 * outside       # by the recurrence: 0.69 vs the slab's 0.30
+    assert inside > 0.6 and inside > 2 * outside
     ea_in, ea_out = ea[12:20, 12:20].mean(), ea[2:6, 2:6].mean()
     assert ea_in - ea_out < 0.1 * (inside - outside)   # EA: the slab hides the square
 
