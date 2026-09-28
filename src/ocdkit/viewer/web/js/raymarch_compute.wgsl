@@ -50,7 +50,7 @@ struct U {
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
-  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; colormap peak
+  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure or MIDA gain; colormap peak
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -280,7 +280,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       // mean), so every pixel is a true colormap color (blending colormapped
       // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
       // and transparency come from the LUT exactly as in MIP
-      let v = select(0.0, clamp(imgAcc.x / imgAcc.w, 0.0, 1.0), imgAcc.w > 1e-6);
+      // times the gain the host estimates from the data (win.z in this mode), so
+      // the brightest MIDA pixels reach the top of the colormap as in EA
+      let v = select(0.0, clamp(imgAcc.x / imgAcc.w * u.win.z, 0.0, 1.0), imgAcc.w > 1e-6);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
       imgA = v * ta; imgPC = c4.rgb * ta;
     }

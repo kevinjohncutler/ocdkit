@@ -41,7 +41,7 @@ def edge_share(img, inv, n, W, half, dims):
 def render(dev, vol, mode, dens, W, yaw, pitch, n):
     sc = T.Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = T._ortho(yaw, pitch, n * 0.45)
-    out = sc.compute(T._uniform(inv, (n, n, n), mode, density=dens, show_lab=0, exposure=0.3), mode, 1, 0, W, W)
+    out = sc.compute(T._uniform(inv, (n, n, n), mode, density=dens, show_lab=0, exposure=0.3 if mode == 0 else 1.0), mode, 1, 0, W, W)
     return out[..., 3] if mode == 3 else out[..., 0]
 
 

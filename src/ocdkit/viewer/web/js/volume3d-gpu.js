@@ -234,6 +234,7 @@
       // EA density = absorption only (0 = pure glow, nothing occludes)
       this.density = opts.density != null ? opts.density : 0.0;
       this._eaExposure = 1.0;                      // set from the data (_updateExposure)
+      this._midaGain = 1.0;                        // likewise, for MIDA (_updateMidaGain)
       this._lutPeakAll = 1.0;                      // brightest colormap channel, as stored
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = (decoded.image || decoded.imageF16) ? 1.0 : 0.0;   // grayscale intensity layer
@@ -906,7 +907,8 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      u.set([this._win[0], this._win[1], this._eaExposure, this._lutPeakAll], 44);  // window, EA exposure, LUT peak
+      // window, then EA's exposure or MIDA's gain (one slot: only one mode reads it), LUT peak
+      u.set([this._win[0], this._win[1], this.mode === 3 ? this._midaGain : this._eaExposure, this._lutPeakAll], 44);
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1028,7 +1030,7 @@
     setFpsCap(fps) { this._fpsCap = fps > 0 ? fps : 0; this._lastRenderT = 0; this._requestRender(); return this._fpsCap; }
     getFpsCap() { return this._fpsCap; }
 
-    setMode(m) { this.mode = m | 0; this._requestRender(); }
+    setMode(m) { this.mode = m | 0; if (this.mode === 3) this._scheduleExposure(); this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
     setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._scheduleExposure(); this._requestRender(); }
@@ -1069,6 +1071,51 @@
       sums.sort();
       const p = sums[Math.min(sums.length - 1, Math.floor(0.995 * (sums.length - 1)))];
       this._eaExposure = p > 0 ? -Math.log(0.05) * this._lutPeakAll / p : 1.0;
+      if (this.mode === 3) this._updateMidaGain();
+    }
+    /** MIDA's gain from the data: MIDA shows a weighted average along the ray,
+     *  so it rarely reaches the top of the colormap (about half of MIP on blurred
+     *  data). Run the same recurrence down z for each (x, y) (subsampled 2x2, one
+     *  voxel per step) with the current window, gamma, opacity and transparency,
+     *  and scale so the brightest 0.5% of those columns reach 95% of the
+     *  colormap. Never darkens (gain >= 1), capped at 4. Recomputed with the
+     *  settings, never per frame, so it cannot flicker while rotating. */
+    _updateMidaGain() {
+      const v = this._volF16;
+      if (!v) return;
+      const { NX, NY, NZ } = this, H = halfTable();
+      const tl = this._win ? this._win[0] : 0, inv = this._win ? this._win[1] : 1, g = this.gamma || 1;
+      const dens = Math.max(0, +this.density || 0);
+      const alpha = this._transparent ? this._lutAlpha : null, N = alpha ? alpha.length : 1;
+      const sgT = new Float32Array(65536), aT = new Float32Array(65536);   // half bits -> value, opacity
+      for (let h = 0; h < 65536; h += 1) {
+        let q = (H[h] - tl) * inv;
+        if (!(q > 0)) continue;
+        if (q > 1) q = 1;
+        q = Math.pow(q, g);
+        sgT[h] = q;
+        aT[h] = (1 - Math.exp(-q * dens)) * (alpha ? alpha[Math.min(N - 1, Math.round(q * (N - 1)))] : 1);
+      }
+      const sx = Math.ceil(NX / 2), sy = Math.ceil(NY / 2), n = sx * sy;
+      const I = new Float32Array(n), A = new Float32Array(n), F = new Float32Array(n);
+      for (let z = 0; z < NZ; z += 1) {
+        for (let y = 0, k = 0; y < NY; y += 2) {
+          const row = (z * NY + y) * NX;
+          for (let x = 0; x < NX; x += 2, k += 1) {
+            const h = v[row + x], s = sgT[h], a = aT[h];
+            const rise = s > F[k] ? s - F[k] : 0;
+            const keep = (1 - rise) * A[k];
+            I[k] = (1 - rise) * I[k] + (1 - keep) * a * s;
+            A[k] = keep + (1 - keep) * a;
+            F[k] += rise;
+          }
+        }
+      }
+      const vals = new Float32Array(n);
+      for (let k = 0; k < n; k += 1) vals[k] = A[k] > 1e-6 ? I[k] / A[k] : 0;
+      vals.sort();
+      const p = vals[Math.min(n - 1, Math.floor(0.995 * (n - 1)))];
+      this._midaGain = p > 0 ? Math.min(4, Math.max(1, 0.95 / p)) : 1.0;
     }
     /** Display window from the 2D histogram, in the volume's data units (the
      *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in
@@ -1117,7 +1164,7 @@
     setHeadlight(on) { this.headlight = on ? 1 : 0; this._requestRender(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this._requestRender(); } }
     setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this._requestRender(); } }
-    setDensity(d) { this.density = +d; this._requestRender(); }
+    setDensity(d) { this.density = +d; if (this.mode === 3) this._scheduleExposure(); this._requestRender(); }   // MIDA's gain depends on it
     setLabelOpacity(o) { this.labelOpacity = +o; this._requestRender(); }
     setShowLabels(on) { this.showLabels = on ? 1 : 0; this._requestRender(); }
     setZScale(z) { this.zScale = +z; this._requestRender(); }

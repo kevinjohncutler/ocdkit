@@ -210,7 +210,9 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       // mean), so every pixel is a true colormap color (blending colormapped
       // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
       // and transparency come from the LUT exactly as in MIP
-      let v = select(0.0, clamp(imgAcc.x / imgAcc.w, 0.0, 1.0), imgAcc.w > 1e-6);
+      // times the gain the host estimates from the data (win.z in this mode), so
+      // the brightest MIDA pixels reach the top of the colormap as in EA
+      let v = select(0.0, clamp(imgAcc.x / imgAcc.w * u.win.z, 0.0, 1.0), imgAcc.w > 1e-6);
       let c4 = lutRGBA(v); let ta = c4.a;
       imgA = v * ta; imgPC = c4.rgb * ta;
     }

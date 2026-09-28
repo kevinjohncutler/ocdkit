@@ -295,6 +295,20 @@ def test_mida_no_lines_at_voxel_edges(dev, view):
     assert spikes < 0.001
 
 
+def test_mida_gain_scales_the_value(dev):
+    """MIDA's value is multiplied by the host's gain (win.z in this mode) before
+    the colormap, and clipped at the top of the colormap."""
+    vol, _ = _sparse_scene(seed=5)
+    n = 32
+    vol = np.ascontiguousarray(vol[:, :n, :n])
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    u = lambda g: _uniform(inv, (n, n, vol.shape[0]), 3, density=0.5, show_lab=0, exposure=g)
+    v1 = s.compute(u(1.0), 3, 1, 0, n, n)[..., 3]
+    v2 = s.compute(u(1.7), 3, 1, 0, n, n)[..., 3]
+    np.testing.assert_allclose(v2, np.minimum(v1 * 1.7, 1.0), atol=3e-3)
+
+
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
     """The point of MIDA: a bright voxel behind a dense dim slab still shows (as in
     MIP), where emission-absorption at the same density hides it."""
