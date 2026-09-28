@@ -293,7 +293,7 @@
   // and toneMapping:'extended' lets >1 emit true HDR. The scalar image is sampled
   // with textureLoad (no float-filtering feature needed).
   const SHADER = `
-  struct U { m0: vec4f, m1: vec4f, m2: vec4f, imgSize: vec2f, vmin: f32, vmax: f32, count: f32, gamma: f32, _b: f32, _c: f32 };
+  struct U { m0: vec4f, m1: vec4f, m2: vec4f, imgSize: vec2f, vmin: f32, vmax: f32, count: f32, gamma: f32, invert: f32, _c: f32 };
   @group(0) @binding(0) var<uniform> u: U;
   @group(0) @binding(1) var<storage, read> lut: array<vec4f>;
   @group(0) @binding(2) var img: texture_2d<f32>;
@@ -312,7 +312,8 @@
   @fragment fn fs(in: VOut) -> @location(0) vec4f {
     let px = clamp(vec2i(in.uv * u.imgSize), vec2i(0), vec2i(u.imgSize) - vec2i(1));
     let val = textureLoad(img, px, 0).r;
-    let t0 = clamp((val - u.vmin) / max(u.vmax - u.vmin, 1e-9), 0.0, 1.0);
+    var t0 = clamp((val - u.vmin) / max(u.vmax - u.vmin, 1e-9), 0.0, 1.0);
+    if (u.invert > 0.5) { t0 = 1.0 - t0; }             // inverted display (dark objects bright)
     let t = pow(t0, u.gamma);
     let idx = min(u32(t * (u.count - 1.0) + 0.5), u32(u.count) - 1u);
     let cc = lut[idx];
@@ -420,6 +421,8 @@
 
     setRange(vmin, vmax) { this._vmin = vmin; this._vmax = vmax; this.requestRedraw(); }
 
+    setInvert(on) { this._invert = !!on; this.requestRedraw(); }
+
     // Column-major 3x3 (image-px → clip), e.g. the viewer's computeWebglMatrix
     // output, so the HDR layer tracks pan/zoom exactly. null → fit-to-canvas.
     setTransform(mat3col9) { this._matrix = mat3col9 || null; this.requestRedraw(); }
@@ -476,7 +479,7 @@
       u[0] = M[0]; u[1] = M[1]; u[2] = M[2];
       u[4] = M[3]; u[5] = M[4]; u[6] = M[5];
       u[8] = M[6]; u[9] = M[7]; u[10] = M[8];
-      u[12] = this._w; u[13] = this._h; u[14] = this._vmin; u[15] = this._vmax; u[16] = IMAGE_CMAP_LUT_SIZE; u[17] = this._gamma;
+      u[12] = this._w; u[13] = this._h; u[14] = this._vmin; u[15] = this._vmax; u[16] = IMAGE_CMAP_LUT_SIZE; u[17] = this._gamma; u[18] = this._invert ? 1 : 0;
       this.device.queue.writeBuffer(this.uBuf, 0, u);
       const enc = this.device.createCommandEncoder();
       const pass = enc.beginRenderPass({ colorAttachments: [{ view: this.ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });

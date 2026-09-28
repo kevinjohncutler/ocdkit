@@ -52,6 +52,19 @@
     return ["r32uint", Uint32Array, 4];
   }
 
+  // 1 - value on half-float bits, through a 64K table (built on first use)
+  let _INV16 = null;
+  function _invertF16(src) {
+    if (!_INV16) {
+      const H = halfTable(), f = new Float32Array(65536);
+      for (let h = 0; h < 65536; h += 1) f[h] = Number.isFinite(H[h]) ? 1 - H[h] : 0;
+      _INV16 = _toF16(f);
+    }
+    const out = new Uint16Array(src.length);
+    for (let i = 0; i < src.length; i += 1) out[i] = _INV16[src[i]];
+    return out;
+  }
+
   // half-float bits -> float, as a 64K lookup table (built on first use)
   let _HALF = null;
   function halfTable() {
@@ -208,6 +221,7 @@
       this.NX = m.width; this.NY = m.height; this.NZ = m.depth;
       this.decoded = decoded;
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
+      this._invert = !!opts.invert;                    // inverted display (setInvert)
       // Render-path experiment: "raymarch" (image-order) | "cubes" (object-order
       // MIP, all occupied voxels) | "minimal" (a few hundred cubes — a trivially
       // light raster load, to test whether the whine is the workload or the
@@ -400,6 +414,8 @@
         }
         f16 = _toF16(f);
       }
+      this._volF16Orig = f16;        // as loaded; the texture holds 1 - value while inverted
+      if (this._invert) f16 = _invertF16(f16);
       this._volF16 = f16;            // kept for the cube renderer and the EA exposure estimate
       this._cubesBuilt = false;
       this.volTex = device.createTexture({
@@ -1064,10 +1080,37 @@
       this._winData = [lo, hi];
       const [vmin, vmax] = this.valueRange || [0, 255];
       const span = vmax > vmin ? vmax - vmin : 1;
-      const tl = (lo - vmin) / span, th = (hi - vmin) / span;
+      let tl = (lo - vmin) / span, th = (hi - vmin) / span;
+      // inverted: the texture holds 1 - t, so the window [tl, th] becomes
+      // [1 - th, 1 - tl], giving (th - t) / (th - tl) = 1 - the normal display
+      if (this._invert) { const a = 1 - th; th = 1 - tl; tl = a; }
       this._win = [tl, 1 / Math.max(th - tl, 1e-6)];
       this._scheduleExposure();
     }
+    /** Inverted display (dark objects bright, e.g. phase contrast): upload 1 - value
+     *  and flip the window, so every projection (MIP, mean, EA, MIDA) and the
+     *  empty-space bricks work on the inverted intensities unchanged. */
+    setInvert(on) {
+      on = !!on;
+      if (on === !!this._invert) return;
+      this._invert = on;
+      const orig = this._volF16Orig;
+      if (orig && this.volTex) {
+        const { device, NX, NY, NZ } = this;
+        const f16 = on ? _invertF16(orig) : orig;
+        this._volF16 = f16;
+        this._cubesBuilt = false;
+        device.queue.writeTexture({ texture: this.volTex }, f16.buffer, { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
+        const bd = brickDims(NX, NY, NZ, BRICK);
+        device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(brickMax(f16, NX, NY, NZ, BRICK, true)).buffer,
+          { bytesPerRow: bd[0] * 2, rowsPerImage: bd[1] }, bd);
+        if (this._renderMode === "cubes" || this._renderMode === "minimal") this._ensureCubes();
+      }
+      if (this._winData) this._applyWindow(this._winData[0], this._winData[1]);
+      this._scheduleExposure();
+      this._requestRender();
+    }
+    isInverted() { return !!this._invert; }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }

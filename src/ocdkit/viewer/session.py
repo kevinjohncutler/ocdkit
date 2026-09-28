@@ -14,6 +14,7 @@ import gzip
 import io
 import json
 import math
+import os
 import secrets
 import threading
 import time
@@ -58,6 +59,9 @@ SUPPORTED_IMAGE_EXTS = {
 }
 
 SESSION_COOKIE_NAME = "OCDSESSION"
+
+# files that belong to an image (<stem><suffix>.ext), longest first
+_SIDECAR_SUFFIXES = ("_cp_masks_edited", "_masks_edited", "_cp_masks", "_masks", "_flows")
 
 
 def _session_path_key(path: Optional[Path]) -> str:
@@ -403,18 +407,33 @@ class SessionManager:
                 pass  # mismatched or unreadable sidecar → leave unmasked
 
     def _list_directory_images(self, directory: Path) -> list[Path]:
+        """Images in *directory*, without the sidecars of images listed next to
+        them (``foo_masks.tif``, ``foo_flows.tif``, ...), which load with their
+        image rather than as images of their own. A sidecar whose image is not
+        in the folder is still listed."""
         try:
-            return [
+            files = [
                 p
                 for p in sorted(directory.iterdir())
                 if p.is_file() and p.suffix.lower() in SUPPORTED_IMAGE_EXTS
             ]
         except FileNotFoundError:
             return []
+        stems = {p.stem for p in files}
+
+        def is_sidecar(p: Path) -> bool:
+            for suffix in _SIDECAR_SUFFIXES:
+                if p.stem.endswith(suffix) and p.stem[: -len(suffix)] in stems:
+                    return True
+            return False
+
+        return [p for p in files if not is_sidecar(p)]
 
     def set_image(self, state: SessionState, path: Optional[Path]) -> None:
         if path is not None:
-            path = path.expanduser().resolve()
+            # absolute, but symlinks are NOT followed: a linked file stays in the
+            # folder it was opened from, so the file list stays that folder's
+            path = Path(os.path.abspath(path.expanduser()))
             if not path.exists():
                 raise FileNotFoundError(path)
             image, is_rgb, is_volume = self._load_image_from_path(path)

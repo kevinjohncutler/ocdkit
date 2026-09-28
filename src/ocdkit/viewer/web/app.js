@@ -4141,6 +4141,7 @@ function collectViewerState() {
     segMode,
     useGpu: useGpuToggle ? Boolean(useGpuToggle.checked) : undefined,
     gamma: currentGamma,
+    imageInvert: imageInverted,
     timestamp: Date.now(),
   };
 }
@@ -7676,6 +7677,7 @@ function applyImageAdjustments() {
   for (let i = 0; i < source.length; i += 4) {
     let value = source[i] / 255;
     value = Math.min(Math.max((value - low) / range, 0), 1);
+    if (imageInverted) value = 1 - value;
     value = Math.pow(value, currentGamma);
     const v = Math.round(value * 255);
     target[i] = v;
@@ -7781,6 +7783,28 @@ function computeHistogram() {
 
 // ── Display-window policy + histogram options ─────────────────────────────
 let windowInitialized = false;
+// A real file switch (not an axis switch, which passes no path) starts over: new
+// window from that file's percentiles, and that file's own invert setting.
+let lastFilePath = CONFIG.imagePath || null;
+let pendingPerFileSettings = true;
+
+// ── Invert (display only): 1 - the windowed value, for dark objects on a bright
+// background (phase contrast, brightfield). Applies in 2D (both paths) and 3D,
+// and is remembered per image with the rest of the viewer state.
+let imageInverted = false;
+const imageInvertToggle = document.getElementById('imageInvertToggle');
+function setImageInvert(on, { save = true } = {}) {
+  imageInverted = !!on;
+  if (imageInvertToggle) imageInvertToggle.checked = imageInverted;
+  if (window.OcdHdr && OcdHdr.setInvert) OcdHdr.setInvert(imageInverted);
+  if (typeof window.__viewerOnInvert === 'function') {
+    try { window.__viewerOnInvert(imageInverted); } catch (e) {}
+  }
+  if (originalImageData) applyImageAdjustments();
+  if (save) scheduleStateSave();
+}
+window.__viewerGetInvert = () => imageInverted;
+if (imageInvertToggle) imageInvertToggle.addEventListener('change', () => setImageInvert(imageInvertToggle.checked));
 const HIST_PREFS_KEY = 'ocdkit-histogram-prefs';
 let histPrefs = { log: false, autoScale: false, clipLo: 1, clipHi: 99 };   // clip bounds in percent
 try { Object.assign(histPrefs, JSON.parse(localStorage.getItem(HIST_PREFS_KEY) || '{}')); } catch (e) {}
@@ -7990,6 +8014,7 @@ function gammaCurveY(intensity, width, height) {
   }
   const clampedIntensity = Math.min(Math.max(intensity, windowLow), windowHigh);
   let t = (clampedIntensity - windowLow) / (windowHigh - windowLow);
+  if (imageInverted) t = 1 - t;                  // the curve slopes down when inverted
   t = Math.min(Math.max(t, 0.0001), 0.9999);
   const mapped = Math.pow(t, 1 / currentGamma);
   const y = height - (mapped * (height - 4)) - 2;
@@ -10338,6 +10363,10 @@ function initialize() {
     // volume for a stack) and then kept across slices, axes and fields of view,
     // so the display does not jump. "Auto-scale" in the histogram's right-click
     // menu re-clips every new image instead; moving the clip slider re-clips now.
+    if (pendingPerFileSettings) {
+      pendingPerFileSettings = false;
+      setImageInvert(Boolean(savedViewerState && savedViewerState.imageInvert), { save: false });
+    }
     if (!windowInitialized || histPrefs.autoScale) {
       if (!windowInitialized) currentGamma = DEFAULT_GAMMA;
       clipWindowToPercentiles({ emit: false });
@@ -10418,6 +10447,12 @@ function reinitializeForNewImage(config) {
   imgHeight = config.height || 0;
   // Prefer imageUrl (raw binary fetch) over embedded imageDataUrl (base64 in JSON)
   imageDataUrl = config.imageUrl || config.imageDataUrl || '';
+  if (config.imagePath && config.imagePath !== lastFilePath) {
+    lastFilePath = config.imagePath;
+    windowInitialized = false;                    // new file: new window, its own invert
+    volumeHistCounts = null; volumeHistSession = null;
+    pendingPerFileSettings = true;
+  }
   currentImagePath = config.imagePath || null;
   currentImageName = config.imageName || null;
   localStateKey = `VIEWER_STATE:${config.imagePath || config.imageName || 'default'}`;

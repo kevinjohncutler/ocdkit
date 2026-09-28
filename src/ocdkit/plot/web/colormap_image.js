@@ -43,13 +43,14 @@
   uniform highp sampler2D u_img;     // R32F intensity (texelFetch, no filtering)
   uniform sampler2D u_lut;           // 256x1 RGBA8, display-p3 gamma-encoded
   uniform vec2 u_imgSize;
-  uniform float u_vmin, u_vmax, u_gamma;
+  uniform float u_vmin, u_vmax, u_gamma, u_invert;
   in vec2 v_uv;
   out vec4 o;
   void main() {
     ivec2 px = clamp(ivec2(v_uv * u_imgSize), ivec2(0), ivec2(u_imgSize) - ivec2(1));
     float val = texelFetch(u_img, px, 0).r;
     float t = clamp((val - u_vmin) / max(u_vmax - u_vmin, 1e-9), 0.0, 1.0);
+    if (u_invert > 0.5) t = 1.0 - t;
     t = pow(t, u_gamma);
     o = vec4(texture(u_lut, vec2(t, 0.5)).rgb, 1.0);
   }`;
@@ -75,7 +76,7 @@
       if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
       this.prog = prog;
       this.u = {};
-      ['u_matrix', 'u_imgSize', 'u_vmin', 'u_vmax', 'u_gamma', 'u_img', 'u_lut'].forEach((n) => { this.u[n] = gl.getUniformLocation(prog, n); });
+      ['u_matrix', 'u_imgSize', 'u_vmin', 'u_vmax', 'u_gamma', 'u_invert', 'u_img', 'u_lut'].forEach((n) => { this.u[n] = gl.getUniformLocation(prog, n); });
       this.vao = gl.createVertexArray();
       this.imgTex = gl.createTexture();
       this.lutTex = gl.createTexture();
@@ -114,6 +115,7 @@
 
     setColormap(name) { this._cmap = name; this._setLut(name); this.requestRedraw(); }
     setRange(vmin, vmax) { this._vmin = vmin; this._vmax = vmax; this.requestRedraw(); }
+    setInvert(on) { this._invert = !!on; this.requestRedraw(); }
     setGamma(g) { this._gamma = g || 1.0; this.requestRedraw(); }
     setHdr() { /* WebGL2 is SDR-only; no-op for interface parity */ }
     setGain() { /* SDR can't exceed white; no-op for interface parity */ }
@@ -141,6 +143,7 @@
       gl.uniform1f(this.u.u_vmin, this._vmin);
       gl.uniform1f(this.u.u_vmax, this._vmax);
       gl.uniform1f(this.u.u_gamma, this._gamma);
+      gl.uniform1f(this.u.u_invert, this._invert ? 1 : 0);
       gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.imgTex); gl.uniform1i(this.u.u_img, 0);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.lutTex); gl.uniform1i(this.u.u_lut, 1);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

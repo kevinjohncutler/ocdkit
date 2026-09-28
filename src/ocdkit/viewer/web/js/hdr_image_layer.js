@@ -23,13 +23,13 @@
     supported: function () { return supported; }, isActive: function () { return this.active; } };
   window.OcdHdr = api;
   if (!supported) {
-    api.setImage = api.setColormap = api.setRange = api.setGamma = api.draw = function () {};
+    api.setImage = api.setColormap = api.setRange = api.setGamma = api.setInvert = api.draw = function () {};
     api.setActive = function () {};
     return;
   }
 
   let canvas = null, renderer = null, headroom = null, ready = false;
-  const pending = { img: null, cmap: 'viridis', range: null, gamma: null, matrix: null, transparent: false };
+  const pending = { img: null, cmap: 'viridis', range: null, gamma: null, matrix: null, transparent: false, invert: false };
   // originalImageData is already top-row-first (same as the displayed image), and
   // the viewer's matrix maps image-px→clip upright — so NO extra flip (an earlier
   // FLIP_Y guess mirrored the image vs the native render).
@@ -56,6 +56,7 @@
     api.setColormap(pending.cmap);
     if (pending.range) api.setRange(pending.range[0], pending.range[1]);
     if (pending.gamma != null) api.setGamma(pending.gamma);
+    if (pending.invert) api.setInvert(true);
     if (pending.transparent) api.setTransparent(true);
     if (pending.matrix) api.draw(pending.matrix);
   })().catch(function (e) { console.warn('[OcdHdr] init failed:', e); });
@@ -88,6 +89,11 @@
   api.setGamma = function (g) {
     if (!ready) { pending.gamma = g; return; }
     renderer.setGamma(g);
+  };
+  // Inverted display: 1 - windowed value (dark objects on a bright background).
+  api.setInvert = function (on) {
+    if (!ready) { pending.invert = !!on; return; }
+    if (renderer.setInvert) renderer.setInvert(!!on);
   };
   // Force the image SDR (unlifted) vs HDR — lets the central HDR toggle drive
   // the image too. No-op on the WebGL2 backend (already SDR).

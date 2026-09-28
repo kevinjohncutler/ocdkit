@@ -507,6 +507,7 @@
           colormap: currentImageColormap(),
           gamma: currentGamma(),
           density: activeDensity(),
+          invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -618,6 +619,8 @@
     window.__viewerOnGamma = (g) => { if (vgpu) vgpu.setGamma(g); };
     // ...and the 2D histogram's display window (lower/upper bounds).
     window.__viewerOnWindow = (lo, hi) => { if (vgpu) vgpu.setWindow(lo, hi); };
+    // ...and the Invert toggle
+    window.__viewerOnInvert = (on) => { if (vgpu) vgpu.setInvert(on); };
 
     function setProj(p) {
       curProj = p | 0;
