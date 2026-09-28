@@ -69,15 +69,16 @@ override BRICK : f32 = 16.0;         // brick edge in voxels (must match the hos
 // Transparent low end (colormap alpha). A pipeline constant, not a uniform: with
 // it off the alpha multiply compiles away (as a runtime value it cost EA ~3%).
 override TRANSP : bool = false;
-// Rounded voxel edges (EA and MIDA): each voxel stays a sharp cube except within
-// SMOOTH_ZONE of a face, where it blends linearly into its neighbor. The blend
-// weights sum to 1, so an even region stays even, while the creases a sharp cube
-// shows along its projected edges soften. The field is no longer constant per
-// voxel, so the ray samples every SMOOTH_STEP voxels instead of stepping exactly
-// voxel to voxel. Off: this compiles away.
-override SMOOTH : bool = false;
-const SMOOTH_ZONE : f32 = 0.3;
-const SMOOTH_STEP : f32 = 0.1;   // 10 samples per voxel: 5 left faint rings in the blend zones
+// Voxel faces (EA and MIDA): every voxel the ray crosses contributes as if it
+// emitted from the face the ray entered through, the same amount however much of
+// the voxel the ray actually passes through (the average crossing length for the
+// ray's direction, 1 / (|dx| + |dy| + |dz|) in voxel units). Each voxel then
+// looks flat, with a crisp step to a neighbor of different value, instead of the
+// path-length shading whose slope breaks along the projected cube edges read as
+// creases. MIDA's even regions stay exactly even (an average of equal values);
+// EA's can show faint steps where the number of voxels crossed changes. Off:
+// exact path lengths; this compiles away.
+override FACES : bool = false;
 
 // Colormap color (rgb) and alpha (a). Alpha is 1 unless the transparent-low-end
 // option is on, in which case it follows the colormap's lightness, so dark values
@@ -110,29 +111,6 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   let keep = beta * (*acc).w;
   *acc = vec4<f32>(beta * (*acc).x + (1.0 - keep) * a * sv, 0.0, 0.0, keep + (1.0 - keep) * a);
   *mx = *mx + rise;
-}
-// The rounded-voxel field at x (voxel coordinates, voxel i spans [i, i+1)):
-// nearest-voxel value, blended with the neighbor only within SMOOTH_ZONE of a
-// face (per axis), so it costs one load away from faces and up to 8 at a corner.
-fn smoothLoad(x : vec3<f32>, dims : vec3<i32>) -> f32 {
-  let y = x - vec3<f32>(0.5);
-  let i = floor(y);
-  let w = clamp((y - i - vec3<f32>(0.5)) / SMOOTH_ZONE + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
-  let hi = dims - vec3<i32>(1);
-  let i0 = clamp(vec3<i32>(i), vec3<i32>(0), hi);
-  let i1 = clamp(vec3<i32>(i) + vec3<i32>(1), vec3<i32>(0), hi);
-  let blend = (w > vec3<f32>(0.0)) & (w < vec3<f32>(1.0));
-  if (!any(blend)) {
-    return textureLoad(volTex, select(i0, i1, w > vec3<f32>(0.5)), 0).r;
-  }
-  var v = 0.0;
-  for (var k = 0; k < 8; k = k + 1) {
-    let b = vec3<bool>((k & 1) != 0, (k & 2) != 0, (k & 4) != 0);
-    let wk = select(vec3<f32>(1.0) - w, w, b);
-    let wt = wk.x * wk.y * wk.z;
-    if (wt > 0.0) { v = v + wt * textureLoad(volTex, select(i0, i1, b), 0).r; }
-  }
-  return v;
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
@@ -264,25 +242,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
     var curB = vec3<f32>(-1.0);
-    if (SMOOTH && (MODE == 0 || MODE == 3)) {
-      // rounded voxels: even steps of SMOOTH_STEP voxels along the ray, each
-      // sampled at its middle (the last one shortened to end at the box)
-      let len = tfar - tnear;
-      let hs = SMOOTH_STEP / max(length(dv0), 1e-6);
-      let nSteps = i32(ceil(len / hs));
-      for (var k = 0; k < nSteps; k = k + 1) {
-        let ta = f32(k) * hs;
-        let tb = min(ta + hs, len);
-        let sv = smoothLoad(p0 + dv * (0.5 * (ta + tb)), dims) * iscale;
-        if (MODE == 0) {
-          eaStep(&imgAcc, sv, tb - ta, density);
-          if (imgAcc.w >= 0.995) { break; }
-        } else {
-          midaStep(&imgAcc, &midaMax, sv, tb - ta, density);
-          if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
-        }
-      }
-    } else {
+    // voxel faces: the average world length of one voxel crossing along this ray
+    let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
     for (var g = 0; g < maxIter; g = g + 1) {
       // Keep this check FLAT (bv computed every step, one combined condition).
       // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
@@ -306,11 +267,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // those act on the result, like a LUT). Density = ABSORPTION only: every
         // voxel glows with s^2 per unit length whatever the density, and density
         // sets how much nearer glow hides farther glow (0 = pure glow).
-        eaStep(&imgAcc, s, max(tExit - tPrev, 0.0), density);
+        eaStep(&imgAcc, s, select(max(tExit - tPrev, 0.0), faceLen, FACES), density);
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 3) {
         // on the data at its full range, like EA: the window acts on the result
-        midaStep(&imgAcc, &midaMax, s, max(tExit - tPrev, 0.0), density);
+        midaStep(&imgAcc, &midaMax, s, select(max(tExit - tPrev, 0.0), faceLen, FACES), density);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
@@ -328,7 +289,6 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z;
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
-    }
     }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }

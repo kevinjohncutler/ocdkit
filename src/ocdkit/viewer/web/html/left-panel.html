@@ -138,10 +138,10 @@
               </div>
             </div>
           </div>
-          <div class="control label-style-row" id="smoothVoxelRow" hidden>
-            <span class="control-heading control-heading--lower control-heading--icon" title="Rounded voxel edges (EA and MIDA): each voxel blends into its neighbors only near its faces, softening the creases a sharp cube shows along its edges. Slower."><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19,19H21V21H19V19M19,17H21V15H19V17M3,13H5V11H3V13M3,17H5V15H3V17M3,9H5V7H3V9M3,5H5V3H3V5M7,5H9V3H7V5M15,21H17V19H15V21M11,21H13V19H11V21M15,21H17V19H15V21M7,21H9V19H7V21M3,21H5V19H3V21M21,8A5,5 0 0,0 16,3H11V5H16A3,3 0 0,1 19,8V13H21V8Z"/></svg></span>
-            <label class="toggle toggle-left" title="Rounded voxel edges in EA and MIDA (slower)">
-              <input type="checkbox" id="smoothVoxelToggle" />
+          <div class="control label-style-row" id="faceVoxelRow" hidden>
+            <span class="control-heading control-heading--lower control-heading--icon" title="Voxel faces (EA and MIDA): every voxel a ray crosses counts the same, however much of it the ray passes through, so voxels look flat with crisp steps between different values (no creases along cube edges). In EA, even regions can show faint steps along voxel edges."><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L6.04,7.5L12,10.85L17.96,7.5L12,4.15M5,15.91L11,19.29V12.58L5,9.21V15.91M19,15.91V9.21L13,12.58V19.29L19,15.91Z"/></svg></span>
+            <label class="toggle toggle-left" title="Voxel faces: flat voxels with crisp edges (EA and MIDA)">
+              <input type="checkbox" id="faceVoxelToggle" />
               <span class="toggle-switch"></span>
             </label>
           </div>
