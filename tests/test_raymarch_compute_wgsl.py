@@ -210,18 +210,24 @@ def test_compute_matches_fragment_reference(dev, mode, layers):
         assert frac < 0.005, f"yaw={yaw} pitch={pitch}: {frac:.4%} of pixels differ"
 
 
-def _mida_reference(cols, density):
-    """MIDA along axis 0 (front first), one unit of path per voxel, on intensity:
-    I = beta I + (1 - beta A) a s, A = beta A + (1 - beta A) a, beta = 1 - max(s - f, 0);
-    the displayed value is v = I / A (then colormapped once, alpha v, like MIP)."""
+def _mida_reference(cols, density, substeps=200):
+    """MIDA along axis 0 (front first), one unit of path per voxel, on intensity,
+    computed independently of the shader's closed form: the paper's fade-then-add
+    I = beta I + (1 - beta A) a s, A = beta A + (1 - beta A) a in `substeps` tiny
+    steps per voxel (its continuous limit), with the running max f approaching a
+    brighter s as s - (s - f) e^(-h / 0.8) and beta = (1 - f_new) / (1 - f_old).
+    The displayed value is v = I / A (then colormapped, alpha v)."""
+    h = 1.0 / substeps
     I = np.zeros(cols.shape[1:]); A = np.zeros(cols.shape[1:]); f = np.zeros(cols.shape[1:])
     for s in cols.astype(np.float64):
-        a = 1 - np.exp(-density * s)
-        beta = 1 - np.maximum(s - f, 0)
-        keep = beta * A
-        I = beta * I + (1 - keep) * a * s
-        A = keep + (1 - keep) * a
-        f = np.maximum(f, s)
+        a = 1 - np.exp(-density * s * h)
+        for _ in range(substeps):
+            f_new = np.where(s > f, s - (s - f) * np.exp(-h / 0.8), f)
+            beta = (1 - f_new) / np.maximum(1 - f, 1e-9)
+            keep = beta * A
+            I = beta * I + (1 - keep) * a * s
+            A = keep + (1 - keep) * a
+            f = f_new
     return np.where(A > 1e-6, np.clip(I / np.maximum(A, 1e-6), 0, 1), 0)
 
 
@@ -358,6 +364,26 @@ def test_voxel_faces_keep_mida_even_and_leave_mip_alone(dev):
     inv, *_ = _ortho(0.5, 0.3, max(NX, NY, NZ) * 0.8)
     u = _uniform(inv, (NX, NY, NZ), 1, show_lab=0)
     np.testing.assert_array_equal(s2.compute(u, 1, 1, 0, 96, 96, faces=1), s2.compute(u, 1, 1, 0, 96, 96))
+
+
+def test_mida_hides_boundaries_between_equal_voxels(dev):
+    """A bright block right behind a dim one, seen at an angle: where both are on
+    the ray, boundaries between the bright block's equal voxels must stay
+    invisible, as in EA (the old per-voxel fade drew a grid there: 21% of pixels
+    were creases, now ~5%)."""
+    n = 12
+    vol = np.full((n, n, n), 0.1, np.float16)
+    vol[3:9, 3:9, 2:6] = 0.45
+    vol[3:9, 3:9, 6:10] = 0.9
+    only = vol.copy(); only[3:9, 3:9, 2:6] = 0.1
+    inv, *_ = _ortho(1.35, 0.3, 6.0)
+    u = _uniform(inv, (n, n, n), 3, density=0.5, show_lab=0)
+    img = Scene(dev, vol, np.zeros(vol.shape, np.uint8)).compute(u, 3, 1, 0, 384, 384)[..., 3]
+    alone = Scene(dev, only, np.zeros(only.shape, np.uint8)).compute(u, 3, 1, 0, 384, 384)[..., 3]
+    both = (np.abs(img - alone) > 0.02) & (alone > 0.3)
+    lap = np.abs(img[1:-1, 2:] + img[1:-1, :-2] + img[2:, 1:-1] + img[:-2, 1:-1] - 4 * img[1:-1, 1:-1])
+    assert both.sum() > 10000
+    assert (lap[both[1:-1, 1:-1]] > 0.004).mean() < 0.08
 
 
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):

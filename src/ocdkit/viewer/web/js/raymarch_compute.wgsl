@@ -36,11 +36,10 @@
 // work as in MIP).
 // Early termination needs A ~ 1 AND f near the top of the window (only a new max
 // could lift the fade), so a dim, dense ray keeps marching.
-// The fade scales with the ray's path through the voxel (capped at one voxel):
-// a full crossing is exactly the published beta, but a ray clipping a voxel's
-// corner fades only a little and raises f only as much, the rest following in
-// later voxels. (Fading in full on any touch while the voxel's opacity scales
-// with the path length drew dark and bright lines along voxel edges.)
+// The fade follows the path through the voxel continuously (see midaStep): a
+// ray clipping a voxel's corner fades only a little. (Fading in full on any
+// touch while the voxel's opacity scales with the path length drew dark and
+// bright lines along voxel edges.)
 
 struct U {
   invViewProj : mat4x4<f32>,
@@ -106,14 +105,40 @@ fn eaStep(acc : ptr<function, vec4<f32>>, s : f32, segLen : f32, density : f32) 
   *acc = vec4<f32>((*acc).x + sv * sv * segLen * S * T, 0.0, 0.0, (*acc).w + (1.0 - exp(-tau)) * T);
 }
 // One MIDA step (see the header): acc.x = I, acc.w = A, mx = running max f.
+// The running max f approaches a brighter value s exponentially with distance,
+// f <- s - (s - f) e^(-L / MIDA_CATCHUP), and the fade is (1 - f_new) / (1 - f_old).
+// Fading and adding happen together along the path (the continuous limit of
+// MIDA's fade-then-add): with opacity rate mu = density s and fade rate
+// r = -d ln(1 - f)/dt, dA = -r A + mu (1 - A), dI = -r I + mu (1 - A) s. So
+// I - s A just fades by the step's total fade (exact), and A has one smooth
+// integral, done by 3-point Simpson. The result does not depend on how a
+// stretch of one value is divided into voxels, so boundaries between equal
+// voxels stay invisible even when a different value shares the ray. (A rise of
+// (s - f) min(L, 1) per voxel depended on the division and drew a grid; a
+// per-voxel fade-then-add left seams across 1-voxel-thick lines.) Starting from empty space a full rise fades exactly as the
+// paper's 1 - (s - f); a ray clipping a voxel's corner (L -> 0) fades almost
+// nothing, so no lines appear along voxel edges.
+const MIDA_CATCHUP : f32 = 0.8;   // voxels: 5% creases and no edge lines (0.1 gave lines, the old rule 21% creases)
 fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, segLen : f32, density : f32) {
   let sv = clamp(s, 0.0, 1.0);
   let a = 1.0 - exp(-sv * density * segLen);
-  let rise = max(sv - *mx, 0.0) * min(segLen, 1.0);
-  let beta = 1.0 - rise;
-  let keep = beta * (*acc).w;
-  *acc = vec4<f32>(beta * (*acc).x + (1.0 - keep) * a * sv, 0.0, 0.0, keep + (1.0 - keep) * a);
-  *mx = *mx + rise;
+  let A0 = (*acc).w;
+  let I0 = (*acc).x;
+  if (sv <= *mx) {                                    // no rise: plain over-compositing
+    *acc = vec4<f32>(I0 + (1.0 - A0) * a * sv, 0.0, 0.0, A0 + (1.0 - A0) * a);
+    return;
+  }
+  let mu = sv * density;
+  let q = sv - *mx;
+  let omL = 1.0 - (sv - q * exp(-segLen / MIDA_CATCHUP));          // 1 - f at the end
+  let om0 = max(1.0 - *mx, 1e-6);
+  let omM = max(1.0 - (sv - q * exp(-0.5 * segLen / MIDA_CATCHUP)), 1e-6);
+  let beta = omL / om0;                                             // the step's total fade
+  // A = beta e^(-mu L) A0 + mu Integral_0^L e^(-mu (L - t)) (1 - f(L)) / (1 - f(t)) dt
+  let J = segLen / 6.0 * (exp(-mu * segLen) * omL / om0 + 4.0 * exp(-0.5 * mu * segLen) * omL / omM + 1.0);
+  let A1 = beta * exp(-mu * segLen) * A0 + mu * J;
+  *acc = vec4<f32>(sv * A1 + (I0 - sv * A0) * beta, 0.0, 0.0, A1);
+  *mx = 1.0 - omL;
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }

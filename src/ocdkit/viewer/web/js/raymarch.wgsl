@@ -172,11 +172,20 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         let sv = clamp(s, 0.0, 1.0);
         let segLen = max(tExit - tPrev, 0.0);
         let a = 1.0 - exp(-sv * density * segLen);
-        let rise = max(sv - midaMax, 0.0) * min(segLen, 1.0);
-        let beta = 1.0 - rise;
-        let keep = beta * imgAcc.w;
-        imgAcc = vec4<f32>(beta * imgAcc.x + (1.0 - keep) * a * sv, 0.0, 0.0, keep + (1.0 - keep) * a);
-        midaMax = midaMax + rise;
+        if (sv <= midaMax) {                                  // continuous fade + add (see the compute twin)
+          imgAcc = vec4<f32>(imgAcc.x + (1.0 - imgAcc.w) * a * sv, 0.0, 0.0, imgAcc.w + (1.0 - imgAcc.w) * a);
+        } else {
+          let mu = sv * density;
+          let q = sv - midaMax;
+          let omL = 1.0 - (sv - q * exp(-segLen / 0.8));
+          let om0 = max(1.0 - midaMax, 1e-6);
+          let omM = max(1.0 - (sv - q * exp(-0.5 * segLen / 0.8)), 1e-6);
+          let beta = omL / om0;
+          let J = segLen / 6.0 * (exp(-mu * segLen) * omL / om0 + 4.0 * exp(-0.5 * mu * segLen) * omL / omM + 1.0);
+          let A1 = beta * exp(-mu * segLen) * imgAcc.w + mu * J;
+          imgAcc = vec4<f32>(sv * A1 + (imgAcc.x - sv * imgAcc.w) * beta, 0.0, 0.0, A1);
+          midaMax = 1.0 - omL;
+        }
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
