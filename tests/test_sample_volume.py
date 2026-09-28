@@ -56,3 +56,17 @@ def test_cli_sample_flag_sets_the_env(monkeypatch):
     assert cli.parse_args(["serve", "--sample", "3d"]).sample == "3d"
     assert cli.parse_args(["desktop", "--sample", "3d"]).sample == "3d"
     assert cli.parse_args(["serve"]).sample is None
+
+
+def test_voxel_shapes_volume_is_exact():
+    """The renderer test volume: exact shapes on a flat background, one label each."""
+    from ocdkit.viewer.sample_image import generate_voxel_shapes_volume
+
+    img, lab = generate_voxel_shapes_volume()
+    assert img.shape == lab.shape == (32, 48, 64) and img.dtype == np.uint8
+    assert set(np.unique(img[lab == 0]).tolist()) == {20}               # flat background, no noise
+    sizes = np.bincount(lab.ravel())[1:]
+    assert sizes.tolist() == [1, 1, 1, 1, 1, 8, 8, 8, 8, 8, 27, 64, 216, 64]
+    zz, yy, xx = np.nonzero(lab == 8)                                    # the line along z
+    assert len(set(zz.tolist())) == 8 and len(set(yy.tolist())) == 1 and len(set(xx.tolist())) == 1
+    assert sorted(set(img[lab == 14].tolist())) == [80, 130, 180, 230]  # the ramp block

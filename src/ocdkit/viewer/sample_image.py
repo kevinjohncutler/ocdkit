@@ -163,10 +163,56 @@ def generate_sample_volume(shape=(64, 128, 128), n_cells=6, n_beads=4,
     return image, labels
 
 
+def generate_voxel_shapes_volume(shape=(32, 48, 64), background=20) -> tuple[ArrayLike, ArrayLike]:
+    """A renderer test volume, ``(Z, Y, X)`` uint8, and a label per shape.
+
+    Exact voxel shapes on a flat, dim, noise-free background, so what a 3D view
+    shows comes from the renderer, not the data. Looking down z (rows in y):
+      row 1  isolated single voxels: 255, 180 and 115 at mid depth, and two
+             more at 255 nearer and farther
+      row 2  lines 8 voxels long (200): along x, along y, along z (like a bead's
+             axial streak) and diagonal in x, y and z
+      row 3  solid blocks (200): 2^3, 3^3, 4^3, a 4^3 block ramping 80 to 230
+             along x, and a 6^3 block
+    """
+    nz, ny, nx = shape
+    img = np.full(shape, background, np.uint8)
+    lab = np.zeros(shape, np.uint8)
+    zc = nz // 2
+    shapes = []                                   # (z slice, y slice, x slice, value)
+    for x, v, z in ((8, 255, zc), (20, 180, zc), (32, 115, zc), (44, 255, zc - 8), (56, 255, zc + 8)):
+        shapes.append((slice(z, z + 1), slice(8, 9), slice(x, x + 1), v))
+    shapes += [
+        (slice(zc, zc + 1), slice(22, 23), slice(4, 12), 200),        # along x
+        (slice(zc, zc + 1), slice(18, 26), slice(18, 19), 200),       # along y
+        (slice(zc - 4, zc + 4), slice(22, 23), slice(28, 29), 200),   # along z
+    ]
+    for i, (zs, ys, xs, v) in enumerate(shapes, start=1):
+        img[zs, ys, xs] = v
+        lab[zs, ys, xs] = i
+    k = len(shapes)
+    k += 1                                        # the diagonal line
+    for i in range(8):
+        img[zc - 4 + i, 18 + i, 36 + i] = 200
+        lab[zc - 4 + i, 18 + i, 36 + i] = k
+    for size, x0 in ((2, 4), (3, 12), (4, 22), (6, 44)):
+        k += 1
+        z0, y0 = zc - size // 2, 38 - size // 2
+        img[z0:z0 + size, y0:y0 + size, x0:x0 + size] = 200
+        lab[z0:z0 + size, y0:y0 + size, x0:x0 + size] = k
+    k += 1                                        # the ramp block
+    for j, v in enumerate((80, 130, 180, 230)):
+        img[zc - 2:zc + 2, 36:40, 32 + j] = v
+        lab[zc - 2:zc + 2, 36:40, 32 + j] = k
+    return img, lab
+
+
 def sample_volume_path() -> Path:
     """Path of the built-in 3D sample TIFF, written with its ``_masks`` sidecar
     on first use (under ``~/.ocdkit/samples``), so the viewer loads it through
-    the ordinary open-a-volume path."""
+    the ordinary open-a-volume path. The renderer test volume
+    (:func:`generate_voxel_shapes_volume`) is written next to it, so the file
+    list offers both."""
     import tifffile
 
     d = Path.home() / ".ocdkit" / "samples"
@@ -177,6 +223,10 @@ def sample_volume_path() -> Path:
         image, labels = generate_sample_volume()
         tifffile.imwrite(msk, labels)
         tifffile.imwrite(img, image)
+    shapes = d / "voxel_shapes.tif"
+    if not shapes.is_file():
+        d.mkdir(parents=True, exist_ok=True)
+        tifffile.imwrite(shapes, generate_voxel_shapes_volume()[0])
     return img
 
 
