@@ -30,8 +30,9 @@
 // beta = 1 - delta, so new maxima show through as in MIP while depth order and
 // translucency are kept. Per voxel opacity is 1 - exp(-density * s * length).
 //   I = beta I + (1 - beta A) a s ;  A = beta A + (1 - beta A) a ;  f = max(f, s)
-// It composites the INTENSITY and applies the colormap once to I / A at the end,
-// as MIP and mean do, so colors stay on the colormap (and HDR and transparency
+// It composites the INTENSITY (at the data's full range) and applies the window,
+// gamma and colormap once to I / A at the end, as MIP and mean do, so colors
+// stay on the colormap and the window acts like a LUT (HDR and transparency
 // work as in MIP).
 // Early termination needs A ~ 1 AND f near the top of the window (only a new max
 // could lift the fade), so a dim, dense ray keeps marching.
@@ -50,7 +51,7 @@ struct U {
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
-  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; colormap peak
+  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; (unused)
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -230,30 +231,27 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       let s = textureLoad(volTex, ci, 0).r * iscale;
       let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (MODE == 0) {
-        let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
+        // Emission-absorption on the data at its FULL range (no window, no gamma:
+        // those act on the result, like a LUT). Density = ABSORPTION only: every
+        // voxel glows with s^2 per unit length whatever the density, and density
+        // sets how much nearer glow hides farther glow (0 = pure glow). Exact per
+        // segment: emission is self-absorbed by S(tau) = (1 - e^-tau) / tau.
+        let sv = clamp(s, 0.0, 1.0);
         let segLen = max(tExit - tPrev, 0.0);
-        let c4 = lutRGBA(sg);
-        // Emission-absorption with density = ABSORPTION only: every voxel glows in
-        // proportion to its (windowed) intensity whatever the density, and density
-        // sets how much nearer glow hides farther glow (0 = pure glow, nothing
-        // occludes). Exact per segment: emission is self-absorbed by
-        // S(tau) = (1 - e^-tau) / tau. The accumulated glow is shaded by the
-        // soft exposure curve after the march.
-        let ta = select(1.0, c4.a, TRANSP);
-        let tau = sg * density * segLen * ta;
+        let tau = sv * density * segLen;
         let S = select(1.0 - 0.5 * tau, (1.0 - exp(-tau)) / tau, tau > 1e-4);
         let T = 1.0 - imgAcc.w;
-        imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * (sg * segLen * S * ta * T), imgAcc.w + (1.0 - exp(-tau)) * T);
+        imgAcc = vec4<f32>(imgAcc.x + sv * sv * segLen * S * T, 0.0, 0.0, imgAcc.w + (1.0 - exp(-tau)) * T);
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 3) {
-        let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
+        // on the data at its full range, like EA: the window acts on the result
+        let sv = clamp(s, 0.0, 1.0);
         let segLen = max(tExit - tPrev, 0.0);
-        // (with the transparent low end, dark voxels also cover less)
-        let a = (1.0 - exp(-sg * density * segLen)) * select(1.0, lutRGBA(sg).a, TRANSP);
-        let rise = max(sg - midaMax, 0.0) * min(segLen, 1.0);
+        let a = 1.0 - exp(-sv * density * segLen);
+        let rise = max(sv - midaMax, 0.0) * min(segLen, 1.0);
         let beta = 1.0 - rise;
         let keep = beta * imgAcc.w;
-        imgAcc = vec4<f32>(beta * imgAcc.x + (1.0 - keep) * a * sg, 0.0, 0.0, keep + (1.0 - keep) * a);
+        imgAcc = vec4<f32>(beta * imgAcc.x + (1.0 - keep) * a * sv, 0.0, 0.0, keep + (1.0 - keep) * a);
         midaMax = midaMax + rise;
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 1) {
@@ -275,29 +273,20 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
-    else if (MODE == 3) {
-      // the colormap is applied ONCE, to the composited intensity (as in MIP and
-      // mean), so every pixel is a true colormap color (blending colormapped
-      // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
-      // and transparency come from the LUT exactly as in MIP
-      // no gain: I / A is a weighted average of windowed values, so it can never
-      // pass the window's top, and the histogram window alone decides what clips
-      let v = select(0.0, clamp(imgAcc.x / imgAcc.w, 0.0, 1.0), imgAcc.w > 1e-6);
+    else {
+      // EA and MIDA end like MIP and mean: one value per pixel, in data units,
+      // then the display window, gamma and colormap applied once, as a LUT. So
+      // every pixel is a true colormap color, a full-range window never clips,
+      // and narrowing it pops whatever projects above its top to the colormap's
+      // top (and HDR peak), exactly as in MIP.
+      //   MIDA: I / A, a weighted average of data values (never above their max)
+      //   EA:   the glow rolled off below 1 by 1 - e^(-k glow), k from the data
+      //         (win.z) so the brightest ray along any axis reads 0.95
+      var raw = select(0.0, imgAcc.x / imgAcc.w, imgAcc.w > 1e-6);
+      if (MODE == 0) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
+      let v = pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
       imgA = v * ta; imgPC = c4.rgb * ta;
-    }
-    else {
-      // soft exposure: 1 - e^-x rolls the accumulated glow off to the colormap's
-      // peak P (1 in SDR, the display headroom x gain in HDR) instead of clipping;
-      // win.z = exposure (set from the data by the host), win.w = P
-      // Hue-preserving: the curve is applied to the brightest channel and all three
-      // are scaled by the same factor. (Per-channel, a summed yellow saturated
-      // red and green first while blue kept rising, washing out to white.)
-      let P = max(u.win.w, 1e-3);
-      let m = max(imgAcc.r, max(imgAcc.g, imgAcc.b));
-      let mc = P * (1.0 - exp(-u.win.z * m / P));
-      imgPC = select(vec3<f32>(0.0), imgAcc.rgb * (mc / max(m, 1e-12)), m > 1e-9);
-      imgA = max(imgAcc.w, clamp(mc / P, 0.0, 1.0));
     }
   }
 

@@ -1033,16 +1033,14 @@
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
     setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._requestRender(); }
 
-    /** EA exposure from the data, so emission-absorption uses the colormap's
-     *  range without a manual gain and never saturates on its own: the glow
-     *  summed along each axis for every ray (the other two axes subsampled 2x2),
-     *  and the exposure that brings the BRIGHTEST of those sums to 95% of the
-     *  colormap peak (a view between the axes runs through a little more volume;
-     *  the soft curve takes that up). Computed at the data's FULL range (window
-     *  0..1, gamma 1), not the current window: the histogram window then maps
-     *  values to colors on its own, like a LUT, and dragging it never makes the
-     *  image rescale itself afterwards. Recomputed only when the data, inversion,
-     *  colormap or transparency change, never per frame. */
+    /** EA exposure from the data: the glow (s^2 per unit length, as the shader)
+     *  summed along each axis for every ray (the other two axes subsampled 2x2)
+     *  at the data's FULL range, and the k that brings the brightest of those
+     *  rays to 0.95 in the shader's 1 - e^(-k glow). EA's value is then in the
+     *  data's 0..1 and the display window, gamma and colormap act on it like a
+     *  LUT (as in MIP): a full-range window never clips, narrowing it pops. It
+     *  depends only on the data (and inversion), never on the window, gamma or
+     *  colormap, so moving those never makes the image rescale itself. */
     _scheduleExposure() {
       if (this._expPending) return;
       this._expPending = true;
@@ -1050,17 +1048,15 @@
       if (typeof setTimeout === "function") setTimeout(run, 0); else run();
     }
     _updateExposure() {
-      const v = this._volF16, maxc = this._lutMaxc;
-      if (!v || !maxc) return;
-      const { NX, NY, NZ } = this, H = halfTable(), N = maxc.length;
-      const alpha = this._transparent ? this._lutAlpha : null;
-      const emit = new Float32Array(65536);               // half-float bits -> glow per unit length
+      const v = this._volF16;
+      if (!v) return;
+      const { NX, NY, NZ } = this, H = halfTable();
+      const emit = new Float32Array(65536);               // half-float bits -> glow per unit length (s^2, as the shader)
       for (let h = 0; h < 65536; h += 1) {
         let q = H[h];
         if (!(q > 0)) continue;
         if (q > 1) q = 1;
-        const i = Math.min(N - 1, Math.round(q * (N - 1)));
-        emit[h] = q * maxc[i] * (alpha ? alpha[i] : 1);
+        emit[h] = q * q;
       }
       const dims = [NX, NY, NZ], strides = [1, NX, NX * NY];
       let top = 0;
@@ -1077,7 +1073,7 @@
         }
         for (let k = 0; k < n; k += 1) if (sums[k] > top) top = sums[k];
       }
-      this._eaExposure = top > 0 ? -Math.log(0.05) * this._lutPeakAll / top : 1.0;
+      this._eaExposure = top > 0 ? -Math.log(0.05) / top : 1.0;          // the brightest ray reads 0.95
     }
     /** Display window from the 2D histogram, in the volume's data units (the
      *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in

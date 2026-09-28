@@ -312,27 +312,32 @@ def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
     assert ea_in - ea_out < 0.1 * (inside - outside)   # EA: the slab hides the square
 
 
-def test_emission_absorption_matches_analytic(dev):
-    """Constant cube: alpha = 1 - exp(-s * density * chord) at any view angle (the
-    old clamp(tau) was off by up to 0.09 at oblique views)."""
-    N, W, s_val, density = 48, 128, 0.5, 0.5
-    vol = np.full((N, N, N), s_val, np.float16)
-    sc = Scene(dev, vol, np.zeros((N, N, N), np.uint8))
-    half = N * 0.95
-    for yaw, pitch in ((0.5236, 0.349), (0.785, 0.611)):
-        inv, d, right, up = _ortho(yaw, pitch, half)
-        out = sc.compute(_uniform(inv, (N, N, N), 0, density=density, show_lab=0), 0, 1, 0, W, W)
-        ys, xs = np.mgrid[0:W, 0:W]
-        ndx, ndy = (xs + 0.5) / W * 2 - 1, 1 - (ys + 0.5) / W * 2
-        ro = (ndx[..., None] * right + ndy[..., None] * up) * half - d * BIG
-        with np.errstate(divide="ignore"):
-            iv = 1.0 / np.where(d == 0, 1e-12, d)
-        t1, t2 = (-N / 2 - ro) * iv, (N / 2 - ro) * iv
-        chord = np.clip(np.maximum(t1, t2).min(-1) - np.minimum(t1, t2).max(-1), 0, None)
-        exact = 1 - np.exp(-s_val * density * chord)
-        inside = chord > 1.0
-        # 0.0055 = early ray termination at alpha 0.995, which is intended
-        assert np.abs(out[..., 3][inside] - exact[inside]).max() < 0.0055
+@pytest.mark.parametrize("mode", [0, 3])
+def test_window_acts_like_a_lut_on_ea_and_mida(dev, mode):
+    """EA and MIDA project the data at its full range; the display window and
+    gamma then act on the result, as in MIP. So a window of [0, 0.5] gives
+    exactly min(2 x the full-range value, 1): a full-range window never clips,
+    and narrowing it pops what projects above its top to the colormap's top.
+    (Windowing each voxel first let MIDA's averaging keep saturated structures
+    below the top however narrow the window.)"""
+    vol, _ = _sparse_scene(seed=9)
+    n = 32
+    vol = np.ascontiguousarray(vol[:, :n, :n])
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.4, 0.3, n * 0.6)
+    dims = (n, n, vol.shape[0])
+    def render(window, gamma=1.0):
+        u = _uniform(inv, dims, mode, density=0.5, show_lab=0, window=window, exposure=0.1)
+        u[39] = gamma
+        return s.compute(u, mode, 1, 0, n, n)[..., 3]
+    full = render((0.0, 1.0))
+    assert full.max() < 0.999                              # a full-range window: nothing at the top
+    np.testing.assert_allclose(render((0.0, 0.5)), np.minimum(full * 2, 1), atol=4e-3)
+    top = 0.6 * float(full.max())                          # a window whose top is below the brightest pixel
+    narrow = render((0.0, top))
+    np.testing.assert_allclose(narrow, np.minimum(full / top, 1), atol=4e-3)
+    assert (narrow > 0.999).mean() > 0.005                 # ...pops those pixels to the top
+    np.testing.assert_allclose(render((0.0, 1.0), gamma=2.0), full ** 2, atol=4e-3)
 
 
 def test_display_window_matches_numpy(dev):
