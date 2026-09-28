@@ -268,16 +268,21 @@ def test_mida_colors_stay_on_the_colormap(dev):
 
 
 def test_mida_keeps_hdr_colors(dev):
-    """An HDR colormap (encoded values above 1) reaches the output unchanged: the
-    top of the colormap shows its full lifted color, as in MIP."""
+    """An HDR colormap (encoded values above 1) reaches the output unchanged. A
+    uniform full-brightness region reads 1.0, which MIDA's soft shoulder shows
+    at 0.95 + 0.05 (1 - 1/e) = 0.9816 of the colormap (never clipped flat)."""
     n, NZ = 32, 40
     vol = np.full((NZ, n, n), 1.0, np.float16)
     lut = _two_color_lut() * 1.6                 # lifted: the top entry is (1.6, 1.44, 0.16)
     s = Scene(dev, vol, np.zeros(vol.shape, np.uint8), lut_rgb=lut)
     inv, *_ = _ortho(0.0, 0.0, n / 2)
     out = s.compute(_uniform(inv, (n, n, NZ), 3, density=1.0, show_lab=0), 3, 1, 0, n, n)
-    np.testing.assert_allclose(out[..., 3], 1.0, atol=2e-3)
-    np.testing.assert_allclose(out[..., :3], np.broadcast_to(lut[255], out[..., :3].shape), rtol=4e-3)
+    top = 0.95 + 0.05 * (1 - np.exp(-1.0))
+    f = top * 255; i0 = int(f); fr = f - i0
+    expect = lut[i0] * (1 - fr) + lut[i0 + 1] * fr    # (1.57, 1.41, 0.19): above 1, as lifted
+    np.testing.assert_allclose(out[..., 3], top, atol=2e-3)
+    np.testing.assert_allclose(out[..., :3], np.broadcast_to(expect, out[..., :3].shape), rtol=4e-3)
+    assert out[..., 0].min() > 1.5
 
 
 @pytest.mark.parametrize("view", [(0.35, 0.25), (0.8, 0.5)])
@@ -297,7 +302,8 @@ def test_mida_no_lines_at_voxel_edges(dev, view):
 
 def test_mida_gain_scales_the_value(dev):
     """MIDA's value is multiplied by the host's gain (win.z in this mode) before
-    the colormap, and clipped at the top of the colormap."""
+    the colormap: exact up to 95%, then a soft shoulder that approaches the top
+    of the colormap without ever clipping flat."""
     vol, _ = _sparse_scene(seed=5)
     n = 32
     vol = np.ascontiguousarray(vol[:, :n, :n])
@@ -306,7 +312,10 @@ def test_mida_gain_scales_the_value(dev):
     u = lambda g: _uniform(inv, (n, n, vol.shape[0]), 3, density=0.5, show_lab=0, exposure=g)
     v1 = s.compute(u(1.0), 3, 1, 0, n, n)[..., 3]
     v2 = s.compute(u(1.7), 3, 1, 0, n, n)[..., 3]
-    np.testing.assert_allclose(v2, np.minimum(v1 * 1.7, 1.0), atol=3e-3)
+    x = v1 * 1.7
+    expect = np.where(x > 0.95, 0.95 + 0.05 * (1 - np.exp(-(x - 0.95) / 0.05)), x)
+    np.testing.assert_allclose(v2, expect, atol=3e-3)
+    assert v2.max() < 0.999                     # nothing reaches the clip
 
 
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):

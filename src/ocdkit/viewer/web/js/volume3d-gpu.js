@@ -1071,15 +1071,27 @@
       sums.sort();
       const p = sums[Math.min(sums.length - 1, Math.floor(0.995 * (sums.length - 1)))];
       this._eaExposure = p > 0 ? -Math.log(0.05) * this._lutPeakAll / p : 1.0;
-      if (this.mode === 3) this._updateMidaGain();
+      if (this.mode === 3) this._scheduleMidaGain();
+    }
+    // The gain pass reads the whole volume six times (~60-100 ms on a 16 M voxel
+    // stack), so it waits until the settings stop changing (a slider drag fires
+    // many events) instead of stalling on each; frames meanwhile keep the old gain.
+    _scheduleMidaGain() {
+      if (typeof setTimeout !== "function") { this._updateMidaGain(); return; }
+      if (this._midaT) clearTimeout(this._midaT);
+      this._midaT = setTimeout(() => { this._midaT = 0; this._updateMidaGain(); this._requestRender(); }, 120);
     }
     /** MIDA's gain from the data: MIDA shows a weighted average along the ray,
      *  so it rarely reaches the top of the colormap (about half of MIP on blurred
-     *  data). Run the same recurrence down z for each (x, y) (subsampled 2x2, one
-     *  voxel per step) with the current window, gamma, opacity and transparency,
-     *  and scale so the brightest 0.5% of those columns reach 95% of the
-     *  colormap. Never darkens (gain >= 1), capped at 4. Recomputed with the
-     *  settings, never per frame, so it cannot flicker while rotating. */
+     *  data). Run the same recurrence along each axis in both directions (MIDA
+     *  depends on the viewing direction; one voxel per step, the other two axes
+     *  subsampled 2x2) with the current window, gamma, opacity and transparency,
+     *  and scale so the BRIGHTEST of all those rays lands at the top of the
+     *  colormap: nothing is pushed past it. (A 99.5th percentile target clipped
+     *  the top half-percent flat.) Views between the axes can still come out a
+     *  little brighter; the shader's soft shoulder above 95% takes that up
+     *  without clipping. Gain >= 1 (never darkens), capped at 4, recomputed
+     *  with the settings, never per frame, so it cannot flicker. */
     _updateMidaGain() {
       const v = this._volF16;
       if (!v) return;
@@ -1096,26 +1108,32 @@
         sgT[h] = q;
         aT[h] = (1 - Math.exp(-q * dens)) * (alpha ? alpha[Math.min(N - 1, Math.round(q * (N - 1)))] : 1);
       }
-      const sx = Math.ceil(NX / 2), sy = Math.ceil(NY / 2), n = sx * sy;
-      const I = new Float32Array(n), A = new Float32Array(n), F = new Float32Array(n);
-      for (let z = 0; z < NZ; z += 1) {
-        for (let y = 0, k = 0; y < NY; y += 2) {
-          const row = (z * NY + y) * NX;
-          for (let x = 0; x < NX; x += 2, k += 1) {
-            const h = v[row + x], s = sgT[h], a = aT[h];
-            const rise = s > F[k] ? s - F[k] : 0;
-            const keep = (1 - rise) * A[k];
-            I[k] = (1 - rise) * I[k] + (1 - keep) * a * s;
-            A[k] = keep + (1 - keep) * a;
-            F[k] += rise;
+      const dims = [NX, NY, NZ], strides = [1, NX, NX * NY];
+      let top = 0;
+      for (let m = 0; m < 3; m += 1) {
+        const p = (m + 1) % 3, q = (m + 2) % 3;
+        const np = Math.ceil(dims[p] / 2), nq = Math.ceil(dims[q] / 2), n = np * nq;
+        for (const reverse of [false, true]) {
+          const I = new Float32Array(n), A = new Float32Array(n), F = new Float32Array(n);
+          for (let step = 0; step < dims[m]; step += 1) {
+            const base = (reverse ? dims[m] - 1 - step : step) * strides[m];
+            let k = 0;
+            for (let ip = 0; ip < dims[p]; ip += 2) {
+              const rowBase = base + ip * strides[p];
+              for (let iq = 0; iq < dims[q]; iq += 2, k += 1) {
+                const h = v[rowBase + iq * strides[q]], s = sgT[h], a = aT[h];
+                const rise = s > F[k] ? s - F[k] : 0;
+                const keep = (1 - rise) * A[k];
+                I[k] = (1 - rise) * I[k] + (1 - keep) * a * s;
+                A[k] = keep + (1 - keep) * a;
+                F[k] += rise;
+              }
+            }
           }
+          for (let k = 0; k < n; k += 1) if (A[k] > 1e-6) { const val = I[k] / A[k]; if (val > top) top = val; }
         }
       }
-      const vals = new Float32Array(n);
-      for (let k = 0; k < n; k += 1) vals[k] = A[k] > 1e-6 ? I[k] / A[k] : 0;
-      vals.sort();
-      const p = vals[Math.min(n - 1, Math.floor(0.995 * (n - 1)))];
-      this._midaGain = p > 0 ? Math.min(4, Math.max(1, 0.95 / p)) : 1.0;
+      this._midaGain = top > 0 ? Math.min(4, Math.max(1, 1 / top)) : 1.0;
     }
     /** Display window from the 2D histogram, in the volume's data units (the
      *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in

@@ -281,8 +281,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
       // and transparency come from the LUT exactly as in MIP
       // times the gain the host estimates from the data (win.z in this mode), so
-      // the brightest MIDA pixels reach the top of the colormap as in EA
-      let v = select(0.0, clamp(imgAcc.x / imgAcc.w * u.win.z, 0.0, 1.0), imgAcc.w > 1e-6);
+      // the brightest MIDA pixels reach the top of the colormap as in EA; exact
+      // (linear) up to 95%, then a soft shoulder, so a view brighter than the
+      // estimate rolls off toward the top instead of clipping flat
+      let x = select(0.0, imgAcc.x / imgAcc.w * u.win.z, imgAcc.w > 1e-6);
+      let v = select(x, 0.95 + 0.05 * (1.0 - exp(-(x - 0.95) / 0.05)), x > 0.95);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
       imgA = v * ta; imgPC = c4.rgb * ta;
     }
