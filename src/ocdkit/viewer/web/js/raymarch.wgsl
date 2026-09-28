@@ -21,8 +21,13 @@
 // It composites the INTENSITY and applies the colormap once to I / A at the end,
 // as MIP and mean do, so colors stay on the colormap (and HDR and transparency
 // work as in MIP).
-// Early termination needs A ~ 1 AND f at the top of the window (only a new max
+// Early termination needs A ~ 1 AND f near the top of the window (only a new max
 // could lift the fade), so a dim, dense ray keeps marching.
+// The fade scales with the ray's path through the voxel (capped at one voxel):
+// a full crossing is exactly the published beta, but a ray clipping a voxel's
+// corner fades only a little and raises f only as much, the rest following in
+// later voxels. (Fading in full on any touch while the voxel's opacity scales
+// with the path length drew dark and bright lines along voxel edges.)
 // Label colour matches volume3d-view.js labelColor (golden-ratio HSV, s=.65 v=1).
 
 struct U {
@@ -176,11 +181,12 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         let segLen = max(tExit - tPrev, 0.0);
         // (with the transparent low end, dark voxels also cover less)
         let a = (1.0 - exp(-sg * density * segLen)) * lutRGBA(sg).a;
-        let beta = 1.0 - max(sg - midaMax, 0.0);
+        let rise = max(sg - midaMax, 0.0) * min(segLen, 1.0);
+        let beta = 1.0 - rise;
         let keep = beta * imgAcc.w;
         imgAcc = vec4<f32>(beta * imgAcc.x + (1.0 - keep) * a * sg, 0.0, 0.0, keep + (1.0 - keep) * a);
-        midaMax = max(midaMax, sg);
-        if (imgAcc.w >= 0.995 && midaMax >= 0.999) { break; }
+        midaMax = midaMax + rise;
+        if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
         imgSum = imgSum + s; imgCnt = imgCnt + 1.0;

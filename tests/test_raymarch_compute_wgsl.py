@@ -280,6 +280,21 @@ def test_mida_keeps_hdr_colors(dev):
     np.testing.assert_allclose(out[..., :3], np.broadcast_to(lut[255], out[..., :3].shape), rtol=4e-3)
 
 
+@pytest.mark.parametrize("view", [(0.35, 0.25), (0.8, 0.5)])
+def test_mida_no_lines_at_voxel_edges(dev, view):
+    """Random voxels, tilted, 8 pixels per voxel: no one-pixel lines. A ray that
+    clips a voxel's corner must fade only in proportion to its path through it
+    (a full fade on any touch drew lines along voxel edges: ~0.8% of pixels)."""
+    n, W = 24, 192
+    vol = np.random.default_rng(1).uniform(0.15, 1.0, (n, n, n)).astype(np.float16)
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(view[0], view[1], n * 0.45)
+    img = s.compute(_uniform(inv, (n, n, n), 3, density=0.5, show_lab=0), 3, 1, 0, W, W)[..., 3]
+    c, l, r = img[:, 1:-1], img[:, :-2], img[:, 2:]
+    spikes = ((c < np.minimum(l, r) - 0.03) | (c > np.maximum(l, r) + 0.03)).mean()
+    assert spikes < 0.001
+
+
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
     """The point of MIDA: a bright voxel behind a dense dim slab still shows (as in
     MIP), where emission-absorption at the same density hides it."""
