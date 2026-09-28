@@ -7806,8 +7806,14 @@ function setImageInvert(on, { save = true } = {}) {
 window.__viewerGetInvert = () => imageInverted;
 if (imageInvertToggle) imageInvertToggle.addEventListener('change', () => setImageInvert(imageInvertToggle.checked));
 const HIST_PREFS_KEY = 'ocdkit-histogram-prefs';
-let histPrefs = { log: false, autoScale: false, clipLo: 1, clipHi: 99 };   // clip bounds in percent
-try { Object.assign(histPrefs, JSON.parse(localStorage.getItem(HIST_PREFS_KEY) || '{}')); } catch (e) {}
+// clip bounds in percent; 0 / 100 (the data's full range) by default, so nothing
+// clips until you choose to
+let histPrefs = { log: false, autoScale: false, clipLo: 0, clipHi: 100, clipDefaults: 2 };
+try {
+  const stored = JSON.parse(localStorage.getItem(HIST_PREFS_KEY) || '{}');
+  if (stored.clipDefaults !== 2) { delete stored.clipLo; delete stored.clipHi; }   // saved under the old 1 / 99 default
+  Object.assign(histPrefs, stored, { clipDefaults: 2 });
+} catch (e) {}
 function saveHistPrefs() { try { localStorage.setItem(HIST_PREFS_KEY, JSON.stringify(histPrefs)); } catch (e) {} }
 
 function quantileOf(counts, q) {

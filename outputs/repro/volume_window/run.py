@@ -45,7 +45,7 @@ with sync_playwright() as p:
         w0 = pg.evaluate("window.__viewerGetWindow()")
         before = shot(pg, f"window_{name}_before.png")
         box = pg.query_selector("#histogram").bounding_box()
-        x_hi = box["x"] + box["width"] * w0[1] / 255.0
+        x_hi = min(box["x"] + box["width"] * w0[1] / 255.0, box["x"] + box["width"] - 2)   # at 100% the handle is on the border
         y = box["y"] + box["height"] * 0.5
         pg.mouse.move(x_hi, y)
         pg.mouse.down()

@@ -210,12 +210,9 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
       // mean), so every pixel is a true colormap color (blending colormapped
       // samples gave hues off the colormap, e.g. teal + yellow = olive) and HDR
       // and transparency come from the LUT exactly as in MIP
-      // times the gain the host estimates from the data (win.z in this mode), so
-      // the brightest MIDA pixels reach the top of the colormap as in EA; exact
-      // (linear) up to 95%, then a soft shoulder, so a view brighter than the
-      // estimate rolls off toward the top instead of clipping flat
-      let x = select(0.0, imgAcc.x / imgAcc.w * u.win.z, imgAcc.w > 1e-6);
-      let v = select(x, 0.95 + 0.05 * (1.0 - exp(-(x - 0.95) / 0.05)), x > 0.95);
+      // no gain: I / A is a weighted average of windowed values, so it can never
+      // pass the window's top, and the histogram window alone decides what clips
+      let v = select(0.0, clamp(imgAcc.x / imgAcc.w, 0.0, 1.0), imgAcc.w > 1e-6);
       let c4 = lutRGBA(v); let ta = c4.a;
       imgA = v * ta; imgPC = c4.rgb * ta;
     }

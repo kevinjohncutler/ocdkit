@@ -13,13 +13,14 @@ const { VolumeGPU } = require(path.join(here, "../../src/ocdkit/viewer/web/js/vo
 let n = 0;
 const test = (name, fn) => { fn(); n++; console.log("ok -", name); };
 const fake = (valueRange) => ({ valueRange, renders: 0, exposures: 0, _requestRender() { this.renders++; },
-                                _scheduleExposure() { this.exposures++; },   // EA exposure depends on the window
+                                _scheduleExposure() { this.exposures++; },
                                 _applyWindow: VolumeGPU.prototype._applyWindow });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
 
 test("full range is the identity window", () => {
   const g = fake([0, 255]); VolumeGPU.prototype.setWindow.call(g, 0, 255);
-  close(g._win[0], 0); close(g._win[1], 1); assert.equal(g.renders, 1); assert.equal(g.exposures, 1);
+  close(g._win[0], 0); close(g._win[1], 1); assert.equal(g.renders, 1);
+  assert.equal(g.exposures, 0);   // the window maps values like a LUT: it never triggers a rescale
 });
 
 test("bounds map through the volume's value range", () => {

@@ -234,7 +234,6 @@
       // EA density = absorption only (0 = pure glow, nothing occludes)
       this.density = opts.density != null ? opts.density : 0.0;
       this._eaExposure = 1.0;                      // set from the data (_updateExposure)
-      this._midaGain = 1.0;                        // likewise, for MIDA (_updateMidaGain)
       this._lutPeakAll = 1.0;                      // brightest colormap channel, as stored
       this.labelOpacity = 1.0;                             // opaque labels by default
       this.showImage = (decoded.image || decoded.imageF16) ? 1.0 : 0.0;   // grayscale intensity layer
@@ -907,8 +906,7 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      // window, then EA's exposure or MIDA's gain (one slot: only one mode reads it), LUT peak
-      u.set([this._win[0], this._win[1], this.mode === 3 ? this._midaGain : this._eaExposure, this._lutPeakAll], 44);
+      u.set([this._win[0], this._win[1], this._eaExposure, this._lutPeakAll], 44);  // window, EA exposure, LUT peak
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1030,16 +1028,21 @@
     setFpsCap(fps) { this._fpsCap = fps > 0 ? fps : 0; this._lastRenderT = 0; this._requestRender(); return this._fpsCap; }
     getFpsCap() { return this._fpsCap; }
 
-    setMode(m) { this.mode = m | 0; if (this.mode === 3) this._scheduleExposure(); this._requestRender(); }
+    setMode(m) { this.mode = m | 0; this._requestRender(); }
     setShowImage(on) { this.showImage = on ? 1 : 0; this._requestRender(); }
     setShadeLabels(on) { this.shadeLabels = on ? 1 : 0; this._requestRender(); }
-    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._scheduleExposure(); this._requestRender(); }
+    setGamma(g) { this.gamma = +g > 0 ? +g : 1.0; this._requestRender(); }
 
-    /** EA exposure from the data, so emission-absorption is as bright as the data
-     *  allows without a manual gain: the glow summed along z for each (x, y)
-     *  (subsampled 2x2), and the exposure that brings the brightest 0.5% of those
-     *  sums to 95% of the colormap peak. Recomputed when the window, gamma or
-     *  colormap change (never per frame, so it cannot flicker while rotating). */
+    /** EA exposure from the data, so emission-absorption uses the colormap's
+     *  range without a manual gain and never saturates on its own: the glow
+     *  summed along each axis for every ray (the other two axes subsampled 2x2),
+     *  and the exposure that brings the BRIGHTEST of those sums to 95% of the
+     *  colormap peak (a view between the axes runs through a little more volume;
+     *  the soft curve takes that up). Computed at the data's FULL range (window
+     *  0..1, gamma 1), not the current window: the histogram window then maps
+     *  values to colors on its own, like a LUT, and dragging it never makes the
+     *  image rescale itself afterwards. Recomputed only when the data, inversion,
+     *  colormap or transparency change, never per frame. */
     _scheduleExposure() {
       if (this._expPending) return;
       this._expPending = true;
@@ -1050,90 +1053,31 @@
       const v = this._volF16, maxc = this._lutMaxc;
       if (!v || !maxc) return;
       const { NX, NY, NZ } = this, H = halfTable(), N = maxc.length;
-      const tl = this._win ? this._win[0] : 0, inv = this._win ? this._win[1] : 1, g = this.gamma || 1;
       const alpha = this._transparent ? this._lutAlpha : null;
       const emit = new Float32Array(65536);               // half-float bits -> glow per unit length
       for (let h = 0; h < 65536; h += 1) {
-        let q = (H[h] - tl) * inv;
+        let q = H[h];
         if (!(q > 0)) continue;
         if (q > 1) q = 1;
-        q = Math.pow(q, g);
         const i = Math.min(N - 1, Math.round(q * (N - 1)));
         emit[h] = q * maxc[i] * (alpha ? alpha[i] : 1);
       }
-      const sx = Math.ceil(NX / 2), sy = Math.ceil(NY / 2), sums = new Float32Array(sx * sy);
-      for (let z = 0; z < NZ; z += 1) {
-        for (let y = 0, k = 0; y < NY; y += 2) {
-          const row = (z * NY + y) * NX;
-          for (let x = 0; x < NX; x += 2, k += 1) sums[k] += emit[v[row + x]];
-        }
-      }
-      sums.sort();
-      const p = sums[Math.min(sums.length - 1, Math.floor(0.995 * (sums.length - 1)))];
-      this._eaExposure = p > 0 ? -Math.log(0.05) * this._lutPeakAll / p : 1.0;
-      if (this.mode === 3) this._scheduleMidaGain();
-    }
-    // The gain pass reads the whole volume six times (~60-100 ms on a 16 M voxel
-    // stack), so it waits until the settings stop changing (a slider drag fires
-    // many events) instead of stalling on each; frames meanwhile keep the old gain.
-    _scheduleMidaGain() {
-      if (typeof setTimeout !== "function") { this._updateMidaGain(); return; }
-      if (this._midaT) clearTimeout(this._midaT);
-      this._midaT = setTimeout(() => { this._midaT = 0; this._updateMidaGain(); this._requestRender(); }, 120);
-    }
-    /** MIDA's gain from the data: MIDA shows a weighted average along the ray,
-     *  so it rarely reaches the top of the colormap (about half of MIP on blurred
-     *  data). Run the same recurrence along each axis in both directions (MIDA
-     *  depends on the viewing direction; one voxel per step, the other two axes
-     *  subsampled 2x2) with the current window, gamma, opacity and transparency,
-     *  and scale so the BRIGHTEST of all those rays lands at the top of the
-     *  colormap: nothing is pushed past it. (A 99.5th percentile target clipped
-     *  the top half-percent flat.) Views between the axes can still come out a
-     *  little brighter; the shader's soft shoulder above 95% takes that up
-     *  without clipping. Gain >= 1 (never darkens), capped at 4, recomputed
-     *  with the settings, never per frame, so it cannot flicker. */
-    _updateMidaGain() {
-      const v = this._volF16;
-      if (!v) return;
-      const { NX, NY, NZ } = this, H = halfTable();
-      const tl = this._win ? this._win[0] : 0, inv = this._win ? this._win[1] : 1, g = this.gamma || 1;
-      const dens = Math.max(0, +this.density || 0);
-      const alpha = this._transparent ? this._lutAlpha : null, N = alpha ? alpha.length : 1;
-      const sgT = new Float32Array(65536), aT = new Float32Array(65536);   // half bits -> value, opacity
-      for (let h = 0; h < 65536; h += 1) {
-        let q = (H[h] - tl) * inv;
-        if (!(q > 0)) continue;
-        if (q > 1) q = 1;
-        q = Math.pow(q, g);
-        sgT[h] = q;
-        aT[h] = (1 - Math.exp(-q * dens)) * (alpha ? alpha[Math.min(N - 1, Math.round(q * (N - 1)))] : 1);
-      }
       const dims = [NX, NY, NZ], strides = [1, NX, NX * NY];
       let top = 0;
-      for (let m = 0; m < 3; m += 1) {
+      for (let m = 0; m < 3; m += 1) {                    // sums do not depend on direction
         const p = (m + 1) % 3, q = (m + 2) % 3;
-        const np = Math.ceil(dims[p] / 2), nq = Math.ceil(dims[q] / 2), n = np * nq;
-        for (const reverse of [false, true]) {
-          const I = new Float32Array(n), A = new Float32Array(n), F = new Float32Array(n);
-          for (let step = 0; step < dims[m]; step += 1) {
-            const base = (reverse ? dims[m] - 1 - step : step) * strides[m];
-            let k = 0;
-            for (let ip = 0; ip < dims[p]; ip += 2) {
-              const rowBase = base + ip * strides[p];
-              for (let iq = 0; iq < dims[q]; iq += 2, k += 1) {
-                const h = v[rowBase + iq * strides[q]], s = sgT[h], a = aT[h];
-                const rise = s > F[k] ? s - F[k] : 0;
-                const keep = (1 - rise) * A[k];
-                I[k] = (1 - rise) * I[k] + (1 - keep) * a * s;
-                A[k] = keep + (1 - keep) * a;
-                F[k] += rise;
-              }
-            }
+        const n = Math.ceil(dims[p] / 2) * Math.ceil(dims[q] / 2), sums = new Float32Array(n);
+        for (let step = 0; step < dims[m]; step += 1) {
+          const base = step * strides[m];
+          let k = 0;
+          for (let ip = 0; ip < dims[p]; ip += 2) {
+            const rowBase = base + ip * strides[p];
+            for (let iq = 0; iq < dims[q]; iq += 2, k += 1) sums[k] += emit[v[rowBase + iq * strides[q]]];
           }
-          for (let k = 0; k < n; k += 1) if (A[k] > 1e-6) { const val = I[k] / A[k]; if (val > top) top = val; }
         }
+        for (let k = 0; k < n; k += 1) if (sums[k] > top) top = sums[k];
       }
-      this._midaGain = top > 0 ? Math.min(4, Math.max(1, 1 / top)) : 1.0;
+      this._eaExposure = top > 0 ? -Math.log(0.05) * this._lutPeakAll / top : 1.0;
     }
     /** Display window from the 2D histogram, in the volume's data units (the
      *  0..255 of the viewer's 8-bit volume). Applied like gamma: per sample in
@@ -1150,7 +1094,6 @@
       // [1 - th, 1 - tl], giving (th - t) / (th - tl) = 1 - the normal display
       if (this._invert) { const a = 1 - th; th = 1 - tl; tl = a; }
       this._win = [tl, 1 / Math.max(th - tl, 1e-6)];
-      this._scheduleExposure();
     }
     /** Inverted display (dark objects bright, e.g. phase contrast): upload 1 - value
      *  and flip the window, so every projection (MIP, mean, EA, MIDA) and the
@@ -1182,7 +1125,7 @@
     setHeadlight(on) { this.headlight = on ? 1 : 0; this._requestRender(); }
     setOverlay(name, on) { if (this.overlays) { this.overlays.setEnabled(name, on); this._requestRender(); } }
     setFlowRaw(flowRaw) { if (this.overlays) { this.overlays.setFlow(flowRaw); this._requestRender(); } }
-    setDensity(d) { this.density = +d; if (this.mode === 3) this._scheduleExposure(); this._requestRender(); }   // MIDA's gain depends on it
+    setDensity(d) { this.density = +d; this._requestRender(); }
     setLabelOpacity(o) { this.labelOpacity = +o; this._requestRender(); }
     setShowLabels(on) { this.showLabels = on ? 1 : 0; this._requestRender(); }
     setZScale(z) { this.zScale = +z; this._requestRender(); }
