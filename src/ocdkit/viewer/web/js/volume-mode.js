@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis, smoothVoxels: curSmooth }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -142,6 +142,7 @@
     const MIDA_OPACITY_DEFAULT = 0.5;
     let curMidaOpacity = (typeof _vs.midaOpacity === "number" && _vs.midaOpacity >= 0) ? _vs.midaOpacity : MIDA_OPACITY_DEFAULT;
     const activeDensity = () => (curProj === 3 ? curMidaOpacity : curDensity);
+    let curSmooth = _vs.smoothVoxels === true;                                            // rounded voxel edges (EA / MIDA)
     let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
@@ -508,6 +509,7 @@
           gamma: currentGamma(),
           density: activeDensity(),
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
+          smooth: curSmooth,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -684,8 +686,21 @@
       }
     }
 
+    // ── Rounded voxel edges (EA and MIDA only) ──
+    const smoothRow = document.getElementById("smoothVoxelRow");
+    const smoothToggle = document.getElementById("smoothVoxelToggle");
+    if (smoothToggle) {
+      smoothToggle.checked = curSmooth;
+      smoothToggle.addEventListener("change", () => {
+        curSmooth = smoothToggle.checked;
+        if (vgpu) vgpu.setSmooth(curSmooth);
+        saveVolState();
+      });
+    }
+
     function syncDensityRow() {
       syncSpinRow();
+      if (smoothRow) smoothRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
       if (!densRow) return;
       const show = mode === "3d" && (curProj === 0 || curProj === 3);
       const wasHidden = densRow.hidden;

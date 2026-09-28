@@ -113,14 +113,14 @@ class Scene:
         rb.unmap()
         return out
 
-    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0):
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0, smooth=0):
         return self.dev.create_compute_pipeline(layout="auto", compute={
             "module": self.cmod, "entry_point": "cs",
             "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
-                          "BRICK": float(BRICK), "TRANSP": transp}})
+                          "BRICK": float(BRICK), "TRANSP": transp, "SMOOTH": smooth}})
 
-    def compute(self, u, mode, show_img, show_lab, W, H, transp=0):
-        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp)
+    def compute(self, u, mode, show_img, show_lab, W, H, transp=0, smooth=0):
+        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp, smooth=smooth)
         out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
                                       usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
         ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
@@ -293,6 +293,48 @@ def test_mida_no_lines_at_voxel_edges(dev, view):
     c, l, r = img[:, 1:-1], img[:, :-2], img[:, 2:]
     spikes = ((c < np.minimum(l, r) - 0.03) | (c > np.maximum(l, r) + 0.03)).mean()
     assert spikes < 0.001
+
+
+@pytest.mark.parametrize("mode", [0, 3])
+def test_rounded_voxels_keep_even_regions_even(dev, mode):
+    """Rounded voxel edges blend only near faces with weights that sum to 1, so a
+    block of one value renders exactly as with sharp voxels (no grid)."""
+    flat = np.full((8, 8, 8), 0.6, np.float16)
+    s = Scene(dev, flat, np.zeros(flat.shape, np.uint8))
+    for view in ((0.0, 0.0), (0.7, 0.5)):
+        inv, *_ = _ortho(view[0], view[1], 5.0)
+        u = _uniform(inv, (8, 8, 8), mode, density=0.5, show_lab=0, exposure=0.15)
+        sharp = s.compute(u, mode, 1, 0, 128, 128)[..., 3]
+        smooth = s.compute(u, mode, 1, 0, 128, 128, smooth=1)[..., 3]
+        np.testing.assert_allclose(smooth, sharp, atol=3e-3)
+
+
+def test_rounded_voxels_soften_the_creases(dev):
+    """One bright voxel seen corner-on: with sharp cubes EA shows creases (slope
+    breaks) along the projected edges; rounded edges soften them without adding
+    rings from the sampling. Measured by the peak (99th percentile) of the
+    discrete Laplacian, which lines like creases or rings dominate."""
+    one = np.zeros((5, 5, 5), np.float16); one[2, 2, 2] = 1.0
+    s = Scene(dev, one, np.zeros(one.shape, np.uint8))
+    inv, *_ = _ortho(math.radians(45), math.asin(1 / math.sqrt(3)), 1.3)
+    u = _uniform(inv, (5, 5, 5), 0, density=0.0, show_lab=0)
+    def crease(img):                                   # peak |second difference| inside the voxel
+        lap = np.abs(img[1:-1, 2:] + img[1:-1, :-2] + img[2:, 1:-1] + img[:-2, 1:-1] - 4 * img[1:-1, 1:-1])
+        return float(np.percentile(lap[img[1:-1, 1:-1] > 0.3], 99))
+    sharp = s.compute(u, 0, 1, 0, 256, 256)[..., 3]
+    smooth = s.compute(u, 0, 1, 0, 256, 256, smooth=1)[..., 3]
+    assert crease(smooth) < 0.85 * crease(sharp)       # 0.0068 vs 0.0088 (5 samples per voxel: 0.0125)
+    # an isolated voxel shares a thin rim of its light with its empty neighbors: ~9% less at its center
+    assert abs(smooth[125:131, 125:131].mean() - sharp[125:131, 125:131].mean()) < 0.1
+
+
+def test_rounded_voxels_leave_mip_alone(dev):
+    vol, lab = _sparse_scene(seed=2)
+    s = Scene(dev, vol, lab)
+    NZ, NY, NX = vol.shape
+    inv, *_ = _ortho(0.5, 0.3, max(NX, NY, NZ) * 0.8)
+    u = _uniform(inv, (NX, NY, NZ), 1, show_lab=0)
+    np.testing.assert_array_equal(s.compute(u, 1, 1, 0, 96, 96, smooth=1), s.compute(u, 1, 1, 0, 96, 96))
 
 
 def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
