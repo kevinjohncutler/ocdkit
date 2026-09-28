@@ -466,7 +466,7 @@
     _prewarmComputePipelines() {
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
       const tr = this._transparent ? 1 : 0;              // the current transparency state
-      for (const mode of [0, 1, 2]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
+      for (const mode of [0, 1, 2, 3]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
         const key = `${mode}|${img}|${lab}|${sh}|${tr}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({

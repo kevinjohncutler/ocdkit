@@ -10,7 +10,16 @@
 // (texture_3d<u32>, r8/r16/r32 uint). Sampling is nearest via textureLoad (no
 // sampler) — matches the discrete voxel grid and the 2.5D canvas2d view.
 //
-// Modes (u.dims.w): 0 = additive (emission-absorption), 1 = MIP, 2 = mean.
+// Modes (u.dims.w): 0 = additive (emission-absorption), 1 = MIP, 2 = mean, 3 = MIDA.
+// MIDA (maximum intensity difference accumulation; Bruckner and Groller, "Instant
+// Volume Visualization using Maximum Intensity Difference Accumulation", 2009):
+// front-to-back compositing like EA, but when a sample exceeds the running max
+// f along the ray by delta, what is accumulated in front is faded by
+// beta = 1 - delta, so new maxima show through as in MIP while depth order and
+// translucency are kept. Per voxel opacity is 1 - exp(-density * s * length).
+//   C = beta C + (1 - beta A) a c ;  A = beta A + (1 - beta A) a ;  f = max(f, s)
+// Early termination needs A ~ 1 AND f at the top of the window (only a new max
+// could lift the fade), so a dim, dense ray keeps marching.
 // Label colour matches volume3d-view.js labelColor (golden-ratio HSV, s=.65 v=1).
 
 struct U {
@@ -137,6 +146,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;     // t (world units) to each next face
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
+    var midaMax = 0.0;
     let maxIter = dims.x + dims.y + dims.z + 3;
     for (var g = 0; g < maxIter; g = g + 1) {
       let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
@@ -158,6 +168,16 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
         let T = 1.0 - imgAcc.w;
         imgAcc = vec4<f32>(imgAcc.rgb + c4.rgb * (sg * segLen * S * ta * T), imgAcc.w + (1.0 - exp(-tau)) * T);
         if (imgAcc.w >= 0.995) { break; }
+      } else if (mode == 3) {                                 // MIDA
+        let sg = pow(clamp((s - u.win.x) * u.win.y, 0.0, 1.0), gamma);
+        let segLen = max(tExit - tPrev, 0.0);
+        let c4 = lutRGBA(sg);
+        let a = (1.0 - exp(-sg * density * segLen)) * c4.a;
+        let beta = 1.0 - max(sg - midaMax, 0.0);
+        let keep = beta * imgAcc.w;
+        imgAcc = vec4<f32>(beta * imgAcc.rgb + (1.0 - keep) * a * c4.rgb, keep + (1.0 - keep) * a);
+        midaMax = max(midaMax, sg);
+        if (imgAcc.w >= 0.995 && midaMax >= 0.999) { break; }
       } else {                                                // MIP / mean
         imgMip = max(imgMip, s);
         imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
@@ -176,6 +196,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     }
     if (mode == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); imgA = v * c4.a; imgPC = c4.rgb * c4.a; }
     else if (mode == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); imgA = m * c4.a; imgPC = c4.rgb * c4.a; }
+    else if (mode == 3) { imgPC = imgAcc.rgb; imgA = imgAcc.w; }
     else {
       // soft exposure: 1 - e^-x rolls the accumulated glow off to the colormap's
       // peak P (1 in SDR, the display headroom x gain in HDR) instead of clipping;

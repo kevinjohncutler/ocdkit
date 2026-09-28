@@ -102,7 +102,7 @@
     let mode = "2d";
     let vgpu = null;
     let loading = null;
-    let curProj = 0;        // projection: 0=emission-absorption (default), 1=MIP, 2=mean
+    let curProj = 0;        // projection: 0=emission-absorption (default), 1=MIP, 2=mean, 3=MIDA
     let hasMask = !!cfg.hasVolumeMask;
     let mask3dStale = false; // 2D edits not yet reflected in the 3D bundle
     let saved2dMode = null, saved3dMode = null;   // remembered label style per view
@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, proj: curProj, spinAxis: curSpinAxis }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -136,7 +136,12 @@
     // EA density (absorption only; 0 = pure glow). Saved under a new key: values
     // saved before meant something else (they also scaled the glow).
     let curDensity = (typeof _vs.eaAbsorption === "number" && _vs.eaAbsorption >= 0) ? _vs.eaAbsorption : 0.0;
-    if (_vs.proj === 0 || _vs.proj === 1 || _vs.proj === 2) curProj = _vs.proj;              // remembered projection
+    if ([0, 1, 2, 3].includes(_vs.proj)) curProj = _vs.proj;                                // remembered projection
+    // MIDA composites real per-voxel opacity, so it needs a nonzero value to show
+    // anything; it keeps its own slider value (EA's density defaults to 0)
+    const MIDA_OPACITY_DEFAULT = 0.5;
+    let curMidaOpacity = (typeof _vs.midaOpacity === "number" && _vs.midaOpacity >= 0) ? _vs.midaOpacity : MIDA_OPACITY_DEFAULT;
+    const activeDensity = () => (curProj === 3 ? curMidaOpacity : curDensity);
     let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
@@ -501,7 +506,7 @@
           renderMode: "compute",   // default to the faster compute-shader march (toggle with 'c')
           colormap: currentImageColormap(),
           gamma: currentGamma(),
-          density: curDensity,
+          density: activeDensity(),
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -618,6 +623,7 @@
       curProj = p | 0;
       syncProjButtons();
       if (vgpu) vgpu.setMode(curProj);
+      if (curProj === 0 || curProj === 3) setDensity(activeDensity());   // each mode keeps its own slider value
       syncDensityRow();
       saveVolState();
     }
@@ -631,7 +637,7 @@
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
       v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
-      curDensity = v;
+      if (curProj === 3) curMidaOpacity = v; else curDensity = v;
       if (densRange && from !== "range") {
         densRange.value = String(v);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("eaDensitySlider");
@@ -678,9 +684,12 @@
     function syncDensityRow() {
       syncSpinRow();
       if (!densRow) return;
-      const show = mode === "3d" && curProj === 0;
+      const show = mode === "3d" && (curProj === 0 || curProj === 3);
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
+      densRow.title = curProj === 3
+        ? "Opacity: how strongly each voxel covers what is behind it (0 shows nothing); a brighter voxel further back still shows through"
+        : "Density (absorption): 0 = every voxel glows and nothing blocks; higher = nearer structures hide what is behind them";
       // the slider measures its track (rounded ends, fill, thumb) when refreshed;
       // measured while hidden it is 0 wide, so re-measure once it is visible
       if (show && wasHidden && window.ViewerUI && ViewerUI.refreshSlider) {
@@ -696,7 +705,7 @@
     }
     syncProjButtons();
     if (densRange) {
-      densRange.value = String(curDensity);
+      densRange.value = String(activeDensity());
       densRange.addEventListener("input", () => setDensity(densRange.value, "range"));
       const droot = document.getElementById("eaDensitySliderRoot");
       if (droot && window.ViewerUI && ViewerUI.registerSlider) {
@@ -705,10 +714,10 @@
       }
     }
     if (densNum) {
-      densNum.value = curDensity.toFixed(2);
+      densNum.value = activeDensity().toFixed(2);
       densNum.addEventListener("change", () => setDensity(densNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(densNum, (d) => setDensity(curDensity + d));
+        ViewerUI.attachNumberInputStepper(densNum, (d) => setDensity(activeDensity() + d));
       }
     }
     if (projRow) {

@@ -164,7 +164,7 @@ def _sparse_scene(seed=0, shape=(40, 48, 56)):
 
 def test_every_render_state_compiles(dev):
     s = Scene(dev, *_sparse_scene())
-    for mode in (0, 1, 2):
+    for mode in (0, 1, 2, 3):
         for img in (0, 1):
             for lab in (0, 1):
                 for sh in (0, 1):
@@ -188,7 +188,7 @@ def test_mip_and_mean_exact_axis_aligned(dev):
         np.testing.assert_allclose(out[..., 3], ref, atol=2e-3)
 
 
-@pytest.mark.parametrize("mode", [0, 1, 2])
+@pytest.mark.parametrize("mode", [0, 1, 2, 3])
 @pytest.mark.parametrize("layers", ["img", "imglab", "lab", "imglab50"])
 def test_compute_matches_fragment_reference(dev, mode, layers):
     if layers == "lab" and mode != 1:
@@ -206,6 +206,53 @@ def test_compute_matches_fragment_reference(dev, mode, layers):
         diff = np.abs(a - b).max(axis=-1)
         frac = float((diff > 1 / 255).mean())
         assert frac < 0.005, f"yaw={yaw} pitch={pitch}: {frac:.4%} of pixels differ"
+
+
+def _mida_reference(cols, density):
+    """MIDA along axis 0 (front first), gray colormap, one unit of path per voxel:
+    C = beta C + (1 - beta A) a s, A = beta A + (1 - beta A) a, beta = 1 - max(s - f, 0)."""
+    C = np.zeros(cols.shape[1:]); A = np.zeros(cols.shape[1:]); f = np.zeros(cols.shape[1:])
+    for s in cols.astype(np.float64):
+        a = 1 - np.exp(-density * s)
+        beta = 1 - np.maximum(s - f, 0)
+        keep = beta * A
+        C = beta * C + (1 - keep) * a * s
+        A = keep + (1 - keep) * a
+        f = np.maximum(f, s)
+    return C, A
+
+
+@pytest.mark.parametrize("density", [0.3, 2.0])
+def test_mida_matches_reference(dev, density):
+    """Straight down z with one pixel per voxel column, MIDA equals the published
+    recurrence computed in NumPy (early termination only once nothing can change)."""
+    vol, lab = _sparse_scene(seed=5)
+    n = 32
+    vol = np.ascontiguousarray(vol[:, :n, :n])
+    NZ = vol.shape[0]
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    out = s.compute(_uniform(inv, (n, n, NZ), 3, density=density, show_lab=0), 3, 1, 0, n, n)
+    C, A = _mida_reference(vol.astype(np.float32)[:, ::-1, :], density)
+    np.testing.assert_allclose(out[..., 0], C, atol=3e-3)
+    np.testing.assert_allclose(out[..., 3], A, atol=3e-3)
+
+
+def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
+    """The point of MIDA: a bright voxel behind a dense dim slab still shows (as in
+    MIP), where emission-absorption at the same density hides it."""
+    n, NZ = 32, 24
+    vol = np.zeros((NZ, n, n), np.float16)
+    vol[2:12] = 0.3                        # dense dim slab in front
+    vol[18, 8:24, 8:24] = 1.0              # bright square behind it
+    s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, n / 2)
+    mida = s.compute(_uniform(inv, (n, n, NZ), 3, density=2.0, show_lab=0), 3, 1, 0, n, n)[..., 0]
+    ea = s.compute(_uniform(inv, (n, n, NZ), 0, density=2.0, show_lab=0, exposure=1.0), 0, 1, 0, n, n)[..., 0]
+    inside, outside = mida[12:20, 12:20].mean(), mida[2:6, 2:6].mean()
+    assert inside > 0.6 and inside > 2 * outside       # by the recurrence: 0.69 vs the slab's 0.30
+    ea_in, ea_out = ea[12:20, 12:20].mean(), ea[2:6, 2:6].mean()
+    assert ea_in - ea_out < 0.1 * (inside - outside)   # EA: the slab hides the square
 
 
 def test_emission_absorption_matches_analytic(dev):
