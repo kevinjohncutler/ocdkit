@@ -51,7 +51,7 @@ struct U {
   params      : vec4<f32>,   // nsteps, density, labelOpacity, showLabels
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
-  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; (unused)
+  win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; voxel shading t
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -69,16 +69,19 @@ override BRICK : f32 = 16.0;         // brick edge in voxels (must match the hos
 // Transparent low end (colormap alpha). A pipeline constant, not a uniform: with
 // it off the alpha multiply compiles away (as a runtime value it cost EA ~3%).
 override TRANSP : bool = false;
-// Voxel faces (EA and MIDA): every voxel the ray crosses contributes as if it
-// emitted from the face the ray entered through, the same amount however much of
-// the voxel the ray actually passes through (the average crossing length for the
-// ray's direction, 1 / (|dx| + |dy| + |dz|) in voxel units). Each voxel then
-// looks flat, with a crisp step to a neighbor of different value, instead of the
-// path-length shading whose slope breaks along the projected cube edges read as
-// creases. MIDA's even regions stay exactly even (an average of equal values);
-// EA's can show faint steps where the number of voxels crossed changes. Off:
-// exact path lengths; this compiles away.
-override FACES : bool = false;
+// Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
+// depends on the ray's path length L through it. t = 0: exactly L (a cube's
+// shading peaks where the ray crosses the most of it, like a distance field).
+// t = 1: voxel faces, the same weight F for every voxel the ray crosses, as if
+// it emitted from the face the ray entered (F = the average crossing length for
+// the ray's direction, 1 / (|dx| + |dy| + |dz|) in voxel units). In between, the
+// weight is L^(1-t) F^t: geometric, so for any t < 1 a ray clipping a voxel's
+// corner (L -> 0) still contributes almost nothing and no lines appear at edges.
+fn voxelWeight(L : f32, F : f32, t : f32) -> f32 {
+  if (t <= 0.0) { return L; }
+  if (t >= 1.0) { return F; }
+  return pow(max(L, 1e-7), 1.0 - t) * pow(F, t);
+}
 
 // Colormap color (rgb) and alpha (a). Alpha is 1 unless the transparent-low-end
 // option is on, in which case it follows the colormap's lightness, so dark values
@@ -242,8 +245,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
     var curB = vec3<f32>(-1.0);
-    // voxel faces: the average world length of one voxel crossing along this ray
+    // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
+    let faceMix = clamp(u.win.w, 0.0, 1.0);
     for (var g = 0; g < maxIter; g = g + 1) {
       // Keep this check FLAT (bv computed every step, one combined condition).
       // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
@@ -267,11 +271,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // those act on the result, like a LUT). Density = ABSORPTION only: every
         // voxel glows with s^2 per unit length whatever the density, and density
         // sets how much nearer glow hides farther glow (0 = pure glow).
-        eaStep(&imgAcc, s, select(max(tExit - tPrev, 0.0), faceLen, FACES), density);
+        eaStep(&imgAcc, s, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), density);
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 3) {
         // on the data at its full range, like EA: the window acts on the result
-        midaStep(&imgAcc, &midaMax, s, select(max(tExit - tPrev, 0.0), faceLen, FACES), density);
+        midaStep(&imgAcc, &midaMax, s, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), density);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);

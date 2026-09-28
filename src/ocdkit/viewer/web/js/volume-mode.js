@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis, faceVoxels: curFaces }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -142,7 +142,8 @@
     const MIDA_OPACITY_DEFAULT = 0.5;
     let curMidaOpacity = (typeof _vs.midaOpacity === "number" && _vs.midaOpacity >= 0) ? _vs.midaOpacity : MIDA_OPACITY_DEFAULT;
     const activeDensity = () => (curProj === 3 ? curMidaOpacity : curDensity);
-    let curFaces = _vs.faceVoxels === true;                                               // voxel-face emission (EA / MIDA)
+    // voxel shading (EA / MIDA): 0 = path length, 1 = voxel faces (the old on/off toggle maps to 0 / 1)
+    let curFacesMix = typeof _vs.facesMix === "number" ? Math.min(1, Math.max(0, _vs.facesMix)) : (_vs.faceVoxels === true ? 1 : 0);
     let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
 
     // The image colormap the 2D view is using (grayscale default). The 3D volume
@@ -509,7 +510,7 @@
           gamma: currentGamma(),
           density: activeDensity(),
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
-          faces: curFaces,
+          facesMix: curFacesMix,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -686,21 +687,49 @@
       }
     }
 
-    // ── Voxel faces (EA and MIDA only) ──
+    // ── Voxel shading slider (EA and MIDA only), registered here like density ──
     const facesRow = document.getElementById("faceVoxelRow");
-    const facesToggle = document.getElementById("faceVoxelToggle");
-    if (facesToggle) {
-      facesToggle.checked = curFaces;
-      facesToggle.addEventListener("change", () => {
-        curFaces = facesToggle.checked;
-        if (vgpu) vgpu.setFaces(curFaces);
-        saveVolState();
-      });
+    const facesRange = document.getElementById("faceMixSlider");
+    const facesNum = document.getElementById("faceMixInput");
+    function setFacesMix(t, from) {
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0));
+      curFacesMix = t;
+      if (facesRange && from !== "range") {
+        facesRange.value = String(t);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("faceMixSlider");
+      }
+      if (facesNum && from !== "num") facesNum.value = t.toFixed(2);
+      if (vgpu) vgpu.setFacesMix(t);
+      saveVolState();
+    }
+    if (facesRange) {
+      facesRange.value = String(curFacesMix);
+      facesRange.addEventListener("input", () => setFacesMix(facesRange.value, "range"));
+      const froot = document.getElementById("faceMixSliderRoot");
+      if (froot && window.ViewerUI && ViewerUI.registerSlider) {
+        froot.dataset.sliderId = "faceMixSlider";
+        ViewerUI.registerSlider(froot);
+      }
+    }
+    if (facesNum) {
+      facesNum.value = curFacesMix.toFixed(2);
+      facesNum.addEventListener("change", () => setFacesMix(facesNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(facesNum, (d) => setFacesMix(curFacesMix + d));
+      }
     }
 
     function syncDensityRow() {
       syncSpinRow();
-      if (facesRow) facesRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
+      if (facesRow) {
+        const showFaces = mode === "3d" && (curProj === 0 || curProj === 3);
+        const wasHiddenF = facesRow.hidden;
+        facesRow.hidden = !showFaces;
+        // measured while hidden the slider is 0 wide: re-measure once visible
+        if (showFaces && wasHiddenF && window.ViewerUI && ViewerUI.refreshSlider) {
+          requestAnimationFrame(() => ViewerUI.refreshSlider("faceMixSlider"));
+        }
+      }
       if (!densRow) return;
       const show = mode === "3d" && (curProj === 0 || curProj === 3);
       const wasHidden = densRow.hidden;

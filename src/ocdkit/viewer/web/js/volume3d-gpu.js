@@ -222,7 +222,7 @@
       this.decoded = decoded;
       this.mode = opts.mode != null ? opts.mode : 1;   // MIP
       this._invert = !!opts.invert;                    // inverted display (setInvert)
-      this._faces = !!opts.faces;                      // voxel-face emission in EA / MIDA (setFaces)
+      this._facesMix = Math.min(1, Math.max(0, +opts.facesMix || 0));   // voxel shading in EA / MIDA (setFacesMix)
       // Render-path experiment: "raymarch" (image-order) | "cubes" (object-order
       // MIP, all occupied voxels) | "minimal" (a few hundred cubes — a trivially
       // light raster load, to test whether the whine is the workload or the
@@ -466,34 +466,30 @@
     /** Pipeline for one render state (override constants), built on first use. */
     _computePipelineFor(mode, showImg, showLab, shade) {
       const tr = this._transparent ? 1 : 0;
-      const fc = this._facesFor(mode);
-      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}|${fc}`;
+      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}`;
       if (!this._computePipes[key]) {
         this._computePipes[key] = this.device.createComputePipeline({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
                      constants: { MODE: mode, SHOW_IMG: showImg ? 1 : 0, SHOW_LAB: showLab ? 1 : 0,
-                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr, FACES: fc } },
+                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr } },
         });
       }
       return this._computePipes[key];
     }
-    // voxel faces only change EA and MIDA, so other modes share one pipeline
-    _facesFor(mode) { return this._faces && (mode === 0 || mode === 3) ? 1 : 0; }
 
     /** Compile every other render state in the background so switching mode or
      *  layers never stalls on a shader compile. */
     _prewarmComputePipelines() {
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
-      const tr = this._transparent ? 1 : 0;              // the current transparency and voxel-faces state
+      const tr = this._transparent ? 1 : 0;              // the current transparency state
       for (const mode of [0, 1, 2, 3]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
-        const fc = this._facesFor(mode);
-        const key = `${mode}|${img}|${lab}|${sh}|${tr}|${fc}`;
+        const key = `${mode}|${img}|${lab}|${sh}|${tr}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
-                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr, FACES: fc } },
+                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr } },
         }).then((p) => { if (!this._computePipes[key]) this._computePipes[key] = p; }).catch(() => {});
       }
     }
@@ -911,7 +907,7 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      u.set([this._win[0], this._win[1], this._eaExposure, this._lutPeakAll], 44);  // window, EA exposure, LUT peak
+      u.set([this._win[0], this._win[1], this._eaExposure, this._facesMix || 0], 44);  // window, EA exposure, voxel shading
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1120,17 +1116,15 @@
       this._requestRender();
     }
     isInverted() { return !!this._invert; }
-    /** Voxel-face emission in EA and MIDA (see FACES in raymarch_compute.wgsl):
-     *  each voxel crossed contributes the same amount, so voxels look flat with
-     *  crisp steps between different values. Same cost as exact path lengths. */
-    setFaces(on) {
-      on = !!on;
-      if (on === !!this._faces) return;
-      this._faces = on;
-      this._prewarmComputePipelines();
+    /** Voxel shading in EA and MIDA, 0..1 (see voxelWeight in raymarch_compute.wgsl):
+     *  0 weights each voxel by the ray's path length through it (a cube shaded
+     *  like a distance field), 1 weights every voxel the ray crosses the same
+     *  (voxel faces), values between blend the two. A uniform, so it costs
+     *  nothing and needs no new pipeline. */
+    setFacesMix(t) {
+      this._facesMix = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 0));
       this._requestRender();
     }
-    isFaces() { return !!this._faces; }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }

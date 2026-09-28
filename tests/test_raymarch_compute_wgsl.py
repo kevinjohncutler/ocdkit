@@ -66,7 +66,7 @@ def _ortho(yaw, pitch, half):
 
 
 def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0),
-             exposure=1.0, peak=1.0):
+             exposure=1.0, faces_mix=0.0):
     NX, NY, NZ = dims
     u = np.zeros(48, np.float32)
     u[0:16] = inv
@@ -76,7 +76,7 @@ def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, 
     u[32:36] = [2 * max(dims), density, opacity, show_lab]
     u[36:40] = [1.0, show_img, 1.0, 1.0]
     u[40:44] = [0.4, 0.0, 24.0, 1.0]
-    u[44:48] = [window[0], 1.0 / (window[1] - window[0]), exposure, peak]
+    u[44:48] = [window[0], 1.0 / (window[1] - window[0]), exposure, faces_mix]
     return u
 
 
@@ -113,14 +113,15 @@ class Scene:
         rb.unmap()
         return out
 
-    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0, faces=0):
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0):
         return self.dev.create_compute_pipeline(layout="auto", compute={
             "module": self.cmod, "entry_point": "cs",
             "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
-                          "BRICK": float(BRICK), "TRANSP": transp, "FACES": faces}})
+                          "BRICK": float(BRICK), "TRANSP": transp}})
 
     def compute(self, u, mode, show_img, show_lab, W, H, transp=0, faces=0):
-        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp, faces=faces)
+        u = u.copy(); u[47] = faces           # voxel shading t (0 = path length, 1 = voxel faces)
+        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp)
         out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
                                       usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
         ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
@@ -325,6 +326,23 @@ def test_voxel_faces_step_between_voxels(dev):
     exact = s.compute(u, 3, 1, 0, 256, 256)[..., 3]
     assert levels(exact) >= 6                  # a ramp through the in-between values
     assert levels(faces) <= 1                  # at most the one flat band where rays cross both
+
+
+@pytest.mark.parametrize("mode", [0, 3])
+def test_voxel_shading_blends_path_length_and_faces(dev, mode):
+    """t = 0 is exact path length, t = 1 voxel faces, t = 0.5 in between; and for
+    t < 1 the rim of a voxel still fades to nothing (no lines at its edges)."""
+    one = np.full((5, 5, 5), 0.15, np.float16); one[2, 2, 2] = 1.0
+    s = Scene(dev, one, np.zeros(one.shape, np.uint8))
+    inv, *_ = _ortho(math.radians(45), math.asin(1 / math.sqrt(3)), 1.3)
+    u = _uniform(inv, (5, 5, 5), mode, density=0.5 if mode == 3 else 0.0, show_lab=0, exposure=0.3)
+    img = {t: s.compute(u, mode, 1, 0, 256, 256, faces=t)[..., 3] for t in (0.0, 0.5, 1.0)}
+    np.testing.assert_array_equal(s.compute(u, mode, 1, 0, 256, 256)[..., 3], img[0.0])   # default = path length
+    c = slice(120, 136)
+    mid = img[0.5][c, c].mean()
+    assert min(img[0.0][c, c].mean(), img[1.0][c, c].mean()) - 1e-3 <= mid <= max(img[0.0][c, c].mean(), img[1.0][c, c].mean()) + 1e-3
+    step = {t: float(np.abs(np.diff(img[t][128])).max()) for t in (0.5, 1.0)}
+    assert step[0.5] < 0.25 * step[1.0]          # the rim rises steeply but continuously for t < 1 (a hard step at t = 1)
 
 
 def test_voxel_faces_keep_mida_even_and_leave_mip_alone(dev):
