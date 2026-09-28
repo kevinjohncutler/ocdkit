@@ -2432,6 +2432,53 @@ if (savedViewerState && typeof savedViewerState.currentLabel === 'number' && sav
   currentLabel = savedViewerState.currentLabel;
 }
 let originalImageData = null;
+// Full-precision (16-bit) copy of the displayed grayscale image, normalized to
+// the data's own min..max. The histogram, the percentiles and the 2D display use
+// it, so nothing is binned to 8 bits on the way to the screen; the 8-bit
+// originalImageData remains for RGB images and as a fallback.
+let sourceU16 = null;
+let sourceValueRange = null;             // [min, max] in the data's own units
+function rawUrlFor(url) {
+  if (typeof url !== 'string') return null;
+  if (url.indexOf('/api/volume_slice/') >= 0) return url.replace('/api/volume_slice/', '/api/volume_slice_raw/');
+  if (url.indexOf('/api/image/') >= 0) return url.replace('/api/image/', '/api/image_raw/');
+  return null;
+}
+function fetchRawU16(url) {
+  const raw = rawUrlFor(url);
+  if (!raw) return Promise.resolve(null);
+  return fetch(raw).then(async (r) => {
+    if (!r.ok) return null;
+    const range = (r.headers.get('X-Value-Range') || '').split(',').map(Number);
+    return { u16: new Uint16Array(await r.arrayBuffer()),
+             range: range.length === 2 && range.every(Number.isFinite) ? range : null };
+  }).catch(() => null);
+}
+function setSourceRaw(raw) {
+  if (raw && raw.u16 && raw.u16.length === imgWidth * imgHeight) {
+    sourceU16 = raw.u16;
+    if (raw.range) sourceValueRange = raw.range;
+  } else {
+    sourceU16 = null;
+  }
+}
+// The HDR layer takes the full-precision values when there are any.
+function hdrSetImage() {
+  if (!window.OcdHdr) return;
+  if (sourceU16) {
+    const f = new Float32Array(sourceU16.length);
+    for (let i = 0; i < f.length; i += 1) f[i] = sourceU16[i] / 65535;
+    OcdHdr.setImage(f, imgWidth, imgHeight);
+  } else {
+    OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
+  }
+}
+// A window position (0..255 along the histogram) in the data's own units.
+function windowValueLabel(v) {
+  if (!sourceValueRange) return (Math.round(v * 10) / 10).toString();
+  const x = sourceValueRange[0] + (v / 255) * (sourceValueRange[1] - sourceValueRange[0]);
+  return Number(x.toPrecision(5)).toString();
+}
 let isPanning = false;
 let isPainting = false;
 let lastPoint = { x: 0, y: 0 };
@@ -7673,9 +7720,10 @@ function applyImageAdjustments() {
   const target = img.data;
   const low = windowLow / 255;
   const high = windowHigh / 255;
-  const range = Math.max(high - low, 1 / 255);
+  const range = Math.max(high - low, 1 / 65535);
+  const src16 = (sourceU16 && sourceU16.length * 4 === source.length) ? sourceU16 : null;
   for (let i = 0; i < source.length; i += 4) {
-    let value = source[i] / 255;
+    let value = src16 ? src16[i >> 2] / 65535 : source[i] / 255;
     value = Math.min(Math.max((value - low) / range, 0), 1);
     if (imageInverted) value = 1 - value;
     value = Math.pow(value, currentGamma);
@@ -7699,16 +7747,19 @@ function applyImageAdjustments() {
 // Apply an already-decoded slice image element synchronously (draws once). Lets the
 // caller preload the image and the mask, then apply both back-to-back so the 2.5D
 // view never paints a new image against the previous slice's mask.
-window.__viewerSetSliceImageEl = function (img) {
+window.__viewerSetSliceImageEl = function (img, raw) {
   if (!img || !img.naturalWidth) return;          // a failed load (e.g. lost session): keep the current image
   offCtx.drawImage(img, 0, 0);
   originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
-  if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);
+  setSourceRaw(raw);                              // the slice's 16-bit values (fetched with the PNG)
+  hdrSetImage();
   applyImageAdjustments();   // re-applies current window/gamma → base texture + draw
 };
+window.__viewerFetchRawU16 = fetchRawU16;       // volume-mode fetches each slice's 16-bit values with its PNG
 window.__viewerSetSliceImage = function (url) {
   const img = new Image();
-  img.onload = function () { window.__viewerSetSliceImageEl(img); };
+  const raw = fetchRawU16(url);
+  img.onload = function () { raw.then((r) => window.__viewerSetSliceImageEl(img, r)); };
   img.src = url;
 };
 
@@ -7768,16 +7819,24 @@ window.__viewerSetNColorPalette = function (colors) {
   }
 };
 
+// histogramFine: 65536 bins (16-bit) for exact percentiles; histogramData: the
+// same counts summed into 256 bars for drawing.
+let histogramFine = null;
 function computeHistogram() {
   if (!originalImageData) {
     histogramData = null;
+    histogramFine = null;
     return;
   }
-  histogramData = new Uint32Array(256);
-  const data = originalImageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    histogramData[data[i]] += 1;
+  histogramFine = new Uint32Array(65536);
+  if (sourceU16 && sourceU16.length * 4 === originalImageData.data.length) {
+    for (let i = 0; i < sourceU16.length; i += 1) histogramFine[sourceU16[i]] += 1;
+  } else {
+    const data = originalImageData.data;
+    for (let i = 0; i < data.length; i += 4) histogramFine[data[i] * 257] += 1;
   }
+  histogramData = new Uint32Array(256);
+  for (let i = 0; i < 65536; i += 1) histogramData[i >> 8] += histogramFine[i];
 }
 
 
@@ -7816,14 +7875,30 @@ try {
 } catch (e) {}
 function saveHistPrefs() { try { localStorage.setItem(HIST_PREFS_KEY, JSON.stringify(histPrefs)); } catch (e) {} }
 
-function quantileOf(counts, q) {
+// The q-quantile of a histogram of any size as a position on the 0..255 axis:
+// a lower bound at its bin's low edge, an upper bound at its bin's high edge, so
+// 0 / 100 span exactly the data's min..max (nothing clipped).
+function quantileOf(counts, q, upper = false) {
   let total = 0;
   for (let i = 0; i < counts.length; i += 1) total += counts[i];
-  if (!total) return 0;
+  if (!total) return upper ? 255 : 0;
   const target = total * q;
   let cum = 0;
-  for (let i = 0; i < counts.length; i += 1) { cum += counts[i]; if (cum >= target) return i; }
-  return counts.length - 1;
+  let idx = counts.length - 1;
+  for (let i = 0; i < counts.length; i += 1) {
+    cum += counts[i];
+    if (cum >= target && (counts[i] > 0 || !upper)) { idx = i; break; }
+  }
+  if (upper) {
+    while (idx > 0 && counts[idx] === 0) idx -= 1;       // the top of the data, not an empty bin
+  }
+  return ((upper ? idx + 1 : idx) / counts.length) * 255;
+}
+function decodeCountsB64(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new Uint32Array(bytes.buffer);
 }
 
 // Clip the display window to the percentiles on the clip slider: of the whole
@@ -7837,10 +7912,10 @@ function clipWindowToPercentiles({ emit = true } = {}) {
   const hi = histPrefs.clipHi / 100;
   const isVolume = !!(CONFIG && CONFIG.isVolume && CONFIG.sessionId);
   if (isVolume && volumeHistCounts && volumeHistSession === CONFIG.sessionId) {
-    setWindowBounds(quantileOf(volumeHistCounts, lo), quantileOf(volumeHistCounts, hi), { emit });
+    setWindowBounds(quantileOf(volumeHistCounts, lo), quantileOf(volumeHistCounts, hi, true), { emit });
     return;
   }
-  if (histogramData) setWindowBounds(histogramQuantile(lo), histogramQuantile(hi), { emit });
+  if (histogramFine) setWindowBounds(quantileOf(histogramFine, lo), quantileOf(histogramFine, hi, true), { emit });
   else notifyWindowChange();
   if (!isVolume || volumeHistPending === CONFIG.sessionId) return;
   const sid = CONFIG.sessionId;
@@ -7849,10 +7924,11 @@ function clipWindowToPercentiles({ emit = true } = {}) {
     .then((r) => (r.ok ? r.json() : null))
     .then((j) => {
       volumeHistPending = null;
-      if (!j || !j.counts) return;
-      volumeHistCounts = j.counts;
+      if (!j || !(j.counts_b64 || j.counts)) return;
+      volumeHistCounts = j.counts_b64 ? decodeCountsB64(j.counts_b64) : j.counts;
       volumeHistSession = sid;
-      setWindowBounds(quantileOf(j.counts, histPrefs.clipLo / 100), quantileOf(j.counts, histPrefs.clipHi / 100));
+      setWindowBounds(quantileOf(volumeHistCounts, histPrefs.clipLo / 100),
+                      quantileOf(volumeHistCounts, histPrefs.clipHi / 100, true));
     })
     .catch(() => { volumeHistPending = null; });
 }
@@ -7930,25 +8006,6 @@ function openHistogramMenu(evt) {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHistogramMenu(); });
 
-function histogramQuantile(q) {
-  if (!histogramData) {
-    return 0;
-  }
-  const total = histogramData.reduce((acc, v) => acc + v, 0);
-  if (!total) {
-    return 0;
-  }
-  const target = total * q;
-  let cumulative = 0;
-  for (let i = 0; i < histogramData.length; i += 1) {
-    cumulative += histogramData[i];
-    if (cumulative >= target) {
-      return i;
-    }
-  }
-  return histogramData.length - 1;
-}
-
 function renderHistogram() {
   if (!histogramCanvas || !histogramData) {
     return;
@@ -8011,7 +8068,7 @@ function updateHistogramUI() {
 function histogramValueFromEvent(evt) {
   const rect = histogramCanvas.getBoundingClientRect();
   const x = Math.min(Math.max(evt.clientX - rect.left, 0), rect.width);
-  return Math.round((x / rect.width) * 255);
+  return (x / rect.width) * 255;
 }
 
 function gammaCurveY(intensity, width, height) {
@@ -8034,9 +8091,9 @@ function updateHistogramCursor(evt) {
   if (histDragTarget) {
     histogramCanvas.style.cursor = (histDragTarget === 'range' || histDragTarget === 'gamma') ? 'grabbing' : 'ew-resize';
     if (histDragTarget === 'low') {
-      histogramCanvas.dataset.tooltip = 'Low: ' + windowLow;
+      histogramCanvas.dataset.tooltip = 'Low: ' + windowValueLabel(windowLow);
     } else if (histDragTarget === 'high') {
-      histogramCanvas.dataset.tooltip = 'High: ' + windowHigh;
+      histogramCanvas.dataset.tooltip = 'High: ' + windowValueLabel(windowHigh);
     } else {
       delete histogramCanvas.dataset.tooltip;
     }
@@ -8068,9 +8125,9 @@ function updateHistogramCursor(evt) {
   histogramCanvas.style.cursor = cursor;
   if (!Number.isNaN(x)) {
     if (Math.abs(x - lowX) < threshold) {
-      histogramCanvas.dataset.tooltip = 'Low: ' + windowLow;
+      histogramCanvas.dataset.tooltip = 'Low: ' + windowValueLabel(windowLow);
     } else if (Math.abs(x - highX) < threshold) {
-      histogramCanvas.dataset.tooltip = 'High: ' + windowHigh;
+      histogramCanvas.dataset.tooltip = 'High: ' + windowValueLabel(windowHigh);
     } else {
       delete histogramCanvas.dataset.tooltip;
     }
@@ -8093,20 +8150,21 @@ function notifyWindowChange() {
 }
 window.__viewerGetWindow = () => [windowLow, windowHigh];
 
+const WINDOW_MIN_SPAN = 255 / 65535;       // one 16-bit step
 function setWindowBounds(low, high, { emit = true } = {}) {
-  let clampedLow = Math.round(low);
-  let clampedHigh = Math.round(high);
-  if (Number.isNaN(clampedLow)) clampedLow = windowLow;
-  if (Number.isNaN(clampedHigh)) clampedHigh = windowHigh;
+  // full precision: any position on the 0..255 axis (one 16-bit step apart at least)
+  let clampedLow = Number(low);
+  let clampedHigh = Number(high);
+  if (!Number.isFinite(clampedLow)) clampedLow = windowLow;
+  if (!Number.isFinite(clampedHigh)) clampedHigh = windowHigh;
   clampedLow = Math.max(0, Math.min(255, clampedLow));
   clampedHigh = Math.max(0, Math.min(255, clampedHigh));
-  if (clampedHigh <= clampedLow) {
+  if (clampedHigh - clampedLow < WINDOW_MIN_SPAN) {
     if (histDragTarget === 'low') {
-      clampedLow = Math.max(0, Math.min(254, clampedHigh - 1));
-    } else if (histDragTarget === 'high') {
-      clampedHigh = Math.min(255, Math.max(1, clampedLow + 1));
+      clampedLow = Math.max(0, clampedHigh - WINDOW_MIN_SPAN);
     } else {
-      clampedHigh = Math.min(255, Math.max(1, clampedLow + 1));
+      clampedHigh = Math.min(255, clampedLow + WINDOW_MIN_SPAN);
+      if (clampedHigh - clampedLow < WINDOW_MIN_SPAN) clampedLow = clampedHigh - WINDOW_MIN_SPAN;
     }
   }
   windowLow = clampedLow;
@@ -8168,9 +8226,9 @@ function handleHistogramPointerMove(evt) {
   evt.preventDefault();
   const value = histogramValueFromEvent(evt);
   if (histDragTarget === 'low') {
-    setWindowBounds(Math.min(value, windowHigh - 1), windowHigh);
+    setWindowBounds(Math.min(value, windowHigh - WINDOW_MIN_SPAN), windowHigh);
   } else if (histDragTarget === 'high') {
-    setWindowBounds(windowLow, Math.max(value, windowLow + 1));
+    setWindowBounds(windowLow, Math.max(value, windowLow + WINDOW_MIN_SPAN));
   } else if (histDragTarget === 'range') {
     const span = windowHigh - windowLow;
     let newLow = value - histDragOffset;
@@ -8246,7 +8304,10 @@ function updateHoverInfo(point) {
   const r = originalImageData.data[idx];
   const g = originalImageData.data[idx + 1];
   const b = originalImageData.data[idx + 2];
-  const value = CONFIG.isRgb ? `${r}, ${g}, ${b}` : r;
+  // grayscale: the value in the data's own units (from the 16-bit copy); the
+  // marker position stays on the histogram's 0..255 axis
+  const axis = (!CONFIG.isRgb && sourceU16) ? (sourceU16[y * imgWidth + x] / 65535) * 255 : r;
+  const value = CONFIG.isRgb ? `${r}, ${g}, ${b}` : (sourceU16 ? windowValueLabel(axis) : r);
   cursorInsideImage = true;
   if (valueTarget) {
     valueTarget.textContent = 'Y: ' + y + ', X: ' + x + ', Val: ' + value;
@@ -8254,8 +8315,8 @@ function updateHoverInfo(point) {
   if (coordTarget && coordTarget !== valueTarget) {
     coordTarget.textContent = '';
   }
-  if (histogramValueMarker && Number.isFinite(value)) {
-    const v = Math.max(0, Math.min(255, Number(value)));
+  if (histogramValueMarker && !CONFIG.isRgb) {
+    const v = Math.max(0, Math.min(255, Number(axis)));
     const frac = v / 255;
     histogramValueMarker.style.left = `calc(${(frac * 100).toFixed(2)}% - 1px)`;
     histogramValueMarker.style.opacity = '1';
@@ -10355,7 +10416,8 @@ function initialize() {
   userAdjustedScale = false;
   viewStateRestored = false;
   const img = new Image();
-  img.onload = () => {
+  const rawPromise = fetchRawU16(imageDataUrl);     // the same image at 16-bit, in parallel with the PNG
+  img.onload = async () => {
     const _decodeT = typeof performance !== 'undefined' ? performance.now() : 0;
     log('image loaded: ' + imgWidth + 'x' + imgHeight);
     offCtx.drawImage(img, 0, 0);
@@ -10363,7 +10425,8 @@ function initialize() {
       initializeWebglPipelineResources(img);
     }
     originalImageData = offCtx.getImageData(0, 0, imgWidth, imgHeight);
-    if (window.OcdHdr) OcdHdr.setImage(originalImageData, imgWidth, imgHeight);  // HDR image layer
+    setSourceRaw(await rawPromise);
+    hdrSetImage();                                  // HDR image layer
     computeHistogram();
     // The window is set ONCE (from the clip slider's percentiles; of the whole
     // volume for a stack) and then kept across slices, axes and fields of view,

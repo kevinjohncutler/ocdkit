@@ -230,6 +230,8 @@
                   "?z=" + z + "&axis=" + curAxis + "&t=" + Date.now();
       const img = new Image();
       const imgReady = new Promise((res) => { img.onload = res; img.onerror = res; img.src = url; });
+      // the slice at full (16-bit) precision, for the histogram and the 2D display
+      const rawReady = window.__viewerFetchRawU16 ? window.__viewerFetchRawU16(url) : Promise.resolve(null);
       let maskReady = Promise.resolve(null);
       if (hasMask) {
         if (labelGroups.length <= 1) await fetchNColorMap();
@@ -237,13 +239,13 @@
                           "?z=" + z + "&axis=" + curAxis + "&kind=group&t=" + Date.now())
           .then(async (r) => (r.ok ? { r, buf: await r.arrayBuffer() } : null)).catch(() => null);
       }
-      const [, mask] = await Promise.all([imgReady, maskReady]);
+      const [, mask, raw] = await Promise.all([imgReady, maskReady, rawReady]);
       if (seq !== _scrubSeq) return;                    // a newer scrub superseded us
       if (!img.naturalWidth) {                          // failed to load: don't draw a broken image;
         if (window.__viewerCheckSession) window.__viewerCheckSession(url);   // lost session -> reload banner
         return;
       }
-      if (typeof window.__viewerSetSliceImageEl === "function") window.__viewerSetSliceImageEl(img);
+      if (typeof window.__viewerSetSliceImageEl === "function") window.__viewerSetSliceImageEl(img, raw);
       else if (typeof window.__viewerSetSliceImage === "function") window.__viewerSetSliceImage(url);
       if (hasMask) {
         if (mask) { applyNColorPalette(); window.__viewerSetMaskSlice(_bufToU32(mask.r, mask.buf)); }

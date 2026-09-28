@@ -64,6 +64,17 @@ SESSION_COOKIE_NAME = "OCDSESSION"
 _SIDECAR_SUFFIXES = ("_cp_masks_edited", "_masks_edited", "_cp_masks", "_masks", "_flows")
 
 
+def _to_u16(arr) -> tuple:
+    """``(uint16, (min, max))``: *arr* normalized to its own min..max over the
+    full 16-bit range (a constant image is all 0), and that range in its units."""
+    a = np.asarray(arr)
+    lo, hi = float(np.nanmin(a)), float(np.nanmax(a))
+    if not hi > lo:
+        return np.zeros(a.shape, np.uint16), (lo, hi)
+    u = (np.nan_to_num(a.astype(np.float64), nan=lo) - lo) * (65535.0 / (hi - lo))
+    return np.clip(np.rint(u), 0, 65535).astype(np.uint16), (lo, hi)
+
+
 def _session_path_key(path: Optional[Path]) -> str:
     return str(path.resolve()) if path else "__sample__"
 
@@ -102,6 +113,12 @@ class SessionState:
     current_image: Optional[np.ndarray] = None
     image_is_rgb: bool = False
     current_volume: Optional[np.ndarray] = None  # (Z, Y, X) uint8 when a 3D stack is loaded
+    # The display's full-precision copy: the grayscale image or volume normalized
+    # to its own min..max as uint16 (0..65535), and that range in the source's
+    # units. The uint8 copies above feed segmentation and the PNG fallbacks only;
+    # the histogram, percentiles, 2D display and 3D volume use this.
+    source_u16: Optional[np.ndarray] = None
+    value_range: Optional[tuple] = None
     volume_slice: int = 0  # index of the slice currently shown in the 2D view
     current_mask_volume: Optional[np.ndarray] = None  # (Z, Y, X) label volume, if loaded
     current_ncolor_volume: Optional[np.ndarray] = None  # (Z, Y, X) ncolor group volume (cache)
@@ -164,13 +181,14 @@ class SessionManager:
             return len(self._sessions)
 
     def _apply_image(self, state: SessionState, image: np.ndarray,
-                     is_rgb: bool, is_volume: bool) -> None:
+                     is_rgb: bool, is_volume: bool, source: Optional[tuple] = None) -> None:
         """Store a loaded image/volume on the session + (re)encode the 2D view.
 
         For a volume the full ``(Z, Y, X)`` stack is kept and the middle slice
         feeds the 2D pipeline. Shared by the create and set-image paths so a
         preloaded volume behaves the same as one opened later.
         """
+        state.source_u16, state.value_range = (source if source is not None else (None, None))
         if is_volume:
             state.current_volume = np.ascontiguousarray(image, dtype=np.uint8)
             state.volume_slice = int(state.current_volume.shape[0] // 2)
@@ -194,13 +212,14 @@ class SessionManager:
         session_id = secrets.token_urlsafe(16)
         initial_path = get_preload_image_path()
         if initial_path and initial_path.exists():
-            image, is_rgb, is_volume = self._load_image_from_path(initial_path)
+            image, is_rgb, is_volume, source = self._load_image_from_path(initial_path)
             directory = initial_path.parent
             files = self._list_directory_images(directory)
         else:
             image = load_image_uint8(as_rgb=True)
             is_rgb = image.ndim == 3 and image.shape[-1] >= 3
             is_volume = False
+            source = None
             directory = None
             files = []
             initial_path = None
@@ -211,7 +230,7 @@ class SessionManager:
             files=files,
             encoded_image=None,
         )
-        self._apply_image(state, image, is_rgb, is_volume)
+        self._apply_image(state, image, is_rgb, is_volume, source)
         self._maybe_auto_mask(state)
         state.last_seen = time.time()
         self._sessions[session_id] = state
@@ -265,7 +284,7 @@ class SessionManager:
         if not path.exists():
             return None
         try:
-            image, is_rgb, is_volume = self._load_image_from_path(path)
+            image, is_rgb, is_volume, source = self._load_image_from_path(path)
         except Exception:
             return None
         state = SessionState(
@@ -275,7 +294,7 @@ class SessionManager:
             files=self._list_directory_images(path.parent),
             encoded_image=None,
         )
-        self._apply_image(state, image, is_rgb, is_volume)
+        self._apply_image(state, image, is_rgb, is_volume, source)
         self._maybe_auto_mask(state)
         state.last_seen = time.time()
         self._sessions[session_id] = state
@@ -293,8 +312,11 @@ class SessionManager:
             if existing:
                 existing.saved_states.clear()
 
-    def _load_image_from_path(self, path: Path) -> tuple[np.ndarray, bool, bool]:
-        """Read an image or volume. Returns ``(array, is_rgb, is_volume)``.
+    def _load_image_from_path(self, path: Path) -> tuple[np.ndarray, bool, bool, Optional[tuple]]:
+        """Read an image or volume. Returns ``(array, is_rgb, is_volume, source)``:
+        ``array`` is uint8 (for segmentation and the PNG fallbacks) and ``source``
+        is ``(uint16 normalized to min..max, (min, max))`` for a grayscale image or
+        volume, the full-precision copy the display uses (None for RGB).
 
         A 3-D array is treated as a ``(Z, Y, X)`` volume only when neither the
         first nor the last axis is a small channel count — so ``(Y, X, 3)`` RGB
@@ -304,11 +326,13 @@ class SessionManager:
         if (arr.ndim == 3 and arr.shape[0] not in (1, 3, 4)
                 and arr.shape[-1] not in (1, 2, 3, 4)):
             vol = _normalize_uint8(arr)  # global normalize across the whole stack
-            return vol, False, True
+            return vol, False, True, _to_u16(arr)
         arr = _ensure_spatial_last(arr)
+        gray = arr[..., 0] if (arr.ndim == 3 and arr.shape[-1] == 1) else arr
+        source = _to_u16(gray) if gray.ndim == 2 else None
         arr = _normalize_uint8(arr)
         is_rgb = arr.ndim == 3 and arr.shape[-1] >= 3
-        return arr, is_rgb, False
+        return arr, is_rgb, False, (None if is_rgb else source)
 
     def set_mask(self, state: SessionState, path: Path,
                  source_path: Optional[Path] = None) -> None:
@@ -436,19 +460,20 @@ class SessionManager:
             path = Path(os.path.abspath(path.expanduser()))
             if not path.exists():
                 raise FileNotFoundError(path)
-            image, is_rgb, is_volume = self._load_image_from_path(path)
+            image, is_rgb, is_volume, source = self._load_image_from_path(path)
             directory = path.parent
             files = self._list_directory_images(directory)
         else:
             image = load_image_uint8(as_rgb=True)
             is_rgb = image.ndim == 3 and image.shape[-1] >= 3
             is_volume = False
+            source = None
             directory = None
             files = []
         state.current_path = path
         state.directory = directory
         state.files = files
-        self._apply_image(state, image, is_rgb, is_volume)
+        self._apply_image(state, image, is_rgb, is_volume, source)
         self._maybe_auto_mask(state)
         self._store_save(state.session_id, path)   # survive server restart / --reload
 
@@ -1075,12 +1100,54 @@ class SessionManager:
                                            else _narrow_labels(state.current_mask_volume))
         return bundle
 
-    def volume_histogram(self, state: SessionState) -> Optional[list[int]]:
-        """256-bin histogram of the whole 8-bit volume (None if not a volume)."""
-        vol = state.current_volume
-        if vol is None:
+    def volume_histogram(self, state: SessionState) -> Optional[np.ndarray]:
+        """65536-bin histogram of the whole volume at full (16-bit) precision
+        (None if not a volume), so the display window can be set from exact
+        percentiles of the entire stack."""
+        if state.current_volume is None:
             return None
-        return np.bincount(np.asarray(vol, np.uint8).ravel(), minlength=256)[:256].tolist()
+        src = state.source_u16
+        if src is None or src.ndim != 3:                  # no full-precision copy: the 8-bit one, spread out
+            src = np.asarray(state.current_volume, np.uint16) * 257
+        return np.bincount(src.ravel(), minlength=65536)[:65536].astype(np.uint32)
+
+    def _raw_u16(self, arr: np.ndarray) -> tuple[bytes, dict[str, str]]:
+        H, W = arr.shape
+        headers = {"X-Shape": f"{W},{H}", "X-Dtype": "uint16", "Cache-Control": "no-store"}
+        return np.ascontiguousarray(arr, dtype="<u2").tobytes(), headers
+
+    def encode_image_raw(self, state: SessionState) -> Optional[tuple[bytes, dict[str, str]]]:
+        """The 2D view's grayscale image at full precision (uint16, normalized to
+        the data's min..max), or None (RGB, or no full-precision copy). For a
+        volume this is the current Z slice."""
+        src = state.source_u16
+        if src is None:
+            return None
+        if state.current_volume is not None:
+            if src.ndim != 3:
+                return None
+            sl = src[max(0, min(int(state.volume_slice), src.shape[0] - 1))]
+        elif src.ndim == 2:
+            sl = src
+        else:
+            return None
+        body, headers = self._raw_u16(sl)
+        if state.value_range is not None:
+            headers["X-Value-Range"] = f"{state.value_range[0]!r},{state.value_range[1]!r}"
+        return body, headers
+
+    def encode_slice_raw(self, state: SessionState, z: int, axis: int = 0) -> Optional[tuple[bytes, dict[str, str]]]:
+        """Slice ``z`` along ``axis`` at full precision (the uint16 twin of
+        :meth:`encode_slice_png`), or None."""
+        src = state.source_u16
+        if state.current_volume is None or src is None or src.ndim != 3:
+            return None
+        axis = int(axis) % 3
+        z = max(0, min(int(z), src.shape[axis] - 1))
+        body, headers = self._raw_u16(np.take(src, z, axis=axis))
+        if state.value_range is not None:
+            headers["X-Value-Range"] = f"{state.value_range[0]!r},{state.value_range[1]!r}"
+        return body, headers
 
     def encode_volume_raw(self, state: SessionState) -> Optional[tuple[bytes, dict[str, str]]]:
         """The 3D view's volume as one binary body, or None if not a volume.
@@ -1095,12 +1162,18 @@ class SessionManager:
         if vol is None:
             return None
         D, H, W = vol.shape
-        a = np.asarray(vol, dtype=np.float64)
-        lo, hi = float(a.min()), float(a.max())
-        sc = 1.0 / (hi - lo) if hi > lo else 0.0
-        # same arithmetic as the viewer's JS path: (a - lo) * sc in float64,
-        # rounded to float32, then to float16
-        f16 = ((a - lo) * sc).astype(np.float32).astype(np.float16)
+        src = state.source_u16
+        if src is not None and src.shape == vol.shape:
+            # the full-precision copy (normalized to the data's min..max)
+            f16 = (src.astype(np.float32) * (1.0 / 65535.0)).astype(np.float16)
+            lo, hi = state.value_range
+        else:
+            a = np.asarray(vol, dtype=np.float64)
+            lo, hi = float(a.min()), float(a.max())
+            sc = 1.0 / (hi - lo) if hi > lo else 0.0
+            # same arithmetic as the viewer's JS path: (a - lo) * sc in float64,
+            # rounded to float32, then to float16
+            f16 = ((a - lo) * sc).astype(np.float32).astype(np.float16)
         parts = [f16.tobytes()]
         headers = {"X-Shape": f"{W},{H},{D}", "X-Image": "float16", "X-Mask-Dtype": "none",
                    # data range the float16 was normalized from, so the client can map

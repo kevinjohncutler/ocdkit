@@ -1084,9 +1084,10 @@
     // (no render: create() applies the initial window before the camera exists)
     _applyWindow(lo, hi) {
       this._winData = [lo, hi];
-      const [vmin, vmax] = this.valueRange || [0, 255];
-      const span = vmax > vmin ? vmax - vmin : 1;
-      let tl = (lo - vmin) / span, th = (hi - vmin) / span;
+      // the window is a position on the histogram's 0..255 axis, which spans the
+      // data's min..max, the same range the texture is normalized over; so it
+      // maps directly, at full precision (valueRange is the data's own units)
+      let tl = lo / 255, th = hi / 255;
       // inverted: the texture holds 1 - t, so the window [tl, th] becomes
       // [1 - th, 1 - tl], giving (th - t) / (th - tl) = 1 - the normal display
       if (this._invert) { const a = 1 - th; th = 1 - tl; tl = a; }

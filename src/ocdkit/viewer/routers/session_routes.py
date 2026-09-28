@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
@@ -200,6 +202,36 @@ def api_volume_slice(session_id: str, z: int = 0, axis: int = 0) -> Response:
         media_type="image/png",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@router.get("/volume_slice_raw/{session_id}")
+def api_volume_slice_raw(session_id: str, z: int = 0, axis: int = 0) -> Response:
+    """Slice ``z`` along ``axis`` at full precision: uint16 little-endian,
+    normalized to the volume's min..max (headers X-Shape "W,H", X-Value-Range)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    out = SESSION_MANAGER.encode_slice_raw(state, z, axis)
+    if out is None:
+        raise NotFound("not_a_volume")
+    body, headers = out
+    return Response(content=body, media_type="application/octet-stream", headers=headers)
+
+
+@router.get("/image_raw/{session_id}")
+def api_image_raw(session_id: str) -> Response:
+    """The 2D view's grayscale image at full precision (uint16, as above); 404
+    for RGB images."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    out = SESSION_MANAGER.encode_image_raw(state)
+    if out is None:
+        raise NotFound("no_raw_image")
+    body, headers = out
+    return Response(content=body, media_type="application/octet-stream", headers=headers)
 
 
 @router.post("/open_mask")
@@ -466,8 +498,8 @@ def api_volume_bundle(session_id: str) -> dict:
 
 @router.get("/volume_histogram/{session_id}")
 def api_volume_histogram(session_id: str) -> dict:
-    """256-bin histogram of the whole (8-bit) volume, so the display window can be
-    set from percentiles of the entire stack rather than of one slice."""
+    """Histogram of the whole volume at full precision (65536 bins), so the display
+    window can be set from exact percentiles of the entire stack."""
     try:
         state = SESSION_MANAGER.get(session_id)
     except KeyError as exc:
@@ -475,7 +507,9 @@ def api_volume_histogram(session_id: str) -> dict:
     counts = SESSION_MANAGER.volume_histogram(state)
     if counts is None:
         raise NotFound("not_a_volume")
-    return {"counts": counts}
+    # 65536 bins (16-bit) as little-endian uint32, base64: exact percentiles
+    return {"bins": int(counts.size),
+            "counts_b64": base64.b64encode(np.ascontiguousarray(counts, dtype="<u4").tobytes()).decode("ascii")}
 
 
 @router.get("/volume_raw/{session_id}")

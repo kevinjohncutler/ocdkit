@@ -62,6 +62,13 @@
   })().catch(function (e) { console.warn('[OcdHdr] init failed:', e); });
 
   function intensityFrom(imageData, w, h) {
+    // full-precision values (0..1, one per pixel) come as a Float32Array
+    if (imageData instanceof Float32Array && imageData.length === w * h) {
+      if (!FLIP_Y) return imageData;
+      const flipped = new Float32Array(w * h);
+      for (let y = 0; y < h; y += 1) flipped.set(imageData.subarray((h - 1 - y) * w, (h - y) * w), y * w);
+      return flipped;
+    }
     const d = imageData.data || imageData;
     const out = new Float32Array(w * h);
     for (let y = 0; y < h; y += 1) {

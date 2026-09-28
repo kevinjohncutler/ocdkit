@@ -1,5 +1,6 @@
-/* Node test for VolumeGPU.setWindow: the 2D histogram bounds (data units, the
- * 0..255 of the viewer's 8-bit volume) map onto the normalized 3D texture.
+/* Node test for VolumeGPU.setWindow: the 2D histogram bounds (positions on its
+ * 0..255 axis, which spans the data's min..max) map onto the normalized 3D
+ * texture at full precision.
  * Run: /opt/homebrew/bin/node tests/js/window.test.mjs
  */
 import assert from "node:assert/strict";
@@ -23,15 +24,15 @@ test("full range is the identity window", () => {
   assert.equal(g.exposures, 0);   // the window maps values like a LUT: it never triggers a rescale
 });
 
-test("bounds map through the volume's value range", () => {
-  const g = fake([10, 210]);                        // texture t = (v - 10) / 200
-  VolumeGPU.prototype.setWindow.call(g, 60, 110);
-  close(g._win[0], 0.25); close(g._win[1], 1 / 0.25);
+test("the 0..255 axis spans the data's min..max whatever its units", () => {
+  const g = fake([0.013, 812.5]);                   // a float volume: texture t = (v - min) / (max - min)
+  VolumeGPU.prototype.setWindow.call(g, 51, 102);
+  close(g._win[0], 0.2); close(g._win[1], 1 / 0.2);
 });
 
-test("no value range falls back to 0..255", () => {
-  const g = fake(null); VolumeGPU.prototype.setWindow.call(g, 51, 102);
-  close(g._win[0], 0.2); close(g._win[1], 1 / 0.2);
+test("windows are not rounded to 256 steps", () => {
+  const g = fake(null); VolumeGPU.prototype.setWindow.call(g, 0, 127.6);   // between two 8-bit steps
+  close(g._win[1], 255 / 127.6);
 });
 
 console.log(`${n} passed`);

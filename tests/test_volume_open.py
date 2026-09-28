@@ -331,19 +331,62 @@ def _decode_raw(body, headers):
 
 def test_volume_raw_is_normalized_float16(tmp_path):
     """GET /api/volume_raw: intensity normalized to [0,1] as float16 (the exact
-    bytes the 3D view uploads), no mask when none is loaded."""
+    bytes the 3D view uploads) from the FULL-precision data, not the 8-bit copy;
+    X-Value-Range is the file's own range. No mask when none is loaded."""
+    path = _write_volume(tmp_path, (6, 10, 12))
+    src = tifffile.imread(str(path)).astype(np.float64)
     state = SESSION_MANAGER.get_or_create(None)
-    SESSION_MANAGER.set_image(state, _write_volume(tmp_path, (6, 10, 12)))
+    SESSION_MANAGER.set_image(state, path)
     body, headers = SESSION_MANAGER.encode_volume_raw(state)
     assert headers["X-Shape"] == "12,10,6" and headers["X-Image"] == "float16"
     lo, hi = (float(v) for v in headers["X-Value-Range"].split(","))
-    assert (lo, hi) == (float(state.current_volume.min()), float(state.current_volume.max()))
+    assert (lo, hi) == (src.min(), src.max())                      # 0..999, not the 8-bit 0..255
     img, mask = _decode_raw(body, headers)
     assert mask is None
-    v = state.current_volume.astype(np.float64)
-    ref = (v - v.min()) / (v.max() - v.min())
+    ref = (src - src.min()) / (src.max() - src.min())
     assert img.min() == 0 and img.max() == 1
-    assert np.abs(img.astype(np.float64) - ref).max() <= 2 ** -11   # float16 rounding
+    assert np.abs(img.astype(np.float64) - ref).max() <= 2 ** -11 + 1 / 65535   # float16 + 16-bit rounding
+    assert len(np.unique(img)) > 256                               # more than 8 bits survive
+
+
+def test_full_precision_slices_and_histogram(tmp_path):
+    """The 16-bit endpoints carry the data at 16-bit precision: raw slices along
+    every axis match the file (normalized) within one 16-bit step, and the
+    whole-volume histogram has 65536 bins summing to the voxel count."""
+    path = _write_volume(tmp_path, (6, 10, 12))
+    src = tifffile.imread(str(path)).astype(np.float64)
+    norm = (src - src.min()) / (src.max() - src.min())
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, path)
+    for axis in (0, 1, 2):
+        z = src.shape[axis] // 2
+        body, headers = SESSION_MANAGER.encode_slice_raw(state, z, axis)
+        W, H = (int(v) for v in headers["X-Shape"].split(","))
+        sl = np.frombuffer(body, "<u2").reshape(H, W) / 65535.0
+        np.testing.assert_allclose(sl, np.take(norm, z, axis=axis), atol=1 / 65535)
+        assert headers["X-Value-Range"] == f"{float(src.min())!r},{float(src.max())!r}"
+    body, headers = SESSION_MANAGER.encode_image_raw(state)             # the 2D view's Z slice
+    W, H = (int(v) for v in headers["X-Shape"].split(","))
+    np.testing.assert_allclose(np.frombuffer(body, "<u2").reshape(H, W) / 65535.0,
+                               norm[state.volume_slice], atol=1 / 65535)
+    counts = SESSION_MANAGER.volume_histogram(state)
+    assert counts.size == 65536 and int(counts.sum()) == src.size
+    assert int((counts > 0).sum()) > 256                             # finer than 8-bit bins
+
+
+def test_full_precision_2d_image(tmp_path):
+    """A single grayscale 2D image also keeps its full precision."""
+    p = tmp_path / "img.tif"
+    arr = (np.random.default_rng(1).random((20, 30)) * 5000).astype(np.uint16)
+    tifffile.imwrite(str(p), arr)
+    state = SESSION_MANAGER.get_or_create(None)
+    SESSION_MANAGER.set_image(state, p)
+    body, headers = SESSION_MANAGER.encode_image_raw(state)
+    W, H = (int(v) for v in headers["X-Shape"].split(","))
+    got = np.frombuffer(body, "<u2").reshape(H, W) / 65535.0
+    ref = (arr - arr.min()) / (arr.max() - arr.min())
+    np.testing.assert_allclose(got, ref, atol=1 / 65535)
+    assert len(np.unique(got)) > 256
 
 
 def test_volume_raw_carries_ncolor_groups(tmp_path):
