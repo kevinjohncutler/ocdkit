@@ -103,10 +103,16 @@ override CUE : bool = false;
 // behind its own dim rim always shows, and noise inside an object does not
 // matter). Objects are composited front to back: one brighter than what is
 // shown so far (V) replaces it unless the front blocks it, by how bright the
-// front is RELATIVE to it: blocked = smoothstep(X - soft, X + soft, V / m),
-// X = 1 - occlusion (the front blocks an object if it is at least X as bright),
+// front is RELATIVE to it: blocked = smoothstep(X (1 - soft), X (1 + soft), V / m),
+// X = 10^(-3 occlusion), and 0 at occlusion 1 (the front blocks an object if it
+// is at least X as bright: 100% at 0 = MIP, 10% at 1/3, 1% at 2/3, 0.1% near 1;
+// a log scale, since most of the blocking in real data comes from fronts under
+// 10% as bright as what is behind, which a linear X crammed into its last tenth),
 // soft = u.win.w (0: a hard on/off block, so each pixel shows one object's
-// peak). The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
+// peak). The fade band is proportional to X, so at occlusion 1 (X = 0) anything
+// in front blocks completely whatever the softness (a fixed-width band let the
+// brightest objects behind dim ones leak through at the top of the slider).
+// The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
 // Unlike EA, where the front removes the same fraction of light from
 // everything behind it, a dim object here blocks what is only a little
 // brighter than itself while something much brighter behind still shows (so
@@ -217,7 +223,8 @@ fn blockComposite(V : f32, m : f32, X : f32, soft : f32) -> f32 {
   if (m <= V) { return V; }
   if (V <= 0.0) { return m; }                         // nothing in front: nothing blocks
   let r = V / m;
-  let blocked = select(select(0.0, 1.0, r >= X), smoothstep(X - soft, X + soft, r), soft > 1e-4);
+  if (X <= 0.0) { return V; }                        // occlusion 1: anything in front blocks
+  let blocked = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
   return V + (m - V) * (1.0 - blocked);
 }
 fn labelColor(lab : u32) -> vec3<f32> {
@@ -352,8 +359,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
-    let blockX = 1.0 - density;                       // block: the front blocks at this relative brightness
-    let blockSoft = clamp(u.win.w, 0.0, 0.5);         // block: fade width (0 = on/off)
+    let blockX = select(pow(10.0, -3.0 * density), 0.0, density >= 1.0);   // block: relative brightness that blocks
+    let blockSoft = clamp(u.win.w, 0.0, 0.9);         // block: relative fade width (0 = on/off)
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -425,7 +432,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
         if (imgAcc.y > 0.0 && (sw <= 0.0 || sw < BLOCK_SPLIT * imgAcc.y)) {   // the object ends
           imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); imgAcc.y = 0.0;
-          if (imgAcc.x >= min(blockX + blockSoft, 1.0)) { break; }        // nothing further can show
+          if (imgAcc.x >= min(blockX * (1.0 + blockSoft), 1.0)) { break; }   // nothing further can show
         }
         if (sw > 0.0) { imgAcc.y = max(imgAcc.y, sw); }
       } else if (MODE == 1) {

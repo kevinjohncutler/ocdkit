@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoft: curBlockSoft, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftRel: curBlockSoft, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -150,9 +150,10 @@
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
     // Block (projection 4): MIP with relative blocking between objects. Its density
     // slider sets OCCLUSION: the object in front blocks one behind if it is at least
-    // (1 - occlusion) as bright (0 = MIP); softness fades the block in around that.
+    // X = 10^(-3 occlusion) as bright (0 = MIP, 1 = anything blocks); softness fades
+    // the block in around X.
     let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
-    let curBlockSoft = typeof _vs.blockSoft === "number" ? Math.min(0.5, Math.max(0, _vs.blockSoft)) : 0.1;
+    let curBlockSoft = typeof _vs.blockSoftRel === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftRel)) : 0.2;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
@@ -765,7 +766,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(0.5, Number.isFinite(Number(t)) ? Number(t) : 0.1));
+      t = Math.max(0, Math.min(0.9, Number.isFinite(Number(t)) ? Number(t) : 0.2));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
@@ -857,7 +858,7 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       densRow.title = curProj === 4
-        ? "Occlusion: an object in front blocks one behind it if it is at least (1 - occlusion) as bright (0.3: at least 70% as bright). 0 = MIP. Within one object the brightest voxel shows, so a bright core behind its own dim rim is never blocked"
+        ? "Occlusion: an object in front blocks one behind it if it is at least X as bright, on a log scale: X = 100% at 0 (MIP), 10% at 0.33, 1% at 0.67, and 0 at 1 (anything in front blocks). Within one object the brightest voxel shows, so a bright core behind its own dim rim is never blocked"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

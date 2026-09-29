@@ -250,7 +250,7 @@
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockSoft = opts.blockSoftness != null ? Math.min(0.5, Math.max(0, +opts.blockSoftness)) : 0.1;   // block softness
+      this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.2;   // block softness
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -1184,10 +1184,10 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4) softness, 0..0.5: 0 blocks on/off at the
-     *  threshold, higher fades the block in over threshold +- softness. */
+    /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
+     *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
     setBlockSoftness(t) {
-      this._blockSoft = Math.min(0.5, Math.max(0, Number.isFinite(+t) ? +t : 0.1));
+      this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.2));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }

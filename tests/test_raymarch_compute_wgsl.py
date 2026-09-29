@@ -644,18 +644,21 @@ def _smoothstep(e0, e1, x):
 
 
 @pytest.mark.parametrize("gap", [8, 20])
-@pytest.mark.parametrize("occl,soft", [(0.0, 0.0), (0.5, 0.0), (0.7, 0.0), (0.8, 0.0), (0.7, 0.1), (0.7, 0.3)])
+@pytest.mark.parametrize("occl,soft", [(0.0, 0.0), (0.1, 0.0), (0.2, 0.0), (0.5, 0.0), (0.17, 0.1), (0.17, 0.3),
+                                       (1.0, 0.0), (1.0, 0.5), (1.0, 0.9)])
 def test_block_relative_blocking(dev, gap, occl, soft):
     """A dim object (a) in front of a brighter one (b), empty space between: the
-    front blocks it if a / b >= X = 1 - occlusion (softness fades that in over
-    X +- soft), whatever the distance. The pixel shows a + (b - a)(1 - blocked):
-    with softness 0 exactly one object's peak. Occlusion 0 is MIP (b)."""
+    front blocks it if a / b >= X = 10^(-3 occlusion) (0 at 1; softness fades that in over
+    X (1 - soft) .. X (1 + soft)), whatever the distance. The pixel shows
+    a + (b - a)(1 - blocked): with softness 0 exactly one object's peak.
+    Occlusion 0 is MIP (b); occlusion 1 always blocks, whatever the softness."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
     u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0))
     out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=soft)[..., 3]   # (softness: u[47])
-    a, b = (0.7 - 0.6) / 0.4, (0.95 - 0.6) / 0.4
-    X, r = 1.0 - occl, a / b
-    blocked = float(r >= X) if soft == 0 else _smoothstep(X - soft, X + soft, r)
+    # the volume holds float16 values (0.7 -> 0.7002, 0.95 -> 0.9502): the fade is steep near X
+    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
+    X, r = (0.0 if occl >= 1 else 10 ** (-3 * occl)), a / b
+    blocked = 1.0 if X <= 0 else float(r >= X) if soft == 0 else _smoothstep(X * (1 - soft), X * (1 + soft), r)
     expect = a + (b - a) * (1.0 - blocked)
     mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
     assert np.abs(out[mid] - expect).max() < 2e-3, (out[mid].min(), out[mid].max(), expect)
@@ -685,15 +688,15 @@ def test_block_is_mip_without_lighting_or_density(dev):
 
 
 def test_block_dim_speckle_far_in_front_does_not_win(dev):
-    """A near-black voxel far in front of a bright object only beats what is dimmer
-    than itself plus the occlusion margin, so the object still shows."""
+    """At moderate occlusion a near-black sheet far in front of a bright object
+    blocks only what is not much brighter than itself, so the object still shows."""
     n = 48
     vol = np.zeros((n, n, n), np.float16)
     vol[2, 10:38, 10:38] = 0.62                          # a sheet of speckle just above the low end
     vol[36:42, 20:28, 20:28] = 0.95                      # bright cube 34 voxels behind it
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (n, n, n), 4, density=0.6, show_lab=0, window=(0.6, 1.0))
+    u = _uniform(inv, (n, n, n), 4, density=0.3, show_lab=0, window=(0.6, 1.0))
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     assert np.abs(out - (0.95 - 0.6) / 0.4).max() < 2e-3
 
