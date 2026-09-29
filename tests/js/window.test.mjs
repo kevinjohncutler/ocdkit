@@ -15,8 +15,23 @@ let n = 0;
 const test = (name, fn) => { fn(); n++; console.log("ok -", name); };
 const fake = (valueRange) => ({ valueRange, renders: 0, exposures: 0, _requestRender() { this.renders++; },
                                 _scheduleExposure() { this.exposures++; },
-                                _applyWindow: VolumeGPU.prototype._applyWindow });
+                                _applyWindow: VolumeGPU.prototype._applyWindow,
+                                _updateCueBox: VolumeGPU.prototype._updateCueBox });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
+
+test("the depth cue's data box is the bricks above the window's low end", () => {
+  // 40 x 36 x 20 voxels -> 3 x 3 x 2 bricks of 16; only brick (x=1, y=2, z=0) holds values above 0.5
+  const NX = 40, NY = 36, NZ = 20, bm = new Float32Array(3 * 3 * 2).fill(0.2);
+  bm[(0 * 3 + 2) * 3 + 1] = 0.9;
+  const g = Object.assign(fake([0, 255]), { NX, NY, NZ, zScale: 2, _brickMaxHost: bm,
+                                            _box: VolumeGPU.prototype._box });
+  VolumeGPU.prototype.setWindow.call(g, 0.5 * 255, 255);
+  // world = box min + voxel index (z scaled by zScale); the last bricks are clipped to the volume
+  assert.deepEqual(g._cueBox.min, [-20 + 16, -18 + 32, -20 + 0]);
+  assert.deepEqual(g._cueBox.max, [-20 + 32, -18 + 36, -20 + 16 * 2]);
+  VolumeGPU.prototype.setWindow.call(g, 0.95 * 255, 255);   // nothing above the low end: whole volume
+  assert.equal(g._cueBox, null);
+});
 
 test("full range is the identity window", () => {
   const g = fake([0, 255]); VolumeGPU.prototype.setWindow.call(g, 0, 255);

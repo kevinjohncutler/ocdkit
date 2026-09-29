@@ -1110,8 +1110,9 @@
      *  bounding box (world units) of the bricks whose max is above the window's
      *  low end (brick-coarse, 16 voxels; the whole volume if none). */
     _updateCueBox() {
-      const bm = this._brickMaxHost, box = this._box();
+      const bm = this._brickMaxHost;
       if (!bm || !this._win) { this._cueBox = null; return; }
+      const box = this._box();
       const { NX, NY, NZ } = this, [bx, by, bz] = brickDims(NX, NY, NZ, BRICK), lo = this._win[0];
       let x0 = bx, y0 = by, z0 = bz, x1 = -1, y1 = -1, z1 = -1;
       for (let z = 0, i = 0; z < bz; z++) for (let y = 0; y < by; y++) for (let x = 0; x < bx; x++, i++) {
