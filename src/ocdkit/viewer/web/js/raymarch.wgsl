@@ -206,7 +206,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
     if (mode == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); imgA = v * c4.a; imgPC = c4.rgb * c4.a; }
     else if (mode == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); imgA = m * c4.a; imgPC = c4.rgb * c4.a; }
     else {                                                    // EA / MIDA: then window, gamma, colormap (a LUT)
-      var raw = select(0.0, imgAcc.x / imgAcc.w, imgAcc.w > 1e-6);
+      var raw = imgAcc.x;                                      // MIDA: the accumulated light
       if (mode == 0) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
       let v = pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma);
       let c4 = lutRGBA(v);

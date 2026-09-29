@@ -31,9 +31,9 @@
 // translucency are kept. Per voxel opacity is 1 - exp(-density * s * length).
 //   I = beta I + (1 - beta A) a s ;  A = beta A + (1 - beta A) a ;  f = max(f, s)
 // It composites the INTENSITY (at the data's full range) and applies the window,
-// gamma and colormap once to I / A at the end, as MIP and mean do, so colors
-// stay on the colormap and the window acts like a LUT (HDR and transparency
-// work as in MIP).
+// gamma and colormap once to the accumulated I at the end, as MIP and mean do,
+// so colors stay on the colormap and the window acts like a LUT (HDR and
+// transparency work as in MIP).
 // Early termination needs A ~ 1 AND f near the top of the window (only a new max
 // could lift the fade), so a dim, dense ray keeps marching.
 // The fade follows the path through the voxel continuously (see midaStep): a
@@ -327,10 +327,14 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       // every pixel is a true colormap color, a full-range window never clips,
       // and narrowing it pops whatever projects above its top to the colormap's
       // top (and HDR peak), exactly as in MIP.
-      //   MIDA: I / A, a weighted average of data values (never above their max)
+      //   MIDA: I, the light accumulated along the ray (as the paper composites
+      //         over black), so thicker material collects more and a uniform
+      //         stack shows its depth like any other shape; never above the ray's
+      //         max. (Showing the average I / A made uniform stacks flat while
+      //         mixed values showed structure.)
       //   EA:   the glow rolled off below 1 by 1 - e^(-k glow), k from the data
       //         (win.z) so the brightest ray along any axis reads 0.95
-      var raw = select(0.0, imgAcc.x / imgAcc.w, imgAcc.w > 1e-6);
+      var raw = imgAcc.x;
       if (MODE == 0) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
       let v = pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);

@@ -216,7 +216,7 @@ def _mida_reference(cols, density, substeps=200):
     I = beta I + (1 - beta A) a s, A = beta A + (1 - beta A) a in `substeps` tiny
     steps per voxel (its continuous limit), with the running max f approaching a
     brighter s as s - (s - f) e^(-h / 0.8) and beta = (1 - f_new) / (1 - f_old).
-    The displayed value is v = I / A (then colormapped, alpha v)."""
+    The displayed value is the accumulated I (then colormapped, alpha I)."""
     h = 1.0 / substeps
     I = np.zeros(cols.shape[1:]); A = np.zeros(cols.shape[1:]); f = np.zeros(cols.shape[1:])
     for s in cols.astype(np.float64):
@@ -228,7 +228,7 @@ def _mida_reference(cols, density, substeps=200):
             I = beta * I + (1 - keep) * a * s
             A = keep + (1 - keep) * a
             f = f_new
-    return np.where(A > 1e-6, np.clip(I / np.maximum(A, 1e-6), 0, 1), 0)
+    return np.clip(I, 0, 1)
 
 
 @pytest.mark.parametrize("density", [0.3, 2.0])
@@ -275,31 +275,39 @@ def test_mida_colors_stay_on_the_colormap(dev):
 
 
 def test_mida_keeps_hdr_colors(dev):
-    """An HDR colormap (encoded values above 1) reaches the output unchanged: the
-    top of the colormap shows its full lifted color, as in MIP."""
+    """An HDR colormap (encoded values above 1) reaches the output unchanged: a
+    thick uniform region at the data's top accumulates to nearly 1 and shows
+    the lifted color there, above 1, as in MIP."""
     n, NZ = 32, 40
     vol = np.full((NZ, n, n), 1.0, np.float16)
     lut = _two_color_lut() * 1.6                 # lifted: the top entry is (1.6, 1.44, 0.16)
     s = Scene(dev, vol, np.zeros(vol.shape, np.uint8), lut_rgb=lut)
     inv, *_ = _ortho(0.0, 0.0, n / 2)
     out = s.compute(_uniform(inv, (n, n, NZ), 3, density=1.0, show_lab=0), 3, 1, 0, n, n)
-    np.testing.assert_allclose(out[..., 3], 1.0, atol=2e-3)
-    np.testing.assert_allclose(out[..., :3], np.broadcast_to(lut[255], out[..., :3].shape), rtol=4e-3)
+    v = out[..., 3]
+    assert v.min() > 0.99
+    f = v * 255; i0 = np.floor(f).astype(int); fr = (f - i0)[..., None]
+    expect = lut[i0] * (1 - fr) + lut[np.minimum(i0 + 1, 255)] * fr
+    np.testing.assert_allclose(out[..., :3], expect, rtol=4e-3)
+    assert out[..., 0].min() > 1.5
 
 
 @pytest.mark.parametrize("view", [(0.35, 0.25), (0.8, 0.5)])
 def test_mida_no_lines_at_voxel_edges(dev, view):
-    """Random voxels, tilted, 8 pixels per voxel: no one-pixel lines. A ray that
-    clips a voxel's corner must fade only in proportion to its path through it
-    (a full fade on any touch drew lines along voxel edges: ~0.8% of pixels)."""
+    """Random voxels, tilted, 8 pixels per voxel: no lines along voxel edges. A
+    ray that clips a voxel's corner must fade only in proportion to its path
+    through it (a full fade on any touch drew lines along voxel edges). Counted
+    as one-pixel extremes forming vertical runs, since crisp cube corners alone
+    give isolated one-pixel extremes."""
     n, W = 24, 192
     vol = np.random.default_rng(1).uniform(0.15, 1.0, (n, n, n)).astype(np.float16)
     s = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(view[0], view[1], n * 0.45)
     img = s.compute(_uniform(inv, (n, n, n), 3, density=0.5, show_lab=0), 3, 1, 0, W, W)[..., 3]
     c, l, r = img[:, 1:-1], img[:, :-2], img[:, 2:]
-    spikes = ((c < np.minimum(l, r) - 0.03) | (c > np.maximum(l, r) + 0.03)).mean()
-    assert spikes < 0.001
+    spk = (c < np.minimum(l, r) - 0.03) | (c > np.maximum(l, r) + 0.03)
+    lines = (spk[1:-1] & spk[:-2] & spk[2:]).mean()   # one-pixel extremes in vertical runs of 3+
+    assert lines < 0.002                              # the full-fade rule: 0.26-0.28%; crisp cube corners alone ~0.1%
 
 
 @pytest.mark.parametrize("mode", [0, 3])
@@ -325,13 +333,14 @@ def test_voxel_faces_step_between_voxels(dev):
     s = Scene(dev, two, np.zeros(two.shape, np.uint8))
     inv, *_ = _ortho(0.6, 0.35, 1.6)
     u = _uniform(inv, (4, 3, 3), 3, density=0.5, show_lab=0)
-    def levels(img):           # occupied 0.06-wide value bins between the two voxel values
-        h, _ = np.histogram(img[img > 0.2], bins=12, range=(0.2, 0.92))
-        return int((h[2:-1] > 20).sum())
+    def levels(img):           # occupied value bins across the image's own range
+        v = img[img > 0.01]
+        h, _ = np.histogram(v, bins=24, range=(0, v.max() * 1.001))
+        return int((h > 20).sum())
     faces = s.compute(u, 3, 1, 0, 256, 256, faces=1)[..., 3]
     exact = s.compute(u, 3, 1, 0, 256, 256)[..., 3]
-    assert levels(exact) >= 6                  # a ramp through the in-between values
-    assert levels(faces) <= 1                  # at most the one flat band where rays cross both
+    assert levels(exact) >= 12                 # a ramp through the in-between values (23 bins)
+    assert levels(faces) <= 3                  # flat levels: one voxel, the other, the band crossing both
 
 
 @pytest.mark.parametrize("mode", [0, 3])
@@ -352,12 +361,17 @@ def test_voxel_shading_blends_path_length_and_faces(dev, mode):
 
 
 def test_voxel_faces_keep_mida_even_and_leave_mip_alone(dev):
+    """A uniform block seen straight on (every ray crosses the same thickness)
+    renders evenly with path lengths and with voxel faces; MIP ignores the
+    voxel shading setting."""
     flat = np.full((8, 8, 8), 0.6, np.float16)
     s = Scene(dev, flat, np.zeros(flat.shape, np.uint8))
-    inv, *_ = _ortho(0.7, 0.5, 3.0)
+    inv, *_ = _ortho(0.0, 0.0, 3.0)
     u = _uniform(inv, (8, 8, 8), 3, density=0.5, show_lab=0)
-    img = s.compute(u, 3, 1, 0, 128, 128, faces=1)[..., 3]
-    np.testing.assert_allclose(img[img > 0.05], 0.6, atol=2e-3)      # an average of equal values
+    for faces in (0, 1):
+        img = s.compute(u, 3, 1, 0, 128, 128, faces=faces)[..., 3]
+        v = img[img > 0.05]
+        assert v.max() - v.min() < 2e-3
     vol, lab = _sparse_scene(seed=2)
     s2 = Scene(dev, vol, lab)
     NZ, NY, NX = vol.shape
@@ -398,7 +412,7 @@ def test_mida_shows_a_bright_voxel_behind_dim_ones(dev):
     mida = s.compute(_uniform(inv, (n, n, NZ), 3, density=2.0, show_lab=0), 3, 1, 0, n, n)[..., 0]
     ea = s.compute(_uniform(inv, (n, n, NZ), 0, density=2.0, show_lab=0, exposure=1.0), 0, 1, 0, n, n)[..., 0]
     inside, outside = mida[12:20, 12:20].mean(), mida[2:6, 2:6].mean()
-    assert inside > 0.6 and inside > 2 * outside
+    assert inside > outside + 0.1                # 0.45 vs 0.30 (the slab alone)
     ea_in, ea_out = ea[12:20, 12:20].mean(), ea[2:6, 2:6].mean()
     assert ea_in - ea_out < 0.1 * (inside - outside)   # EA: the slab hides the square
 
