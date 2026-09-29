@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcclusion: curSurfOcc, surfSeparation: curSurfSep, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -148,12 +148,11 @@
     const VOX_DENSITY_DEFAULT = 0.4;
     const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
-    // Surface (projection 4): always windowed per voxel. Its density slider sets
-    // OCCLUSION (0 = MIP; absorption 2^(6d) - 1 on the intensity in front), its
-    // separation how far behind (voxels) a brighter object must be to be hidden,
-    // and its lighting runs from flat emitters (0) to faces shaded by angle (1).
-    let curSurfOcc = typeof _vs.surfOcclusion === "number" && _vs.surfOcclusion >= 0 ? _vs.surfOcclusion : 0.3;
-    let curSurfSep = typeof _vs.surfSeparation === "number" && _vs.surfSeparation > 0 ? _vs.surfSeparation : 4.0;
+    // Surface (projection 4): always windowed per voxel; each pixel shows one voxel.
+    // Its density slider sets OCCLUSION, the brightness margin (0..1, at full
+    // distance) a voxel further back needs to beat the one in front (0 = MIP), and
+    // its lighting runs from flat emitters (0) to faces shaded by angle (1).
+    let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
     let curSurfLight = typeof _vs.surfLight === "number" ? Math.min(1, Math.max(0, _vs.surfLight)) : 1.0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
     const activeDensity = () => (curProj === 4 ? curSurfOcc
@@ -532,7 +531,6 @@
           facesMix: curFacesMix,
           classify: curClassify,
           surfaceLight: curSurfLight,
-          surfaceSeparation: curSurfSep,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -792,49 +790,8 @@
       }
     }
 
-    // ── Surface separation slider (voxels) ──
-    const sepRow = document.getElementById("surfSepRow");
-    const sepRange = document.getElementById("surfSepSlider");
-    const sepNum = document.getElementById("surfSepInput");
-    const SEP_MIN = 0.5, SEP_MAX = 20;
-    function setSurfSep(v, from) {
-      v = Math.max(SEP_MIN, Math.min(SEP_MAX, Number.isFinite(Number(v)) ? Number(v) : 4));
-      curSurfSep = v;
-      if (sepRange && from !== "range") {
-        sepRange.value = String(v);
-        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("surfSepSlider");
-      }
-      if (sepNum && from !== "num") sepNum.value = v.toFixed(1);
-      if (vgpu) vgpu.setSurfaceSeparation(v);
-      saveVolState();
-    }
-    if (sepRange) {
-      sepRange.value = String(curSurfSep);
-      sepRange.addEventListener("input", () => setSurfSep(sepRange.value, "range"));
-      const proot = document.getElementById("surfSepSliderRoot");
-      if (proot && window.ViewerUI && ViewerUI.registerSlider) {
-        proot.dataset.sliderId = "surfSepSlider";
-        ViewerUI.registerSlider(proot);
-      }
-    }
-    if (sepNum) {
-      sepNum.value = curSurfSep.toFixed(1);
-      sepNum.addEventListener("change", () => setSurfSep(sepNum.value, "num"));
-      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(sepNum, (d) => setSurfSep(curSurfSep + d));
-      }
-    }
-
     function syncDensityRow() {
       syncSpinRow();
-      if (sepRow) {
-        const showSep = mode === "3d" && curProj === 4;
-        const wasHiddenP = sepRow.hidden;
-        sepRow.hidden = !showSep;
-        if (showSep && wasHiddenP && window.ViewerUI && ViewerUI.refreshSlider) {
-          requestAnimationFrame(() => ViewerUI.refreshSlider("surfSepSlider"));
-        }
-      }
       if (slRow) {
         const showSl = mode === "3d" && curProj === 4;
         const wasHiddenS = slRow.hidden;
@@ -858,7 +815,7 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       densRow.title = curProj === 4
-        ? "Occlusion: how much an object hides brighter objects behind it, more the brighter it is (0 = MIP: the brightest always shows)"
+        ? "Occlusion: 0 = MIP (the brightest voxel along each ray shows). Higher: a voxel further back shows only if it is brighter than the one in front by up to this much (less when they are close, as for a bright core right behind its own rim), so nearer objects hide brighter ones behind them. Each pixel still shows one voxel at its own value"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

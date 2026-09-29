@@ -250,7 +250,6 @@
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._surfLight = opts.surfaceLight != null ? Math.min(1, Math.max(0, +opts.surfaceLight)) : 1.0;   // surface lighting
-      this._surfSep = opts.surfaceSeparation > 0 ? +opts.surfaceSeparation : 4.0;   // surface occlusion distance (voxels)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -912,10 +911,8 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      // window, EA exposure, voxel shading (surface: its separation and lighting instead)
-      const surf = this.mode === 4;
-      u.set([this._win[0], this._win[1], surf ? this._surfSep : this._eaExposure,
-             surf ? this._surfLight : (this._facesMix || 0)], 44);
+      // window, EA exposure, voxel shading (surface: its lighting instead)
+      u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._surfLight : (this._facesMix || 0)], 44);
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1148,12 +1145,6 @@
     isClassify() { return !!this._classify; }
     /** Surface projection (mode 4) lighting, 0..1: 0 lights every surface equally
      *  (flat emitters), 1 shades each voxel face by its angle to the camera. */
-    /** Surface projection: how far behind (voxels) a brighter object must be before
-     *  the object in front hides it fully (see MODE 4 in raymarch_compute.wgsl). */
-    setSurfaceSeparation(v) {
-      this._surfSep = Math.max(0.1, Number.isFinite(+v) ? +v : 4);
-      this._requestRender();
-    }
     setSurfaceLight(t) {
       this._surfLight = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 1));
       this._requestRender();

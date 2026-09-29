@@ -653,32 +653,32 @@ def _front_back_scene(dev, gap, n=48, front=0.7, back=0.95):
     return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
 
 
-@pytest.mark.parametrize("gap,sep", [(6, 4.0), (16, 4.0), (6, 12.0)])
-@pytest.mark.parametrize("occl", [0.0, 0.3])
-def test_surface_occlusion_by_intensity_and_distance(dev, gap, sep, occl):
-    """A dim object in front hides a brighter one behind it by
-    occ(a) (1 - e^(-gap / separation)), occ(a) = 1 - e^(-absorb a) (lighting 0):
-    the pixel reads a + (b - a) (1 - that). Occlusion 0 is MIP (b)."""
+@pytest.mark.parametrize("gap", [1, 6, 16, 30])
+@pytest.mark.parametrize("occl", [0.0, 0.5, 0.7, 0.9])
+def test_surface_occlusion_is_winner_take_all(dev, gap, occl):
+    """Each pixel shows ONE voxel's value, never a blend. A brighter voxel behind
+    takes over only if it beats the one in front by o (1 - e^(-gap / 4)): a dim
+    slab (a) in front of a brighter cube (b) `gap` voxels behind shows b only if
+    b > a + that margin. Occlusion 0 is MIP (always b)."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
-    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0), exposure=sep)
+    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0))
     out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
     a, b = (0.7 - 0.6) / 0.4, (0.95 - 0.6) / 0.4
-    hidden = (1.0 - np.exp(-(2.0 ** (6 * occl) - 1.0) * a)) * (1.0 - np.exp(-gap / sep))
-    expect = a + (b - a) * (1.0 - hidden)
+    expect = b if b > a + occl * (1.0 - np.exp(-gap / 4.0)) else a
     mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
-    assert np.abs(out[mid] - expect).max() < 3e-3, (out[mid].min(), out[mid].max(), expect)
+    assert np.abs(out[mid] - expect).max() < 2e-3, (out[mid].min(), out[mid].max(), expect)
 
 
 def test_surface_core_behind_its_rim_shows_but_a_separate_object_is_hidden(dev):
     """Same intensities, different distance: a bright core 1 voxel behind a dim
-    rim shows almost fully; the same brightness 16 voxels behind is mostly hidden."""
+    rim wins; the same brightness 30 voxels behind loses to the dim object in front."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=4.0)
+    u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, window=(0.6, 1.0))
     near = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    far = _front_back_scene(dev, 16).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    far = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     a, b = 0.25, 0.875
-    assert near.min() > a + 0.75 * (b - a)
-    assert far.max() < a + 0.25 * (b - a)                # (a dim object hides at most occ(a) = 83% here)
+    assert np.abs(near - b).max() < 2e-3
+    assert np.abs(far - a).max() < 2e-3
 
 
 def test_surface_is_mip_without_lighting_or_density(dev):
@@ -689,3 +689,17 @@ def test_surface_is_mip_without_lighting_or_density(dev):
     surf = sc.compute(_uniform(inv, (32, 28, 24), 4, density=0.0, show_lab=0, window=(0.3, 0.9)), 4, 1, 0, 128, 128, faces=0.0)
     mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
     assert np.abs(surf[..., 3] - mip[..., 3]).max() < 2e-3
+
+
+def test_surface_dim_speckle_far_in_front_does_not_win(dev):
+    """A near-black voxel far in front of a bright object only beats what is dimmer
+    than itself plus the occlusion margin, so the object still shows."""
+    n = 48
+    vol = np.zeros((n, n, n), np.float16)
+    vol[2, 10:38, 10:38] = 0.62                          # a sheet of speckle just above the low end
+    vol[36:42, 20:28, 20:28] = 0.95                      # bright cube 34 voxels behind it
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (n, n, n), 4, density=0.6, show_lab=0, window=(0.6, 1.0))
+    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    assert np.abs(out - (0.95 - 0.6) / 0.4).max() < 2e-3

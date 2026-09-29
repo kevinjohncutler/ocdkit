@@ -77,20 +77,25 @@ override TRANSP : bool = false;
 // structure. On, an opaque voxel shows its own value, exactly as in MIP, and
 // bricks whose max is at or below the low end are skipped as empty space.
 override CLASSIFY : bool = false;
-// Surface (MODE 4): MIP built from voxel faces, with occlusion between objects.
-// Along the ray, a face emits only where the ray enters material brighter than
-// anything it has met so far: the rise of the windowed value above the running
-// max m. Those rises add up to the max, so with no occlusion this is MIP exactly,
-// and a face between equal voxels emits nothing (a uniform stack lights up once,
-// at its outer surface, like one solid block). Dim voxels in the way emit at most
-// their own peak, however deep they are.
-// Occlusion: before a rise emits, the brightest thing in front hides it by
-//   occ(m) (1 - e^(-gap / separation)),   occ(m) = 1 - e^(-absorb m),
-// gap = the distance in voxels back to where m was reached. Intensity sets how
-// much an object hides; distance tells a separate object further back (large
-// gap: hidden) from the brighter core of the same object right behind its own
-// dim rim (small gap: shows, as in MIP). absorb = 2^(6 d) - 1 from the occlusion
-// slider d (0 = MIP); separation is u.win.z (voxels).
+// Surface (MODE 4): MIP with occlusion, winner take all. Each pixel shows ONE
+// voxel, at its own windowed value (times its face lighting), never a blend.
+// Front to back, a voxel brighter than everything so far takes over from the
+// current winner (value w, d voxels in front of it) only if
+//     v > w + o (1 - e^(-d / SURF_SEP)),
+// o = the occlusion slider (0..1). With o = 0 the brightest voxel wins: MIP
+// exactly. With o > 0 a voxel further back must be brighter than the one in
+// front by a margin that grows with the distance between them and levels off
+// after a few voxels: so a dimmer object in front hides a brighter one well
+// behind it (how much depends on its intensity: the one behind must beat it by
+// the margin), while the bright core of the same object right behind its own dim
+// rim (small d, small margin) still wins, and a dim noise voxel far in front can
+// only beat what is dimmer than itself plus o (a score that decays with distance
+// let near-black speckles far in front win whole regions). Only voxels brighter
+// than all in front can win, so bricks at or below max(low end, running max) are
+// skipped, and the march stops once nothing brighter can win any more.
+// A face between equal voxels is not a new candidate, so a uniform stack shows
+// as one solid block and a lone voxel of value v shows v.
+const SURF_SEP : f32 = 4.0;   // voxels over which the occlusion margin builds up
 // Lighting t = u.win.w scales each face by mix(1, cos, t), cos = |ray . normal|:
 // 0 = every surface equally bright (a flat emitter), 1 = shaded by its angle to
 // the camera. Always windowed per voxel (values at or below the window's low end
@@ -228,7 +233,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   let density = u.params.y;
   // per-voxel window: slider 0..1 -> absorption 0..63 (2^(6d) - 1), since windowed
   // values are small and a solid look needs far more than the full-range scale
-  let densV = select(density, exp2(6.0 * density) - 1.0, CLASSIFY || MODE == 4);
+  let densV = select(density, exp2(6.0 * density) - 1.0, CLASSIFY);
   let labelOpacity = u.params.z;
   let iscale = u.img.x;
   let gamma = u.img.w;
@@ -317,7 +322,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
     var sPrev = 0.0;                                  // surface: running max of the windowed value
-    var tRise = 0.0;                                  // surface: ray parameter where it was reached
+    var tBest = 0.0;                                  // surface: ray parameter of the current winner
     let dvLen = length(dv0);                          // voxels per unit of the ray parameter
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
@@ -372,14 +377,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           // it crossed last (also right after a brick jump and at the volume's edge)
           let tEnt = (vox + select(vec3<f32>(1.0), vec3<f32>(0.0), stp > vec3<f32>(0.0)) - p0) / dv;
           let cosF = select(select(dn.z, dn.y, tEnt.y >= tEnt.z), dn.x, tEnt.x >= tEnt.y && tEnt.x >= tEnt.z);
-          // hidden by the brightest thing in front, more the brighter and farther it is
-          let gap = max(tPrev - tRise, 0.0) * dvLen;
-          let occ = 1.0 - exp(-densV * sPrev);
-          imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * occ * (1.0 - exp(-gap / max(u.win.z, 1e-3)));
-          imgAcc.x = imgAcc.x + (sw - sPrev) * mix(1.0, cosF, faceMix) * (1.0 - imgAcc.w);
-          sPrev = sw; tRise = tPrev;
+          // takes over from the winner (imgAcc.y its value, imgAcc.x lit) if brighter
+          // by the margin for its distance behind it
+          let margin = density * (1.0 - exp(-(tPrev - tBest) * dvLen / SURF_SEP));
+          if (imgAcc.y <= 0.0 || sw > imgAcc.y + margin) {
+            imgAcc.y = sw;
+            imgAcc.x = sw * mix(1.0, cosF, faceMix);
+            tBest = tPrev;
+          }
+          sPrev = sw;
+          // nothing can beat the winner any more (values stop at 1, margins only grow)
+          if (sPrev >= 1.0 || imgAcc.y + margin >= 1.0) { break; }
         }
-        if (imgAcc.w >= 0.995 || sPrev >= 1.0) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
       } else {
