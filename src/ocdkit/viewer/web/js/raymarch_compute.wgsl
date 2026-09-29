@@ -60,7 +60,7 @@ struct U {
 @group(0) @binding(5) var brickImg : texture_3d<f32>;   // max normalized intensity per brick
 @group(0) @binding(6) var brickLab : texture_3d<u32>;   // 1 if the brick holds any label voxel
 
-override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA
+override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA, 4 surface
 override SHOW_IMG : bool = true;
 override SHOW_LAB : bool = true;
 override SHADE_LAB : bool = true;
@@ -77,6 +77,16 @@ override TRANSP : bool = false;
 // structure. On, an opaque voxel shows its own value, exactly as in MIP, and
 // bricks whose max is at or below the low end are skipped as empty space.
 override CLASSIFY : bool = false;
+// Surface (MODE 4): light comes only from faces where the ray enters brighter
+// material. Each voxel face the ray crosses (front to back) emits the rise in
+// windowed value into the voxel it enters, max(v - v_before, 0); a face between
+// equal voxels emits nothing, so a uniform stack lights up once, at its outer
+// surface, like one solid block, and a lone voxel of value v shows v (as in MIP).
+// Lighting t = u.win.w scales each face by mix(1, cos, t), cos = |ray . normal|:
+// 0 = every surface equally bright (a flat emitter), 1 = shaded by its angle to
+// the camera. Density absorbs along the path (densV v per unit length), so
+// nearer surfaces hide farther ones. Always windowed per voxel (values at or
+// below the window's low end are empty space, and their bricks are skipped).
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
 // shading peaks where the ray crosses the most of it, like a distance field).
@@ -210,7 +220,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   let density = u.params.y;
   // per-voxel window: slider 0..1 -> absorption 0..63 (2^(6d) - 1), since windowed
   // values are small and a solid look needs far more than the full-range scale
-  let densV = select(density, exp2(6.0 * density) - 1.0, CLASSIFY);
+  let densV = select(density, exp2(6.0 * density) - 1.0, CLASSIFY || MODE == 4);
   let labelOpacity = u.params.z;
   let iscale = u.img.x;
   let gamma = u.img.w;
@@ -298,21 +308,23 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
+    var sPrev = 0.0;                                  // surface: windowed value before this face
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
-    let faceMix = clamp(u.win.w, 0.0, 1.0);
+    let faceMix = clamp(u.win.w, 0.0, 1.0);          // (surface: lighting)
+    let dn = abs(dv0) / max(length(dv0), 1e-8);       // surface: |ray . axis| per axis
     for (var g = 0; g < maxIter; g = g + 1) {
       // Keep this check FLAT (bv computed every step, one combined condition).
       // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
       // image-only MIP on Apple GPUs, with identical output.
       let bv = floor(vox / BRICK);
-      if ((MODE == 1 || (CLASSIFY && (MODE == 0 || MODE == 3))) && any(bv != curB)) {
+      if ((MODE == 1 || MODE == 4 || (CLASSIFY && (MODE == 0 || MODE == 3))) && any(bv != curB)) {
         curB = bv;
         // MIP: the brick can't raise the max; per-voxel window: it is all empty space
         if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <= select(imgMip, u.win.x, MODE != 1)) {
           let j = brickExit(p0, dv, stp, vox);
-          vox = j.xyz; tPrev = j.w;
+          vox = j.xyz; tPrev = j.w; sPrev = 0.0;
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
           continue;
@@ -341,6 +353,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         let sm = select(s, clamp((s - u.win.x) * u.win.y, 0.0, 1.0), CLASSIFY);
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
+      } else if (MODE == 4) {
+        let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0);
+        if (sw > sPrev) {
+          // the face the ray entered this voxel through: the axis whose entry plane
+          // it crossed last (also right after a brick jump and at the volume's edge)
+          let tEnt = (vox + select(vec3<f32>(1.0), vec3<f32>(0.0), stp > vec3<f32>(0.0)) - p0) / dv;
+          let cosF = select(select(dn.z, dn.y, tEnt.y >= tEnt.z), dn.x, tEnt.x >= tEnt.y && tEnt.x >= tEnt.z);
+          imgAcc.x = imgAcc.x + (sw - sPrev) * mix(1.0, cosF, faceMix) * (1.0 - imgAcc.w);
+        }
+        imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * (1.0 - exp(-densV * sw * max(tExit - tPrev, 0.0)));
+        sPrev = sw;
+        if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
       } else {
@@ -376,9 +400,10 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       //   Window per voxel: the result is already windowed (0..1), so only gamma
       //         and the colormap remain
       var raw = imgAcc.x;
+      //   Surface: the light from the faces the ray entered, already windowed
       if (MODE == 0 && !CLASSIFY) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
       let v = select(pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma),
-                     pow(clamp(raw, 0.0, 1.0), gamma), CLASSIFY);
+                     pow(clamp(raw, 0.0, 1.0), gamma), CLASSIFY || MODE == 4);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
       imgA = v * ta; imgPC = c4.rgb * ta;
     }

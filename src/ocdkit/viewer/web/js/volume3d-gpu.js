@@ -249,6 +249,7 @@
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
+      this._surfLight = opts.surfaceLight != null ? Math.min(1, Math.max(0, +opts.surfaceLight)) : 1.0;   // surface lighting
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -486,7 +487,7 @@
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
       const tr = this._transparent ? 1 : 0;              // the current transparency state
       const cl = this._classify ? 1 : 0;                 // and window-per-voxel state
-      for (const mode of [0, 1, 2, 3]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
+      for (const mode of [0, 1, 2, 3, 4]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
         const key = `${mode}|${img}|${lab}|${sh}|${tr}|${cl}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({
@@ -910,7 +911,8 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      u.set([this._win[0], this._win[1], this._eaExposure, this._facesMix || 0], 44);  // window, EA exposure, voxel shading
+      // window, EA exposure, voxel shading (surface: its lighting instead)
+      u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._surfLight : (this._facesMix || 0)], 44);
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1141,6 +1143,12 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
+    /** Surface projection (mode 4) lighting, 0..1: 0 lights every surface equally
+     *  (flat emitters), 1 shades each voxel face by its angle to the camera. */
+    setSurfaceLight(t) {
+      this._surfLight = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 1));
+      this._requestRender();
+    }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }

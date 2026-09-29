@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfDensity: curSurfDensity, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -136,7 +136,7 @@
     // EA density (absorption only; 0 = pure glow). Saved under a new key: values
     // saved before meant something else (they also scaled the glow).
     let curDensity = (typeof _vs.eaAbsorption === "number" && _vs.eaAbsorption >= 0) ? _vs.eaAbsorption : 0.0;
-    if ([0, 1, 2, 3].includes(_vs.proj)) curProj = _vs.proj;                                // remembered projection
+    if ([0, 1, 2, 3, 4].includes(_vs.proj)) curProj = _vs.proj;                                // remembered projection
     // MIDA composites real per-voxel opacity, so it needs a nonzero value to show
     // anything; it keeps its own slider value (EA's density defaults to 0)
     const MIDA_OPACITY_DEFAULT = 0.5;
@@ -148,8 +148,15 @@
     const VOX_DENSITY_DEFAULT = 0.4;
     const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
-    const activeDensity = () => (curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
-                                                : (curClassify ? curEaVox : curDensity));
+    // Surface (projection 4): always windowed per voxel; its density uses the same
+    // 2^(6d) - 1 absorption, default ~1 (translucent enough to show inner surfaces),
+    // and its lighting runs from flat emitters (0) to faces shaded by angle (1).
+    let curSurfDensity = typeof _vs.surfDensity === "number" && _vs.surfDensity >= 0 ? _vs.surfDensity : 0.17;
+    let curSurfLight = typeof _vs.surfLight === "number" ? Math.min(1, Math.max(0, _vs.surfLight)) : 1.0;
+    const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
+    const activeDensity = () => (curProj === 4 ? curSurfDensity
+                               : curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
+                               : (curClassify ? curEaVox : curDensity));
     // voxel shading (EA / MIDA): 0 = path length, 1 = voxel faces (the old on/off toggle maps to 0 / 1)
     let curFacesMix = typeof _vs.facesMix === "number" ? Math.min(1, Math.max(0, _vs.facesMix)) : (_vs.faceVoxels === true ? 1 : 0);
     let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
@@ -522,6 +529,7 @@
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
           classify: curClassify,
+          surfaceLight: curSurfLight,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -640,7 +648,7 @@
       curProj = p | 0;
       syncProjButtons();
       if (vgpu) vgpu.setMode(curProj);
-      if (curProj === 0 || curProj === 3) setDensity(activeDensity());   // each mode keeps its own slider value
+      if (densityMode()) setDensity(activeDensity());   // each mode keeps its own slider value
       syncDensityRow();
       saveVolState();
     }
@@ -654,7 +662,8 @@
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
       v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
-      if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
+      if (curProj === 4) curSurfDensity = v;
+      else if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
       else if (curClassify) curEaVox = v; else curDensity = v;
       if (densRange && from !== "range") {
         densRange.value = String(v);
@@ -748,8 +757,48 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
+    // ── Surface lighting slider (Surface only) ──
+    const slRow = document.getElementById("surfLightRow");
+    const slRange = document.getElementById("surfLightSlider");
+    const slNum = document.getElementById("surfLightInput");
+    function setSurfLight(t, from) {
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 1));
+      curSurfLight = t;
+      if (slRange && from !== "range") {
+        slRange.value = String(t);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("surfLightSlider");
+      }
+      if (slNum && from !== "num") slNum.value = t.toFixed(2);
+      if (vgpu) vgpu.setSurfaceLight(t);
+      saveVolState();
+    }
+    if (slRange) {
+      slRange.value = String(curSurfLight);
+      slRange.addEventListener("input", () => setSurfLight(slRange.value, "range"));
+      const sroot = document.getElementById("surfLightSliderRoot");
+      if (sroot && window.ViewerUI && ViewerUI.registerSlider) {
+        sroot.dataset.sliderId = "surfLightSlider";
+        ViewerUI.registerSlider(sroot);
+      }
+    }
+    if (slNum) {
+      slNum.value = curSurfLight.toFixed(2);
+      slNum.addEventListener("change", () => setSurfLight(slNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(slNum, (d) => setSurfLight(curSurfLight + d));
+      }
+    }
+
     function syncDensityRow() {
       syncSpinRow();
+      if (slRow) {
+        const showSl = mode === "3d" && curProj === 4;
+        const wasHiddenS = slRow.hidden;
+        slRow.hidden = !showSl;
+        if (showSl && wasHiddenS && window.ViewerUI && ViewerUI.refreshSlider) {
+          requestAnimationFrame(() => ViewerUI.refreshSlider("surfLightSlider"));
+        }
+      }
       if (vwRow) vwRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
       if (facesRow) {
         const showFaces = mode === "3d" && (curProj === 0 || curProj === 3);
@@ -761,10 +810,12 @@
         }
       }
       if (!densRow) return;
-      const show = mode === "3d" && (curProj === 0 || curProj === 3);
+      const show = mode === "3d" && densityMode();
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
-      densRow.title = curClassify
+      densRow.title = curProj === 4
+        ? "Density: how much nearer surfaces hide those behind them (0 = see through to every surface, 1 = only the nearest)"
+        : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3
         ? "Opacity: how strongly each voxel covers what is behind it (0 shows nothing); a brighter voxel further back still shows through"

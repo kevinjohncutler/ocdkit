@@ -586,3 +586,59 @@ def test_classify_brick_skipping_changes_nothing(dev, mode):
     b = full.compute(u, mode, 1, 0, 128, 128, faces=0.5, classify=1)[..., 3]
     assert a.max() > 0.2
     assert np.abs(a - b).max() < 2e-3
+
+
+# ── surface (MODE 4) ────────────────────────────────────────────────────────
+
+def _surface_cube(dev, n=20, lo=7, hi=13, value=0.9, background=0.5):
+    vol = np.full((n, n, n), background, np.float16)
+    vol[lo:hi, lo:hi, lo:hi] = value
+    return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+
+
+@pytest.mark.parametrize("density", [0.0, 0.3, 1.0])
+def test_surface_uniform_block_is_one_flat_surface(dev, density):
+    """A uniform 6^3 block lights up once, at its outer surface: every pixel it
+    covers shows its windowed value exactly (no lines where voxels share a face),
+    whatever the density, and the background below the window is empty."""
+    sc = _surface_cube(dev)
+    inv, *_ = _ortho(0.6, 0.4, 16.0)
+    u = _uniform(inv, (20, 20, 20), 4, density=density, show_lab=0, window=(0.6, 1.0))
+    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
+    mip = sc.compute(_uniform(inv, (20, 20, 20), 1, show_lab=0, window=(0.6, 1.0)), 1, 1, 0, 128, 128)[..., 3]
+    core, empty = mip > 0.7, mip == 0.0
+    expect = (0.9 - 0.6) / 0.4
+    assert core.mean() > 0.05 and empty.mean() > 0.3
+    assert np.abs(out[core] - expect).max() < 2e-3
+    assert out[empty].max() == 0.0
+
+
+def test_surface_cosine_lighting_shades_each_face(dev):
+    """With lighting 1 a cube shows three flat shades, its value times |ray . normal|
+    for the three faces toward the camera."""
+    sc = _surface_cube(dev, value=1.0, background=0.0)
+    inv, d, *_ = _ortho(0.6, 0.4, 16.0)
+    u = _uniform(inv, (20, 20, 20), 4, density=1.0, show_lab=0, window=(0.0, 1.0))
+    out = sc.compute(u, 4, 1, 0, 256, 256, faces=1.0)[..., 3]
+    vals = out[out > 0.05]
+    cos = np.sort(np.abs(d))
+    for c in cos:
+        share = np.mean(np.abs(vals - c) < 3e-3)
+        assert share > 0.1, (c, share)                      # each face is a flat patch of its cosine
+    assert np.mean(np.min(np.abs(vals[:, None] - cos[None]), 1) < 3e-3) > 0.97
+
+
+def test_surface_brick_skipping_changes_nothing(dev):
+    rng = np.random.default_rng(5)
+    vol = (rng.random((40, 36, 44)) * 0.5).astype(np.float16)
+    vol[20:30, 4:14, 25:40] = (0.7 + 0.3 * rng.random((10, 10, 15))).astype(np.float16)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    full = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    bz, by, bx = [-(-d // BRICK) for d in vol.shape]
+    full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
+    inv, *_ = _ortho(0.8, 0.35, 30.0)
+    u = _uniform(inv, (44, 36, 40), 4, density=0.3, show_lab=0, window=(0.55, 1.0))
+    a = sc.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
+    b = full.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
+    assert a.max() > 0.2
+    assert np.abs(a - b).max() < 2e-3

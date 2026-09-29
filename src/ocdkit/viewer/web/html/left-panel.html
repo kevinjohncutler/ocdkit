@@ -124,6 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Surface: light comes only from faces where a ray enters brighter material, so objects look like solid, lit shapes. Values below the display window's low end are empty space; density sets how much nearer surfaces hide those behind"><span>Surf</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
@@ -147,6 +148,18 @@
               </div>
               <div class="number-field" data-number-id="faceMixInput">
                 <input type="number" id="faceMixInput" min="0" max="1" step="0.05" value="0.00" />
+              </div>
+            </div>
+          </div>
+          <div class="control slider-inline" id="surfLightRow" hidden
+               title="Surface lighting: 0 lights every surface equally (flat emitters), 1 shades each voxel face by its angle to the camera">
+            <span class="control-heading control-heading--lower control-heading--icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8M12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M20,8.69V4H15.31L12,0.69L8.69,4H4V8.69L0.69,12L4,15.31V20H8.69L12,23.31L15.31,20H20V15.31L23.31,12L20,8.69Z"/></svg></span>
+            <div class="slider-row">
+              <div class="slider" id="surfLightSliderRoot" data-slider-type="single">
+                <input type="range" id="surfLightSlider" min="0" max="1" step="0.01" value="1" />
+              </div>
+              <div class="number-field" data-number-id="surfLightInput">
+                <input type="number" id="surfLightInput" min="0" max="1" step="0.05" value="1.00" />
               </div>
             </div>
           </div>
