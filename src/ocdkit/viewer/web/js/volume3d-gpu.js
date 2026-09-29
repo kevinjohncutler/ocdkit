@@ -249,6 +249,7 @@
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
+      this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
       this._surfLight = opts.surfaceLight != null ? Math.min(1, Math.max(0, +opts.surfaceLight)) : 1.0;   // surface lighting
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
@@ -295,7 +296,7 @@
       // frame rate. The settled frame uses the full step count for a clean still.
       this.nstepsInteract = Math.max(96, Math.round(this.nsteps * 0.5));
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
-      this.uniform = device_buf(this.device, 48 * 4);
+      this.uniform = device_buf(this.device, 56 * 4);
       // Display window (the 2D histogram bounds), in the volume's data units.
       // valueRange maps those units to the normalized texture; see setWindow.
       this.valueRange = decoded.valueRange || null;
@@ -436,7 +437,8 @@
         size: bd, dimension: "3d", format: "r16float",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(brickMax(f16, NX, NY, NZ, BRICK, true)).buffer,
+      this._brickMaxHost = brickMax(f16, NX, NY, NZ, BRICK, true);     // (also bounds the depth cue's data box)
+      device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(this._brickMaxHost).buffer,
         { bytesPerRow: bd[0] * 2, rowsPerImage: bd[1] }, bd);
       this.brickLabTex = device.createTexture({
         size: bd, dimension: "3d", format: "r8uint",
@@ -469,13 +471,14 @@
     _computePipelineFor(mode, showImg, showLab, shade) {
       const tr = this._transparent ? 1 : 0;
       const cl = this._classify ? 1 : 0;
-      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}|${cl}`;
+      const cu = this._depthCue > 0 ? 1 : 0;
+      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}|${cl}|${cu}`;
       if (!this._computePipes[key]) {
         this._computePipes[key] = this.device.createComputePipeline({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
                      constants: { MODE: mode, SHOW_IMG: showImg ? 1 : 0, SHOW_LAB: showLab ? 1 : 0,
-                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr, CLASSIFY: cl } },
+                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr, CLASSIFY: cl, CUE: cu } },
         });
       }
       return this._computePipes[key];
@@ -487,13 +490,14 @@
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
       const tr = this._transparent ? 1 : 0;              // the current transparency state
       const cl = this._classify ? 1 : 0;                 // and window-per-voxel state
+      const cu = this._depthCue > 0 ? 1 : 0;             // and depth cue state
       for (const mode of [0, 1, 2, 3, 4]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
-        const key = `${mode}|${img}|${lab}|${sh}|${tr}|${cl}`;
+        const key = `${mode}|${img}|${lab}|${sh}|${tr}|${cl}|${cu}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
-                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr, CLASSIFY: cl } },
+                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr, CLASSIFY: cl, CUE: cu } },
         }).then((p) => { if (!this._computePipes[key]) this._computePipes[key] = p; }).catch(() => {});
       }
     }
@@ -901,7 +905,7 @@
 
     _writeUniform(cam) {
       const box = this._box();
-      const u = new Float32Array(48);
+      const u = new Float32Array(56);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([box.min[0], box.min[1], box.min[2], 0], 20);
@@ -913,6 +917,9 @@
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       // window, EA exposure, voxel shading (surface: its lighting instead)
       u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._surfLight : (this._facesMix || 0)], 44);
+      const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
+      u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
+      u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1097,6 +1104,38 @@
       // [1 - th, 1 - tl], giving (th - t) / (th - tl) = 1 - the normal display
       if (this._invert) { const a = 1 - th; th = 1 - tl; tl = a; }
       this._win = [tl, 1 / Math.max(th - tl, 1e-6)];
+      this._updateCueBox();
+    }
+    /** The depth cue measures depth from the front of the VISIBLE data: the
+     *  bounding box (world units) of the bricks whose max is above the window's
+     *  low end (brick-coarse, 16 voxels; the whole volume if none). */
+    _updateCueBox() {
+      const bm = this._brickMaxHost, box = this._box();
+      if (!bm || !this._win) { this._cueBox = null; return; }
+      const { NX, NY, NZ } = this, [bx, by, bz] = brickDims(NX, NY, NZ, BRICK), lo = this._win[0];
+      let x0 = bx, y0 = by, z0 = bz, x1 = -1, y1 = -1, z1 = -1;
+      for (let z = 0, i = 0; z < bz; z++) for (let y = 0; y < by; y++) for (let x = 0; x < bx; x++, i++) {
+        if (bm[i] > lo) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+          if (z < z0) z0 = z; if (z > z1) z1 = z;
+        }
+      }
+      if (x1 < 0) { this._cueBox = null; return; }
+      const zs = this.zScale || 1;
+      this._cueBox = {
+        min: [box.min[0] + x0 * BRICK, box.min[1] + y0 * BRICK, box.min[2] + z0 * BRICK * zs],
+        max: [box.min[0] + Math.min(NX, (x1 + 1) * BRICK), box.min[1] + Math.min(NY, (y1 + 1) * BRICK),
+              box.min[2] + Math.min(NZ, (z1 + 1) * BRICK) * zs],
+      };
+    }
+    /** Depth cue strength, 0 (off) .. 0.99: fades each voxel by 1 / (1 + d / L)^2
+     *  with depth d behind the visible data's front (see CUE in raymarch_compute.wgsl).
+     *  On/off switches a pipeline constant (the other state compiles in the background). */
+    setDepthCue(s) {
+      const was = this._depthCue > 0;
+      this._depthCue = Math.min(0.99, Math.max(0, Number.isFinite(+s) ? +s : 0));
+      this._requestRender();
+      if (was !== this._depthCue > 0) this._prewarmComputePipelines();
     }
     /** Inverted display (dark objects bright, e.g. phase contrast): upload 1 - value
      *  and flip the window, so every projection (MIP, mean, EA, MIDA) and the
@@ -1113,7 +1152,8 @@
         this._cubesBuilt = false;
         device.queue.writeTexture({ texture: this.volTex }, f16.buffer, { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
         const bd = brickDims(NX, NY, NZ, BRICK);
-        device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(brickMax(f16, NX, NY, NZ, BRICK, true)).buffer,
+        this._brickMaxHost = brickMax(f16, NX, NY, NZ, BRICK, true);
+        device.queue.writeTexture({ texture: this.brickImgTex }, _toF16(this._brickMaxHost).buffer,
           { bytesPerRow: bd[0] * 2, rowsPerImage: bd[1] }, bd);
         if (this._renderMode === "cubes" || this._renderMode === "minimal") this._ensureCubes();
       }

@@ -68,7 +68,7 @@ def _ortho(yaw, pitch, half):
 def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0),
              exposure=1.0, faces_mix=0.0):
     NX, NY, NZ = dims
-    u = np.zeros(48, np.float32)
+    u = np.zeros(56, np.float32)                   # (48..55: depth cue box + strength, off)
     u[0:16] = inv
     u[20:24] = [-NX / 2, -NY / 2, -NZ / 2, 0]
     u[24:28] = [NX / 2, NY / 2, NZ / 2, 0]
@@ -113,16 +113,16 @@ class Scene:
         rb.unmap()
         return out
 
-    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0, classify=0):
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0, classify=0, cue=0):
         return self.dev.create_compute_pipeline(layout="auto", compute={
             "module": self.cmod, "entry_point": "cs",
             "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
                           "BRICK": float(BRICK), "TRANSP": transp,
-                          "CLASSIFY": classify}})
+                          "CLASSIFY": classify, "CUE": cue}})
 
-    def compute(self, u, mode, show_img, show_lab, W, H, transp=0, faces=0, classify=0):
+    def compute(self, u, mode, show_img, show_lab, W, H, transp=0, faces=0, classify=0, cue=0):
         u = u.copy(); u[47] = faces           # voxel shading t (0 = path length, 1 = voxel faces)
-        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp, classify=classify)
+        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp, classify=classify, cue=cue)
         out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
                                       usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
         ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
@@ -703,3 +703,111 @@ def test_surface_dim_speckle_far_in_front_does_not_win(dev):
     u = _uniform(inv, (n, n, n), 4, density=0.6, show_lab=0, window=(0.6, 1.0))
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     assert np.abs(out - (0.95 - 0.6) / 0.4).max() < 2e-3
+
+
+# ── depth cue (CUE) ─────────────────────────────────────────────────────────
+
+def _cue(u, vol, lo, strength):
+    """Set the depth cue: the bounding box (world) of the voxels above `lo`, and s."""
+    NZ, NY, NX = vol.shape
+    z, y, x = np.nonzero(vol.astype(np.float32) > lo)
+    half = np.array([NX, NY, NZ], np.float32) / 2
+    u = u.copy()
+    u[48:52] = [x.min() - half[0], y.min() - half[1], z.min() - half[2], strength]
+    u[52:56] = [x.max() + 1 - half[0], y.max() + 1 - half[1], z.max() + 1 - half[2], 0.0]
+    return u
+
+
+def _two_cubes(depth_gap=16, n=48):
+    """Two equal 6^3 cubes side by side in x, the second `depth_gap` voxels further back in z."""
+    vol = np.zeros((n, n, n), np.float16)
+    vol[6:12, 20:26, 8:14] = 0.9
+    vol[6 + depth_gap:12 + depth_gap, 20:26, 30:36] = 0.9
+    return vol
+
+
+def _cube_masks(img):
+    """Pixels well inside each cube's footprint (left = near cube, right = far one)."""
+    from scipy.ndimage import binary_erosion
+    m = binary_erosion(img > 0.5 * img.max(), iterations=2)
+    cols = np.arange(img.shape[1])[None, :]
+    return m & (cols < img.shape[1] // 2), m & (cols >= img.shape[1] // 2)
+
+
+def test_depth_cue_mip_is_the_inverse_square_falloff(dev):
+    """MIP with the cue: the front cube (at the visible data's front) keeps its
+    windowed value; the one d voxels behind reads it times 1 / (1 + d / L)^2."""
+    vol = _two_cubes(16)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z
+    s = 0.5
+    u = _cue(_uniform(inv, (48, 48, 48), 1, show_lab=0, window=(0.6, 1.0)), vol, 0.6, s)
+    out = sc.compute(u, 1, 1, 0, 128, 128, cue=1)[..., 3]
+    off = sc.compute(u, 1, 1, 0, 128, 128, cue=0)[..., 3]
+    L = np.linalg.norm([48, 48, 48]) * (1 - s) / s
+    near, far = _cube_masks(off)
+    v = (0.9 - 0.6) / 0.4
+    assert near.sum() > 20 and far.sum() > 20
+    assert np.abs(out[near] - v).max() < 2e-3
+    assert np.abs(out[far] - v / (1 + 16 / L) ** 2).max() < 2e-3
+    assert np.abs(off[far] - v).max() < 2e-3             # cue off: unchanged
+
+
+@pytest.mark.parametrize("mode", [0, 2, 3, 4])
+def test_depth_cue_fades_the_far_object_in_every_mode(dev, mode):
+    vol = _two_cubes(24)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    # EA, mean and MIDA window their RESULT, so they get the full window here; the
+    # cue's data box is the voxels above 0.5 either way
+    window = (0.6, 1.0) if mode == 4 else (0.0, 1.0)
+    u = _cue(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=window, exposure=0.3),
+             vol, 0.5, 0.6)
+    on = sc.compute(u, mode, 1, 0, 128, 128, cue=1)[..., 3]
+    off = sc.compute(u, mode, 1, 0, 128, 128, cue=0)[..., 3]
+    near, far = _cube_masks(off)
+    f_on, b_on = on[near].mean(), on[far].mean()
+    f_off, b_off = off[near].mean(), off[far].mean()
+    assert f_off > 0.01 and b_off > 0.01
+    assert b_on / f_on < 0.8 * (b_off / f_off)           # the far cube fades relative to the near one
+
+
+@pytest.mark.parametrize("mode", [1, 4])
+def test_depth_cue_brick_skipping_changes_nothing(dev, mode):
+    rng = np.random.default_rng(11)
+    vol = (rng.random((40, 36, 44)) * 0.5).astype(np.float16)
+    vol[8:14, 4:14, 25:40] = (0.7 + 0.3 * rng.random((6, 10, 15))).astype(np.float16)
+    vol[28:36, 20:30, 5:20] = (0.75 + 0.25 * rng.random((8, 10, 15))).astype(np.float16)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    full = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    bz, by, bx = [-(-d // BRICK) for d in vol.shape]
+    full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
+    inv, *_ = _ortho(0.8, 0.35, 30.0)
+    u = _cue(_uniform(inv, (44, 36, 40), mode, density=0.3, show_lab=0, window=(0.55, 1.0)), vol, 0.55, 0.6)
+    a = sc.compute(u, mode, 1, 0, 128, 128, faces=0.0, cue=1)[..., 3]
+    b = full.compute(u, mode, 1, 0, 128, 128, faces=0.0, cue=1)[..., 3]
+    assert a.max() > 0.2
+    assert np.abs(a - b).max() < 2e-3
+
+
+
+@pytest.mark.parametrize("mode", [0, 2, 3])
+def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
+    """Modes that window their RESULT: with the window's low end set high (as for
+    inverted phase contrast), the cue fades toward the low end, so the near object
+    stays about as bright and the far one fades (fading raw values toward 0 pushed
+    everything below the low end and blacked the image out)."""
+    vol = _two_cubes(24)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    full = sc.compute(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=(0.0, 1.0), exposure=0.3),
+                      mode, 1, 0, 128, 128)[..., 3]
+    near, far = _cube_masks(full)
+    ref = float(full[near].mean())
+    window = (0.6 * ref, 1.2 * ref)                       # a low end well into the objects' range
+    u = _cue(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=window, exposure=0.3), vol, 0.5, 0.6)
+    on = sc.compute(u, mode, 1, 0, 128, 128, cue=1)[..., 3]
+    off = sc.compute(u, mode, 1, 0, 128, 128, cue=0)[..., 3]
+    assert off[near].mean() > 0.05
+    assert on[near].mean() > 0.7 * off[near].mean()
+    assert on[far].mean() < 0.8 * off[far].mean()

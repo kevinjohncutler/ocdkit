@@ -51,6 +51,8 @@ struct U {
   img         : vec4<f32>,   // intensityScale, showImage, shadeLabels, gamma
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
   win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; voxel shading t
+  cueLo       : vec4<f32>,   // depth cue: the visible data's bounding box min (world), strength s
+  cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world), unused
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -77,6 +79,22 @@ override TRANSP : bool = false;
 // structure. On, an opaque voxel shows its own value, exactly as in MIP, and
 // bricks whose max is at or below the low end are skipped as empty space.
 override CLASSIFY : bool = false;
+// Depth cue (every mode): each voxel's contribution is scaled by an inverse-
+// square-shaped falloff w = 1 / (1 + d / L)^2, d = its distance (world units)
+// behind the front of the visible data (the bounding box of the voxels above
+// the window's low end, at its nearest corner along the ray), so the nearest
+// structure stays at full brightness and what lies behind it fades. Strength
+// s = cueLo.w in (0, 1) sets L = D (1 - s) / s, D = the volume's diagonal (s = 0.5:
+// one diagonal behind the front reads 1/4). Not physical (a surface's brightness
+// does not fall with distance: it only gets smaller, which the perspective camera
+// already shows); a visualization cue. Values fade toward the window's LOW END,
+// not toward 0 (cueFade): only the part above it is scaled, so after the window
+// a voxel reads w times its windowed value in every mode, including the ones
+// that window their result (MIP, mean, EA, MIDA): fading raw values toward 0
+// pushed them below a high low end and blacked the image out. Per-voxel-window
+// modes (Surface, and EA/MIDA with CLASSIFY) scale the windowed value itself.
+// A pipeline constant: with the cue off nothing changes and nothing is computed.
+override CUE : bool = false;
 // Surface (MODE 4): MIP with occlusion, winner take all. Each pixel shows ONE
 // voxel, at its own windowed value (times its face lighting), never a blend.
 // Front to back, a voxel brighter than everything so far takes over from the
@@ -135,6 +153,16 @@ fn eaStep(acc : ptr<function, vec4<f32>>, s : f32, segLen : f32, density : f32) 
   let S = select(1.0 - 0.5 * tau, (1.0 - exp(-tau)) / tau, tau > 1e-4);
   let T = 1.0 - (*acc).w;
   *acc = vec4<f32>((*acc).x + sv * sv * segLen * S * T, 0.0, 0.0, (*acc).w + (1.0 - exp(-tau)) * T);
+}
+// Depth cue weight at ray parameter t (world distance from the ray origin):
+// 1 / (1 + d / L)^2, d = t - tRef (distance behind the visible data's front).
+fn cueWeight(t : f32, tRef : f32, L : f32) -> f32 {
+  let r = 1.0 / (1.0 + max(t - tRef, 0.0) / L);
+  return r * r;
+}
+// A value faded by the depth cue weight w toward the window's low end lo.
+fn cueFade(s : f32, lo : f32, w : f32) -> f32 {
+  return select(s, lo + (s - lo) * w, s > lo);
 }
 // One MIDA step (see the header): acc.x = I, acc.w = A, mx = running max f.
 // The running max f approaches a brighter value s exponentially with distance,
@@ -328,6 +356,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
     let faceMix = clamp(u.win.w, 0.0, 1.0);          // (surface: lighting)
+    // depth cue: the ray parameter of the visible data's front (its bounding box's
+    // nearest corner along the ray) and the falloff length
+    var tRef = 0.0;
+    var cueL = 1.0;
+    if (CUE) {
+      tRef = 1e30;
+      for (var ci3 = 0; ci3 < 8; ci3 = ci3 + 1) {
+        let c = select(u.cueLo.xyz, u.cueHi.xyz, vec3<bool>((ci3 & 1) != 0, (ci3 & 2) != 0, (ci3 & 4) != 0));
+        tRef = min(tRef, dot(c - ro, rd));
+      }
+      cueL = length(span) * (1.0 - u.cueLo.w) / max(u.cueLo.w, 1e-4);
+    }
     let dn = abs(dv0) / max(length(dv0), 1e-8);       // surface: |ray . axis| per axis
     for (var g = 0; g < maxIter; g = g + 1) {
       // Keep this check FLAT (bv computed every step, one combined condition).
@@ -338,8 +378,13 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         curB = bv;
         // MIP: the brick can't raise the max; per-voxel window: it is all empty space
         // (surface: nothing at or below the running max emits or blocks, so the same test as MIP)
+        // (depth cue: MIP and surface compare weighted values; the weight at the
+        // brick's entry is the largest inside it)
+        let wc = select(1.0, cueWeight(tnear + tPrev, tRef, cueL), CUE);
         if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <=
-            select(select(u.win.x, u.win.x + sPrev / u.win.y, MODE == 4), imgMip, MODE == 1)) {
+            select(select(u.win.x, u.win.x + sPrev / max(wc * u.win.y, 1e-20), MODE == 4),
+                   select(imgMip, u.win.x + (imgMip - u.win.x) / max(wc, 1e-20), CUE && imgMip > u.win.x),
+                   MODE == 1)) {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
@@ -349,6 +394,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       }
       let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
       let s = textureLoad(volTex, ci, 0).r * iscale;
+      let wq = select(1.0, cueWeight(tnear + tPrev, tRef, cueL), CUE);   // depth cue at this voxel's entry
       let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (MODE == 0) {
         // Emission-absorption on the data at its FULL range (no window, no gamma:
@@ -360,18 +406,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           // classic over-compositing of the windowed value: an opaque voxel shows it as is
           let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0);
           let a = (1.0 - exp(-densV * sw * w)) * (1.0 - imgAcc.w);
-          imgAcc = vec4<f32>(imgAcc.x + a * sw, 0.0, 0.0, imgAcc.w + a);
+          imgAcc = vec4<f32>(imgAcc.x + a * sw * wq, 0.0, 0.0, imgAcc.w + a);
         } else {
-          eaStep(&imgAcc, s, w, density);
+          eaStep(&imgAcc, select(s, cueFade(s, u.win.x, wq), CUE), w, density);
         }
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 3) {
         // on the data at its full range, like EA: the window acts on the result
-        let sm = select(s, clamp((s - u.win.x) * u.win.y, 0.0, 1.0), CLASSIFY);
+        let sm = select(select(s, cueFade(s, u.win.x, wq), CUE), clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq, CLASSIFY);
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 4) {
-        let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0);
+        let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
         if (sw > sPrev) {
           // the face the ray entered this voxel through: the axis whose entry plane
           // it crossed last (also right after a brick jump and at the volume's edge)
@@ -390,9 +436,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           if (sPrev >= 1.0 || imgAcc.y + margin >= 1.0) { break; }
         }
       } else if (MODE == 1) {
-        imgMip = max(imgMip, s);
+        imgMip = max(imgMip, select(s, cueFade(s, u.win.x, wq), CUE));
       } else {
-        imgSum = imgSum + s; imgCnt = imgCnt + 1.0;
+        imgSum = imgSum + select(s, cueFade(s, u.win.x, wq), CUE); imgCnt = imgCnt + 1.0;
       }
       tPrev = tExit;
       if (tMax.x < tMax.y && tMax.x < tMax.z) {

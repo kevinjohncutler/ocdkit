@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, surfLight: curSurfLight, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -154,6 +154,8 @@
     // its lighting runs from flat emitters (0) to faces shaded by angle (1).
     let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
     let curSurfLight = typeof _vs.surfLight === "number" ? Math.min(1, Math.max(0, _vs.surfLight)) : 1.0;
+    // Depth cue (every 3D mode): 0 = off
+    let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
     const activeDensity = () => (curProj === 4 ? curSurfOcc
                                : curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
@@ -531,6 +533,7 @@
           facesMix: curFacesMix,
           classify: curClassify,
           surfaceLight: curSurfLight,
+          depthCue: curDepthCue,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -790,8 +793,48 @@
       }
     }
 
+    // ── Depth cue slider (3D, every mode) ──
+    const cueRow = document.getElementById("depthCueRow");
+    const cueRange = document.getElementById("depthCueSlider");
+    const cueNum = document.getElementById("depthCueInput");
+    function setDepthCue(v, from) {
+      v = Math.max(0, Math.min(0.95, Number.isFinite(Number(v)) ? Number(v) : 0));
+      curDepthCue = v;
+      if (cueRange && from !== "range") {
+        cueRange.value = String(v);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("depthCueSlider");
+      }
+      if (cueNum && from !== "num") cueNum.value = v.toFixed(2);
+      if (vgpu) vgpu.setDepthCue(v);
+      saveVolState();
+    }
+    if (cueRange) {
+      cueRange.value = String(curDepthCue);
+      cueRange.addEventListener("input", () => setDepthCue(cueRange.value, "range"));
+      const croot = document.getElementById("depthCueSliderRoot");
+      if (croot && window.ViewerUI && ViewerUI.registerSlider) {
+        croot.dataset.sliderId = "depthCueSlider";
+        ViewerUI.registerSlider(croot);
+      }
+    }
+    if (cueNum) {
+      cueNum.value = curDepthCue.toFixed(2);
+      cueNum.addEventListener("change", () => setDepthCue(cueNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(cueNum, (d) => setDepthCue(curDepthCue + d));
+      }
+    }
+
     function syncDensityRow() {
       syncSpinRow();
+      if (cueRow) {
+        const showCue = mode === "3d";
+        const wasHiddenC = cueRow.hidden;
+        cueRow.hidden = !showCue;
+        if (showCue && wasHiddenC && window.ViewerUI && ViewerUI.refreshSlider) {
+          requestAnimationFrame(() => ViewerUI.refreshSlider("depthCueSlider"));
+        }
+      }
       if (slRow) {
         const showSl = mode === "3d" && curProj === 4;
         const wasHiddenS = slRow.hidden;
