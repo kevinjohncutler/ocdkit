@@ -644,31 +644,41 @@ def test_surface_brick_skipping_changes_nothing(dev):
     assert np.abs(a - b).max() < 2e-3
 
 
-def _haze_scene(dev, depth, n=40, haze=0.66, cube=0.9):
-    """A 6^3 cube near the back of the box, behind `depth` voxels of uniform haze
-    (windowed 0.2 with the window 0.6..1.0), empty elsewhere; viewed along z."""
+def _front_back_scene(dev, gap, n=48, front=0.7, back=0.95):
+    """A dim slab (4 voxels deep) in front of a brighter cube whose front face is
+    `gap` voxels behind the slab's front face; empty elsewhere; viewed along z."""
     vol = np.zeros((n, n, n), np.float16)
-    vol[n - 8 - depth:n - 8, 10:30, 10:30] = haze
-    vol[n - 8:n - 2, 17:23, 17:23] = cube
+    vol[4:8, 12:36, 12:36] = front
+    vol[4 + gap:4 + gap + 6, 21:27, 21:27] = back
     return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
 
 
-@pytest.mark.parametrize("density", [0.0, 0.3])
-def test_surface_through_haze_does_not_depend_on_its_depth(dev, density):
-    """Dim voxels in the way emit and block only by their peak: a cube behind 3 or
-    25 voxels of uniform haze shows the same value, h + (c - h) e^(-absorb h)
-    (lighting 0), instead of fogging or darkening with depth."""
-    inv, *_ = _ortho(0.0, 0.0, 22.0)                    # straight along z, the haze in front
-    outs = []
-    for depth in (3, 25):
-        u = _uniform(inv, (40, 40, 40), 4, density=density, show_lab=0, window=(0.6, 1.0))
-        outs.append(_haze_scene(dev, depth).compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3])
-    h, c = (0.66 - 0.6) / 0.4, (0.9 - 0.6) / 0.4
-    absorb = 2.0 ** (6 * density) - 1.0
-    expect = h + (c - h) * np.exp(-absorb * h)
-    mid = (slice(58, 70), slice(58, 70))                 # pixels over the cube's middle
-    for out in outs:
-        assert np.abs(out[mid] - expect).max() < 3e-3, (out[mid].min(), out[mid].max(), expect)
+@pytest.mark.parametrize("gap,sep", [(6, 4.0), (16, 4.0), (6, 12.0)])
+@pytest.mark.parametrize("occl", [0.0, 0.3])
+def test_surface_occlusion_by_intensity_and_distance(dev, gap, sep, occl):
+    """A dim object in front hides a brighter one behind it by
+    occ(a) (1 - e^(-gap / separation)), occ(a) = 1 - e^(-absorb a) (lighting 0):
+    the pixel reads a + (b - a) (1 - that). Occlusion 0 is MIP (b)."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
+    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0), exposure=sep)
+    out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
+    a, b = (0.7 - 0.6) / 0.4, (0.95 - 0.6) / 0.4
+    hidden = (1.0 - np.exp(-(2.0 ** (6 * occl) - 1.0) * a)) * (1.0 - np.exp(-gap / sep))
+    expect = a + (b - a) * (1.0 - hidden)
+    mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
+    assert np.abs(out[mid] - expect).max() < 3e-3, (out[mid].min(), out[mid].max(), expect)
+
+
+def test_surface_core_behind_its_rim_shows_but_a_separate_object_is_hidden(dev):
+    """Same intensities, different distance: a bright core 1 voxel behind a dim
+    rim shows almost fully; the same brightness 16 voxels behind is mostly hidden."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=4.0)
+    near = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    far = _front_back_scene(dev, 16).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    a, b = 0.25, 0.875
+    assert near.min() > a + 0.75 * (b - a)
+    assert far.max() < a + 0.25 * (b - a)                # (a dim object hides at most occ(a) = 83% here)
 
 
 def test_surface_is_mip_without_lighting_or_density(dev):

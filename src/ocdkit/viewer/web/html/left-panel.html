@@ -124,7 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Surface: light comes only from faces where a ray enters material brighter than anything in front of it, so objects look like solid, lit shapes and dim voxels in the way add little. Values below the display window's low end are empty space; density sets how much each surface hides what is behind it"><span>Surf</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Surface: light comes only from faces where a ray enters material brighter than anything in front of it, so objects look like solid, lit shapes and dim voxels in the way add little. Values below the display window's low end are empty space; occlusion sets how much an object hides brighter objects behind it, separation how far behind they must be"><span>Surf</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
@@ -148,6 +148,18 @@
               </div>
               <div class="number-field" data-number-id="faceMixInput">
                 <input type="number" id="faceMixInput" min="0" max="1" step="0.05" value="0.00" />
+              </div>
+            </div>
+          </div>
+          <div class="control slider-inline" id="surfSepRow" hidden
+               title="Separation (voxels): how far behind a brighter object must be before the object in front hides it fully. Small: even a bright core right behind a dim rim is hidden; large: only well separated objects are">
+            <span class="control-heading control-heading--lower control-heading--icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M22,9V15H20V13H4V15H2V9H4V11H20V9H22Z"/></svg></span>
+            <div class="slider-row">
+              <div class="slider" id="surfSepSliderRoot" data-slider-type="single">
+                <input type="range" id="surfSepSlider" min="0.5" max="20" step="0.5" value="4" />
+              </div>
+              <div class="number-field" data-number-id="surfSepInput">
+                <input type="number" id="surfSepInput" min="0.5" max="20" step="0.5" value="4.0" />
               </div>
             </div>
           </div>

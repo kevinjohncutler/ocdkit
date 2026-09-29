@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfDensity: curSurfDensity, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcclusion: curSurfOcc, surfSeparation: curSurfSep, surfLight: curSurfLight, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -148,13 +148,15 @@
     const VOX_DENSITY_DEFAULT = 0.4;
     const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
-    // Surface (projection 4): always windowed per voxel; its density uses the same
-    // 2^(6d) - 1 absorption, default ~1 (translucent enough to show inner surfaces),
+    // Surface (projection 4): always windowed per voxel. Its density slider sets
+    // OCCLUSION (0 = MIP; absorption 2^(6d) - 1 on the intensity in front), its
+    // separation how far behind (voxels) a brighter object must be to be hidden,
     // and its lighting runs from flat emitters (0) to faces shaded by angle (1).
-    let curSurfDensity = typeof _vs.surfDensity === "number" && _vs.surfDensity >= 0 ? _vs.surfDensity : 0.17;
+    let curSurfOcc = typeof _vs.surfOcclusion === "number" && _vs.surfOcclusion >= 0 ? _vs.surfOcclusion : 0.3;
+    let curSurfSep = typeof _vs.surfSeparation === "number" && _vs.surfSeparation > 0 ? _vs.surfSeparation : 4.0;
     let curSurfLight = typeof _vs.surfLight === "number" ? Math.min(1, Math.max(0, _vs.surfLight)) : 1.0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
-    const activeDensity = () => (curProj === 4 ? curSurfDensity
+    const activeDensity = () => (curProj === 4 ? curSurfOcc
                                : curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
                                : (curClassify ? curEaVox : curDensity));
     // voxel shading (EA / MIDA): 0 = path length, 1 = voxel faces (the old on/off toggle maps to 0 / 1)
@@ -530,6 +532,7 @@
           facesMix: curFacesMix,
           classify: curClassify,
           surfaceLight: curSurfLight,
+          surfaceSeparation: curSurfSep,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -662,7 +665,7 @@
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
       v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
-      if (curProj === 4) curSurfDensity = v;
+      if (curProj === 4) curSurfOcc = v;
       else if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
       else if (curClassify) curEaVox = v; else curDensity = v;
       if (densRange && from !== "range") {
@@ -789,8 +792,49 @@
       }
     }
 
+    // ── Surface separation slider (voxels) ──
+    const sepRow = document.getElementById("surfSepRow");
+    const sepRange = document.getElementById("surfSepSlider");
+    const sepNum = document.getElementById("surfSepInput");
+    const SEP_MIN = 0.5, SEP_MAX = 20;
+    function setSurfSep(v, from) {
+      v = Math.max(SEP_MIN, Math.min(SEP_MAX, Number.isFinite(Number(v)) ? Number(v) : 4));
+      curSurfSep = v;
+      if (sepRange && from !== "range") {
+        sepRange.value = String(v);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("surfSepSlider");
+      }
+      if (sepNum && from !== "num") sepNum.value = v.toFixed(1);
+      if (vgpu) vgpu.setSurfaceSeparation(v);
+      saveVolState();
+    }
+    if (sepRange) {
+      sepRange.value = String(curSurfSep);
+      sepRange.addEventListener("input", () => setSurfSep(sepRange.value, "range"));
+      const proot = document.getElementById("surfSepSliderRoot");
+      if (proot && window.ViewerUI && ViewerUI.registerSlider) {
+        proot.dataset.sliderId = "surfSepSlider";
+        ViewerUI.registerSlider(proot);
+      }
+    }
+    if (sepNum) {
+      sepNum.value = curSurfSep.toFixed(1);
+      sepNum.addEventListener("change", () => setSurfSep(sepNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(sepNum, (d) => setSurfSep(curSurfSep + d));
+      }
+    }
+
     function syncDensityRow() {
       syncSpinRow();
+      if (sepRow) {
+        const showSep = mode === "3d" && curProj === 4;
+        const wasHiddenP = sepRow.hidden;
+        sepRow.hidden = !showSep;
+        if (showSep && wasHiddenP && window.ViewerUI && ViewerUI.refreshSlider) {
+          requestAnimationFrame(() => ViewerUI.refreshSlider("surfSepSlider"));
+        }
+      }
       if (slRow) {
         const showSl = mode === "3d" && curProj === 4;
         const wasHiddenS = slRow.hidden;
@@ -814,7 +858,7 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       densRow.title = curProj === 4
-        ? "Density: how much each surface hides what is behind it (0 = brighter surfaces behind show through fully, as in MIP; 1 = only the nearest shows)"
+        ? "Occlusion: how much an object hides brighter objects behind it, more the brighter it is (0 = MIP: the brightest always shows)"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

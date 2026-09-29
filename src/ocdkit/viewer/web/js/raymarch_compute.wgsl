@@ -77,18 +77,20 @@ override TRANSP : bool = false;
 // structure. On, an opaque voxel shows its own value, exactly as in MIP, and
 // bricks whose max is at or below the low end are skipped as empty space.
 override CLASSIFY : bool = false;
-// Surface (MODE 4): light comes only from faces where the ray enters material
-// brighter than anything it has met so far. Each voxel face the ray crosses
-// (front to back) emits the rise of the windowed value above the running max m,
-// max(v - m, 0), and hides what is behind it by the same rise, T *= e^(-density
-// rise). A face between equal voxels emits nothing, so a uniform stack lights up
-// once, at its outer surface, like one solid block, and a lone voxel of value v
-// shows v (as in MIP). Measuring rises from the running max (not the previous
-// voxel) is what lets surfaces show through dim voxels in the way: noise has
-// small rises at almost every voxel, and summed over a long path they fogged the
-// image, while blocking by path length through every dim voxel blacked it out.
-// Now all the dim voxels on a ray emit and block at most their own peak,
-// however deep they are. With lighting 0 and density 0 this is MIP exactly.
+// Surface (MODE 4): MIP built from voxel faces, with occlusion between objects.
+// Along the ray, a face emits only where the ray enters material brighter than
+// anything it has met so far: the rise of the windowed value above the running
+// max m. Those rises add up to the max, so with no occlusion this is MIP exactly,
+// and a face between equal voxels emits nothing (a uniform stack lights up once,
+// at its outer surface, like one solid block). Dim voxels in the way emit at most
+// their own peak, however deep they are.
+// Occlusion: before a rise emits, the brightest thing in front hides it by
+//   occ(m) (1 - e^(-gap / separation)),   occ(m) = 1 - e^(-absorb m),
+// gap = the distance in voxels back to where m was reached. Intensity sets how
+// much an object hides; distance tells a separate object further back (large
+// gap: hidden) from the brighter core of the same object right behind its own
+// dim rim (small gap: shows, as in MIP). absorb = 2^(6 d) - 1 from the occlusion
+// slider d (0 = MIP); separation is u.win.z (voxels).
 // Lighting t = u.win.w scales each face by mix(1, cos, t), cos = |ray . normal|:
 // 0 = every surface equally bright (a flat emitter), 1 = shaded by its angle to
 // the camera. Always windowed per voxel (values at or below the window's low end
@@ -315,6 +317,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
     var sPrev = 0.0;                                  // surface: running max of the windowed value
+    var tRise = 0.0;                                  // surface: ray parameter where it was reached
+    let dvLen = length(dv0);                          // voxels per unit of the ray parameter
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -368,9 +372,12 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           // it crossed last (also right after a brick jump and at the volume's edge)
           let tEnt = (vox + select(vec3<f32>(1.0), vec3<f32>(0.0), stp > vec3<f32>(0.0)) - p0) / dv;
           let cosF = select(select(dn.z, dn.y, tEnt.y >= tEnt.z), dn.x, tEnt.x >= tEnt.y && tEnt.x >= tEnt.z);
+          // hidden by the brightest thing in front, more the brighter and farther it is
+          let gap = max(tPrev - tRise, 0.0) * dvLen;
+          let occ = 1.0 - exp(-densV * sPrev);
+          imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * occ * (1.0 - exp(-gap / max(u.win.z, 1e-3)));
           imgAcc.x = imgAcc.x + (sw - sPrev) * mix(1.0, cosF, faceMix) * (1.0 - imgAcc.w);
-          imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * (1.0 - exp(-densV * (sw - sPrev)));
-          sPrev = sw;
+          sPrev = sw; tRise = tPrev;
         }
         if (imgAcc.w >= 0.995 || sPrev >= 1.0) { break; }
       } else if (MODE == 1) {
