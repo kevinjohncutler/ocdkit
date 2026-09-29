@@ -68,6 +68,15 @@ override BRICK : f32 = 16.0;         // brick edge in voxels (must match the hos
 // Transparent low end (colormap alpha). A pipeline constant, not a uniform: with
 // it off the alpha multiply compiles away (as a runtime value it cost EA ~3%).
 override TRANSP : bool = false;
+// Window per voxel (EA and MIDA): each voxel is windowed BEFORE compositing, so
+// values at or below the window's low end are empty space and opacity follows
+// the windowed value (the classic transfer function). Off (the default), the
+// data composites at its full range and the window acts on the result like a
+// LUT, which keeps dragging the window from changing what is visible, but at
+// an angle a bright background summed through the whole depth buries the
+// structure. On, an opaque voxel shows its own value, exactly as in MIP, and
+// bricks whose max is at or below the low end are skipped as empty space.
+override CLASSIFY : bool = false;
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
 // shading peaks where the ray crosses the most of it, like a distance field).
@@ -111,13 +120,30 @@ fn eaStep(acc : ptr<function, vec4<f32>>, s : f32, segLen : f32, density : f32) 
 // MIDA's fade-then-add): with opacity rate mu = density s and fade rate
 // r = -d ln(1 - f)/dt, dA = -r A + mu (1 - A), dI = -r I + mu (1 - A) s. So
 // I - s A just fades by the step's total fade (exact), and A has one smooth
-// integral, done by 3-point Simpson. The result does not depend on how a
+// integral (expWeightedIntegral). The result does not depend on how a
 // stretch of one value is divided into voxels, so boundaries between equal
 // voxels stay invisible even when a different value shares the ray. (A rise of
 // (s - f) min(L, 1) per voxel depended on the division and drew a grid; a
 // per-voxel fade-then-add left seams across 1-voxel-thick lines.) Starting from empty space a full rise fades exactly as the
 // paper's 1 - (s - f); a ray clipping a voxel's corner (L -> 0) fades almost
 // nothing, so no lines appear along voxel edges.
+// mu * Integral_0^L e^(-mu tau) h(tau) d tau for a smooth h given at tau = 0, L/2,
+// L (h0, hm, hL): h is fitted by a parabola and integrated exactly against the
+// exponential (product integration). Simpson's rule on the whole integrand is
+// fine for a thin voxel but overshoots badly once mu L is large (an opaque voxel:
+// it let MIDA's opacity exceed 1); the exact weights come from the moments
+// m_k = Integral_0^1 s^k e^(-x s) ds, stable in f32 for x >= 0.25 (both agree there to ~1e-6), with Simpson below.
+fn expWeightedIntegral(L : f32, mu : f32, h0 : f32, hm : f32, hL : f32) -> f32 {
+  let x = mu * L;
+  if (x < 0.25) {
+    return mu * L / 6.0 * (h0 + 4.0 * exp(-0.5 * x) * hm + exp(-x) * hL);
+  }
+  let e = exp(-x);
+  let m0 = (1.0 - e) / x;
+  let m1 = (m0 - e) / x;
+  let m2 = (2.0 * m1 - e) / x;
+  return x * ((2.0 * m2 - 3.0 * m1 + m0) * h0 + (4.0 * m1 - 4.0 * m2) * hm + (2.0 * m2 - m1) * hL);
+}
 const MIDA_CATCHUP : f32 = 0.8;   // voxels: 5% creases and no edge lines (0.1 gave lines, the old rule 21% creases)
 fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, segLen : f32, density : f32) {
   let sv = clamp(s, 0.0, 1.0);
@@ -135,8 +161,8 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   let omM = max(1.0 - (sv - q * exp(-0.5 * segLen / MIDA_CATCHUP)), 1e-6);
   let beta = omL / om0;                                             // the step's total fade
   // A = beta e^(-mu L) A0 + mu Integral_0^L e^(-mu (L - t)) (1 - f(L)) / (1 - f(t)) dt
-  let J = segLen / 6.0 * (exp(-mu * segLen) * omL / om0 + 4.0 * exp(-0.5 * mu * segLen) * omL / omM + 1.0);
-  let A1 = beta * exp(-mu * segLen) * A0 + mu * J;
+  // (tau = L - t: h runs from 1 at the step's end back to omL / om0 at its start)
+  let A1 = beta * exp(-mu * segLen) * A0 + expWeightedIntegral(segLen, mu, 1.0, omL / omM, omL / om0);
   *acc = vec4<f32>(sv * A1 + (I0 - sv * A0) * beta, 0.0, 0.0, A1);
   *mx = 1.0 - omL;
 }
@@ -182,6 +208,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
 
   let dims = vec3<i32>(i32(u.dims.x), i32(u.dims.y), i32(u.dims.z));
   let density = u.params.y;
+  // per-voxel window: slider 0..1 -> absorption 0..63 (2^(6d) - 1), since windowed
+  // values are small and a solid look needs far more than the full-range scale
+  let densV = select(density, exp2(6.0 * density) - 1.0, CLASSIFY);
   let labelOpacity = u.params.z;
   let iscale = u.img.x;
   let gamma = u.img.w;
@@ -278,9 +307,10 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
       // image-only MIP on Apple GPUs, with identical output.
       let bv = floor(vox / BRICK);
-      if (MODE == 1 && any(bv != curB)) {
+      if ((MODE == 1 || (CLASSIFY && (MODE == 0 || MODE == 3))) && any(bv != curB)) {
         curB = bv;
-        if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <= imgMip) {   // can't raise the max
+        // MIP: the brick can't raise the max; per-voxel window: it is all empty space
+        if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <= select(imgMip, u.win.x, MODE != 1)) {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
@@ -296,11 +326,20 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // those act on the result, like a LUT). Density = ABSORPTION only: every
         // voxel glows with s^2 per unit length whatever the density, and density
         // sets how much nearer glow hides farther glow (0 = pure glow).
-        eaStep(&imgAcc, s, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), density);
+        let w = voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix);
+        if (CLASSIFY) {
+          // classic over-compositing of the windowed value: an opaque voxel shows it as is
+          let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0);
+          let a = (1.0 - exp(-densV * sw * w)) * (1.0 - imgAcc.w);
+          imgAcc = vec4<f32>(imgAcc.x + a * sw, 0.0, 0.0, imgAcc.w + a);
+        } else {
+          eaStep(&imgAcc, s, w, density);
+        }
         if (imgAcc.w >= 0.995) { break; }
       } else if (MODE == 3) {
         // on the data at its full range, like EA: the window acts on the result
-        midaStep(&imgAcc, &midaMax, s, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), density);
+        let sm = select(s, clamp((s - u.win.x) * u.win.y, 0.0, 1.0), CLASSIFY);
+        midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
@@ -334,9 +373,12 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       //         mixed values showed structure.)
       //   EA:   the glow rolled off below 1 by 1 - e^(-k glow), k from the data
       //         (win.z) so the brightest ray along any axis reads 0.95
+      //   Window per voxel: the result is already windowed (0..1), so only gamma
+      //         and the colormap remain
       var raw = imgAcc.x;
-      if (MODE == 0) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
-      let v = pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma);
+      if (MODE == 0 && !CLASSIFY) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
+      let v = select(pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma),
+                     pow(clamp(raw, 0.0, 1.0), gamma), CLASSIFY);
       let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP);
       imgA = v * ta; imgPC = c4.rgb * ta;
     }

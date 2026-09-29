@@ -51,6 +51,24 @@ struct U {
 
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 
+// mu * Integral_0^L e^(-mu tau) h(tau) d tau for a smooth h given at tau = 0, L/2,
+// L (h0, hm, hL): h is fitted by a parabola and integrated exactly against the
+// exponential (product integration). Simpson's rule on the whole integrand is
+// fine for a thin voxel but overshoots badly once mu L is large (an opaque voxel:
+// it let MIDA's opacity exceed 1); the exact weights come from the moments
+// m_k = Integral_0^1 s^k e^(-x s) ds, stable in f32 for x >= 0.25 (both agree there to ~1e-6), with Simpson below.
+fn expWeightedIntegral(L : f32, mu : f32, h0 : f32, hm : f32, hL : f32) -> f32 {
+  let x = mu * L;
+  if (x < 0.25) {
+    return mu * L / 6.0 * (h0 + 4.0 * exp(-0.5 * x) * hm + exp(-x) * hL);
+  }
+  let e = exp(-x);
+  let m0 = (1.0 - e) / x;
+  let m1 = (m0 - e) / x;
+  let m2 = (2.0 * m1 - e) / x;
+  return x * ((2.0 * m2 - 3.0 * m1 + m0) * h0 + (4.0 * m1 - 4.0 * m2) * hm + (2.0 * m2 - m1) * hL);
+}
+
 @vertex
 fn vs(@builtin(vertex_index) vi : u32) -> VOut {
   var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
@@ -181,8 +199,7 @@ fn fs(in : VOut) -> @location(0) vec4<f32> {
           let om0 = max(1.0 - midaMax, 1e-6);
           let omM = max(1.0 - (sv - q * exp(-0.5 * segLen / 0.8)), 1e-6);
           let beta = omL / om0;
-          let J = segLen / 6.0 * (exp(-mu * segLen) * omL / om0 + 4.0 * exp(-0.5 * mu * segLen) * omL / omM + 1.0);
-          let A1 = beta * exp(-mu * segLen) * imgAcc.w + mu * J;
+          let A1 = beta * exp(-mu * segLen) * imgAcc.w + expWeightedIntegral(segLen, mu, 1.0, omL / omM, omL / om0);
           imgAcc = vec4<f32>(sv * A1 + (imgAcc.x - sv * imgAcc.w) * beta, 0.0, 0.0, A1);
           midaMax = 1.0 - omL;
         }

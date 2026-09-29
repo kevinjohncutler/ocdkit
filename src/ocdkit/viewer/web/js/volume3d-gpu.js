@@ -248,6 +248,7 @@
       this._hdr = !!opts.hdr;
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
+      this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -466,13 +467,14 @@
     /** Pipeline for one render state (override constants), built on first use. */
     _computePipelineFor(mode, showImg, showLab, shade) {
       const tr = this._transparent ? 1 : 0;
-      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}`;
+      const cl = this._classify ? 1 : 0;
+      const key = `${mode}|${showImg ? 1 : 0}|${showLab ? 1 : 0}|${shade ? 1 : 0}|${tr}|${cl}`;
       if (!this._computePipes[key]) {
         this._computePipes[key] = this.device.createComputePipeline({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
                      constants: { MODE: mode, SHOW_IMG: showImg ? 1 : 0, SHOW_LAB: showLab ? 1 : 0,
-                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr } },
+                                  SHADE_LAB: shade ? 1 : 0, BRICK, TRANSP: tr, CLASSIFY: cl } },
         });
       }
       return this._computePipes[key];
@@ -483,13 +485,14 @@
     _prewarmComputePipelines() {
       if (!this.computeModule || !this.device.createComputePipelineAsync) return;
       const tr = this._transparent ? 1 : 0;              // the current transparency state
+      const cl = this._classify ? 1 : 0;                 // and window-per-voxel state
       for (const mode of [0, 1, 2, 3]) for (const img of [0, 1]) for (const lab of [0, 1]) for (const sh of [0, 1]) {
-        const key = `${mode}|${img}|${lab}|${sh}|${tr}`;
+        const key = `${mode}|${img}|${lab}|${sh}|${tr}|${cl}`;
         if (this._computePipes[key]) continue;
         this.device.createComputePipelineAsync({
           layout: this.computeLayout,
           compute: { module: this.computeModule, entryPoint: "cs",
-                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr } },
+                     constants: { MODE: mode, SHOW_IMG: img, SHOW_LAB: lab, SHADE_LAB: sh, BRICK, TRANSP: tr, CLASSIFY: cl } },
         }).then((p) => { if (!this._computePipes[key]) this._computePipes[key] = p; }).catch(() => {});
       }
     }
@@ -1126,6 +1129,18 @@
       this._facesMix = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 0));
       this._requestRender();
     }
+    /** Window per voxel in EA and MIDA (CLASSIFY in raymarch_compute.wgsl): values
+     *  at or below the window's low end become empty space and opacity follows
+     *  the windowed value, instead of compositing the full range and windowing
+     *  the result. A pipeline constant, so the other state compiles in the
+     *  background, like the transparency toggle. */
+    setClassify(on) {
+      const was = this._classify;
+      this._classify = !!on;
+      this._requestRender();
+      if (was !== this._classify) this._prewarmComputePipelines();
+    }
+    isClassify() { return !!this._classify; }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }

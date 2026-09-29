@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -141,7 +141,15 @@
     // anything; it keeps its own slider value (EA's density defaults to 0)
     const MIDA_OPACITY_DEFAULT = 0.5;
     let curMidaOpacity = (typeof _vs.midaOpacity === "number" && _vs.midaOpacity >= 0) ? _vs.midaOpacity : MIDA_OPACITY_DEFAULT;
-    const activeDensity = () => (curProj === 3 ? curMidaOpacity : curDensity);
+    // Window per voxel (EA / MIDA): off by default. Its density slider maps to a
+    // much larger absorption (2^(6d) - 1, up to solid voxels), so each mode keeps
+    // a separate value for it too.
+    let curClassify = _vs.classify === true;
+    const VOX_DENSITY_DEFAULT = 0.4;
+    const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
+    let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
+    const activeDensity = () => (curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
+                                                : (curClassify ? curEaVox : curDensity));
     // voxel shading (EA / MIDA): 0 = path length, 1 = voxel faces (the old on/off toggle maps to 0 / 1)
     let curFacesMix = typeof _vs.facesMix === "number" ? Math.min(1, Math.max(0, _vs.facesMix)) : (_vs.faceVoxels === true ? 1 : 0);
     let curSpinAxis = (_vs.spinAxis === 0 || _vs.spinAxis === 1) ? _vs.spinAxis : 2;       // spin about x / y / z
@@ -513,6 +521,7 @@
           density: activeDensity(),
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
+          classify: curClassify,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -645,7 +654,8 @@
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
       v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
-      if (curProj === 3) curMidaOpacity = v; else curDensity = v;
+      if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
+      else if (curClassify) curEaVox = v; else curDensity = v;
       if (densRange && from !== "range") {
         densRange.value = String(v);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("eaDensitySlider");
@@ -721,8 +731,26 @@
       }
     }
 
+    // ── Window per voxel toggle (EA and MIDA only) ──
+    const vwRow = document.getElementById("voxelWindowRow");
+    const vwToggle = document.getElementById("voxelWindowToggle");
+    function setClassify(on) {
+      curClassify = !!on;
+      if (vwToggle) vwToggle.checked = curClassify;
+      if (vgpu) vgpu.setClassify(curClassify);
+      if (curProj === 0 || curProj === 3) setDensity(activeDensity());   // its own slider value
+      syncDensityRow();
+      saveVolState();
+    }
+    if (vwToggle) {
+      vwToggle.checked = curClassify;
+      vwToggle.addEventListener("change", () => setClassify(vwToggle.checked));
+    }
+    window.__viewerSetVoxelWindow = setClassify;
+
     function syncDensityRow() {
       syncSpinRow();
+      if (vwRow) vwRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
       if (facesRow) {
         const showFaces = mode === "3d" && (curProj === 0 || curProj === 3);
         const wasHiddenF = facesRow.hidden;
@@ -736,7 +764,9 @@
       const show = mode === "3d" && (curProj === 0 || curProj === 3);
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
-      densRow.title = curProj === 3
+      densRow.title = curClassify
+        ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
+        : curProj === 3
         ? "Opacity: how strongly each voxel covers what is behind it (0 shows nothing); a brighter voxel further back still shows through"
         : "Density (absorption): 0 = every voxel glows and nothing blocks; higher = nearer structures hide what is behind them";
       // the slider measures its track (rounded ends, fill, thumb) when refreshed;

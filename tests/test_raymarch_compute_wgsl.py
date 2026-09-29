@@ -113,15 +113,16 @@ class Scene:
         rb.unmap()
         return out
 
-    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0):
+    def compute_pipeline(self, mode, show_img, show_lab, shade=1, transp=0, classify=0):
         return self.dev.create_compute_pipeline(layout="auto", compute={
             "module": self.cmod, "entry_point": "cs",
             "constants": {"MODE": mode, "SHOW_IMG": show_img, "SHOW_LAB": show_lab, "SHADE_LAB": shade,
-                          "BRICK": float(BRICK), "TRANSP": transp}})
+                          "BRICK": float(BRICK), "TRANSP": transp,
+                          "CLASSIFY": classify}})
 
-    def compute(self, u, mode, show_img, show_lab, W, H, transp=0, faces=0):
+    def compute(self, u, mode, show_img, show_lab, W, H, transp=0, faces=0, classify=0):
         u = u.copy(); u[47] = faces           # voxel shading t (0 = path length, 1 = voxel faces)
-        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp)
+        p = self.compute_pipeline(mode, show_img, show_lab, transp=transp, classify=classify)
         out = self.dev.create_texture(size=(W, H, 1), format="rgba16float",
                                       usage=wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.COPY_SRC)
         ub = self.dev.create_buffer_with_data(data=u.tobytes(), usage=wgpu.BufferUsage.UNIFORM)
@@ -524,3 +525,64 @@ def test_emission_absorption_keeps_hue(dev):
     lit = out[..., 0] > 0.5
     assert lit.sum() > 100
     np.testing.assert_allclose(out[..., 2][lit] / out[..., 0][lit], 0.1, atol=0.01)
+
+
+# ── window per voxel (CLASSIFY) ─────────────────────────────────────────────
+
+def _classify_scene(dev):
+    """A bright background (0.5) holding a 6^3 cube of 0.9, like inverted phase contrast."""
+    n = 20
+    vol = np.full((n, n, n), 0.5, np.float16)
+    vol[7:13, 7:13, 7:13] = 0.9
+    return vol, Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+
+
+@pytest.mark.parametrize("mode", [0, 3])
+@pytest.mark.parametrize("faces", [0.0, 1.0])
+def test_classify_background_below_window_is_empty(dev, mode, faces):
+    """Below the window's low end a voxel is empty space: at an angle, pixels that
+    only cross background are exactly black, while without CLASSIFY the summed
+    background shows."""
+    vol, sc = _classify_scene(dev)
+    inv, *_ = _ortho(0.6, 0.4, 16.0)
+    u = _uniform(inv, (20, 20, 20), mode, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=0.05)
+    on = sc.compute(u, mode, 1, 0, 128, 128, faces=faces, classify=1)[..., 3]
+    ref = sc.compute(_uniform(inv, (20, 20, 20), 1, show_lab=0, window=(0.6, 1.0)), 1, 1, 0, 128, 128)[..., 3]
+    inside = ref > 0.05                                  # rays that cross the cube (MIP sees it)
+    assert inside.mean() > 0.05
+    assert on[~inside].max() == 0.0
+    assert on[inside].mean() > 0.1
+
+
+@pytest.mark.parametrize("mode", [0, 3])
+def test_classify_solid_voxel_shows_its_windowed_value(dev, mode):
+    """At full density the voxel in front is opaque and shows its windowed value,
+    the same as MIP does for the cube."""
+    vol, sc = _classify_scene(dev)
+    inv, *_ = _ortho(0.6, 0.4, 16.0)
+    u = _uniform(inv, (20, 20, 20), mode, density=1.0, show_lab=0, window=(0.6, 1.0))
+    on = sc.compute(u, mode, 1, 0, 128, 128, faces=1.0, classify=1)[..., 3]
+    mip = sc.compute(_uniform(inv, (20, 20, 20), 1, show_lab=0, window=(0.6, 1.0)), 1, 1, 0, 128, 128)[..., 3]
+    core = mip > 0.7                                     # full cube coverage (not its rim pixels)
+    expect = (0.9 - 0.6) / 0.4
+    assert core.mean() > 0.05
+    assert abs(float(np.median(on[core])) - expect) < 0.02
+
+
+@pytest.mark.parametrize("mode", [0, 3])
+def test_classify_brick_skipping_changes_nothing(dev, mode):
+    """Bricks at or below the low end are skipped; the output matches marching
+    every voxel (brick maxima forced to 1 so nothing is skipped)."""
+    rng = np.random.default_rng(3)
+    vol = (rng.random((40, 36, 44)) * 0.5).astype(np.float16)     # below the window everywhere...
+    vol[20:30, 4:14, 25:40] = (0.7 + 0.3 * rng.random((10, 10, 15))).astype(np.float16)   # ...but here
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    full = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    bz, by, bx = [-(-d // BRICK) for d in vol.shape]
+    full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
+    inv, *_ = _ortho(0.8, 0.35, 30.0)
+    u = _uniform(inv, (44, 36, 40), mode, density=0.4, show_lab=0, window=(0.55, 1.0))
+    a = sc.compute(u, mode, 1, 0, 128, 128, faces=0.5, classify=1)[..., 3]
+    b = full.compute(u, mode, 1, 0, 128, 128, faces=0.5, classify=1)[..., 3]
+    assert a.max() > 0.2
+    assert np.abs(a - b).max() < 2e-3

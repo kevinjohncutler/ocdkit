@@ -120,7 +120,7 @@
           </div>
           <div class="control" id="projModeRow" hidden>
             <div id="projModeToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="3D projection">
-              <button type="button" class="kernel-option" data-proj="0" data-active="true" title="Emission-absorption: a translucent volume whose opacity follows intensity (the histogram's lower bound sets what is transparent)"><span>EA</span></button>
+              <button type="button" class="kernel-option" data-proj="0" data-active="true" title="Emission-absorption: a translucent volume that glows with intensity; density sets how much nearer structures hide what is behind them"><span>EA</span></button>
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
@@ -149,6 +149,13 @@
                 <input type="number" id="faceMixInput" min="0" max="1" step="0.05" value="0.00" />
               </div>
             </div>
+          </div>
+          <div class="control label-style-row" id="voxelWindowRow" hidden>
+            <span class="control-heading control-heading--lower control-heading--icon" title="Window per voxel (EA and MIDA): apply the display window to each voxel before compositing, so values below its low end are empty space and the voxel in front hides what is behind it. Off: the whole range composites and the window acts on the result, so dragging it only changes brightness and color."><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14,12V19.88C14.04,20.18 13.94,20.5 13.71,20.71C13.32,21.1 12.69,21.1 12.3,20.71L10.29,18.7C10.06,18.47 9.96,18.16 10,17.87V12H9.97L4.21,4.62C3.87,4.19 3.95,3.56 4.38,3.22C4.57,3.08 4.78,3 5,3V3H19V3C19.22,3 19.43,3.08 19.62,3.22C20.05,3.56 20.13,4.19 19.79,4.62L14.03,12H14Z"/></svg></span>
+            <label class="toggle toggle-left" title="Window per voxel: values below the window's low end are empty space">
+              <input type="checkbox" id="voxelWindowToggle" />
+              <span class="toggle-switch"></span>
+            </label>
           </div>
           <div class="view-mode-row">
             <button type="button" class="view-mode-btn" id="loadMasksButton">Load masks…</button>
