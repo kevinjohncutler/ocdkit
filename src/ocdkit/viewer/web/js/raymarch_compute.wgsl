@@ -77,16 +77,22 @@ override TRANSP : bool = false;
 // structure. On, an opaque voxel shows its own value, exactly as in MIP, and
 // bricks whose max is at or below the low end are skipped as empty space.
 override CLASSIFY : bool = false;
-// Surface (MODE 4): light comes only from faces where the ray enters brighter
-// material. Each voxel face the ray crosses (front to back) emits the rise in
-// windowed value into the voxel it enters, max(v - v_before, 0); a face between
-// equal voxels emits nothing, so a uniform stack lights up once, at its outer
-// surface, like one solid block, and a lone voxel of value v shows v (as in MIP).
+// Surface (MODE 4): light comes only from faces where the ray enters material
+// brighter than anything it has met so far. Each voxel face the ray crosses
+// (front to back) emits the rise of the windowed value above the running max m,
+// max(v - m, 0), and hides what is behind it by the same rise, T *= e^(-density
+// rise). A face between equal voxels emits nothing, so a uniform stack lights up
+// once, at its outer surface, like one solid block, and a lone voxel of value v
+// shows v (as in MIP). Measuring rises from the running max (not the previous
+// voxel) is what lets surfaces show through dim voxels in the way: noise has
+// small rises at almost every voxel, and summed over a long path they fogged the
+// image, while blocking by path length through every dim voxel blacked it out.
+// Now all the dim voxels on a ray emit and block at most their own peak,
+// however deep they are. With lighting 0 and density 0 this is MIP exactly.
 // Lighting t = u.win.w scales each face by mix(1, cos, t), cos = |ray . normal|:
 // 0 = every surface equally bright (a flat emitter), 1 = shaded by its angle to
-// the camera. Density absorbs along the path (densV v per unit length), so
-// nearer surfaces hide farther ones. Always windowed per voxel (values at or
-// below the window's low end are empty space, and their bricks are skipped).
+// the camera. Always windowed per voxel (values at or below the window's low end
+// are empty space); bricks that can't rise above max(low end, m) are skipped.
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
 // shading peaks where the ray crosses the most of it, like a distance field).
@@ -308,7 +314,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
-    var sPrev = 0.0;                                  // surface: windowed value before this face
+    var sPrev = 0.0;                                  // surface: running max of the windowed value
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -322,9 +328,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       if ((MODE == 1 || MODE == 4 || (CLASSIFY && (MODE == 0 || MODE == 3))) && any(bv != curB)) {
         curB = bv;
         // MIP: the brick can't raise the max; per-voxel window: it is all empty space
-        if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <= select(imgMip, u.win.x, MODE != 1)) {
+        // (surface: nothing at or below the running max emits or blocks, so the same test as MIP)
+        if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <=
+            select(select(u.win.x, u.win.x + sPrev / u.win.y, MODE == 4), imgMip, MODE == 1)) {
           let j = brickExit(p0, dv, stp, vox);
-          vox = j.xyz; tPrev = j.w; sPrev = 0.0;
+          vox = j.xyz; tPrev = j.w;
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
           continue;
@@ -361,10 +369,10 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           let tEnt = (vox + select(vec3<f32>(1.0), vec3<f32>(0.0), stp > vec3<f32>(0.0)) - p0) / dv;
           let cosF = select(select(dn.z, dn.y, tEnt.y >= tEnt.z), dn.x, tEnt.x >= tEnt.y && tEnt.x >= tEnt.z);
           imgAcc.x = imgAcc.x + (sw - sPrev) * mix(1.0, cosF, faceMix) * (1.0 - imgAcc.w);
+          imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * (1.0 - exp(-densV * (sw - sPrev)));
+          sPrev = sw;
         }
-        imgAcc.w = imgAcc.w + (1.0 - imgAcc.w) * (1.0 - exp(-densV * sw * max(tExit - tPrev, 0.0)));
-        sPrev = sw;
-        if (imgAcc.w >= 0.995) { break; }
+        if (imgAcc.w >= 0.995 || sPrev >= 1.0) { break; }
       } else if (MODE == 1) {
         imgMip = max(imgMip, s);
       } else {

@@ -642,3 +642,40 @@ def test_surface_brick_skipping_changes_nothing(dev):
     b = full.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
     assert a.max() > 0.2
     assert np.abs(a - b).max() < 2e-3
+
+
+def _haze_scene(dev, depth, n=40, haze=0.66, cube=0.9):
+    """A 6^3 cube near the back of the box, behind `depth` voxels of uniform haze
+    (windowed 0.2 with the window 0.6..1.0), empty elsewhere; viewed along z."""
+    vol = np.zeros((n, n, n), np.float16)
+    vol[n - 8 - depth:n - 8, 10:30, 10:30] = haze
+    vol[n - 8:n - 2, 17:23, 17:23] = cube
+    return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+
+
+@pytest.mark.parametrize("density", [0.0, 0.3])
+def test_surface_through_haze_does_not_depend_on_its_depth(dev, density):
+    """Dim voxels in the way emit and block only by their peak: a cube behind 3 or
+    25 voxels of uniform haze shows the same value, h + (c - h) e^(-absorb h)
+    (lighting 0), instead of fogging or darkening with depth."""
+    inv, *_ = _ortho(0.0, 0.0, 22.0)                    # straight along z, the haze in front
+    outs = []
+    for depth in (3, 25):
+        u = _uniform(inv, (40, 40, 40), 4, density=density, show_lab=0, window=(0.6, 1.0))
+        outs.append(_haze_scene(dev, depth).compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3])
+    h, c = (0.66 - 0.6) / 0.4, (0.9 - 0.6) / 0.4
+    absorb = 2.0 ** (6 * density) - 1.0
+    expect = h + (c - h) * np.exp(-absorb * h)
+    mid = (slice(58, 70), slice(58, 70))                 # pixels over the cube's middle
+    for out in outs:
+        assert np.abs(out[mid] - expect).max() < 3e-3, (out[mid].min(), out[mid].max(), expect)
+
+
+def test_surface_is_mip_without_lighting_or_density(dev):
+    rng = np.random.default_rng(9)
+    vol = rng.random((24, 28, 32)).astype(np.float16)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.7, 0.3, 24.0)
+    surf = sc.compute(_uniform(inv, (32, 28, 24), 4, density=0.0, show_lab=0, window=(0.3, 0.9)), 4, 1, 0, 128, 128, faces=0.0)
+    mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
+    assert np.abs(surf[..., 3] - mip[..., 3]).max() < 2e-3

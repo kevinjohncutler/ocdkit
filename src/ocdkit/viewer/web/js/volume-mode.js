@@ -814,7 +814,7 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       densRow.title = curProj === 4
-        ? "Density: how much nearer surfaces hide those behind them (0 = see through to every surface, 1 = only the nearest)"
+        ? "Density: how much each surface hides what is behind it (0 = brighter surfaces behind show through fully, as in MIP; 1 = only the nearest shows)"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

@@ -124,7 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Surface: light comes only from faces where a ray enters brighter material, so objects look like solid, lit shapes. Values below the display window's low end are empty space; density sets how much nearer surfaces hide those behind"><span>Surf</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Surface: light comes only from faces where a ray enters material brighter than anything in front of it, so objects look like solid, lit shapes and dim voxels in the way add little. Values below the display window's low end are empty space; density sets how much each surface hides what is behind it"><span>Surf</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
