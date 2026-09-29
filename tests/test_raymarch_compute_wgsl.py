@@ -588,7 +588,7 @@ def test_classify_brick_skipping_changes_nothing(dev, mode):
     assert np.abs(a - b).max() < 2e-3
 
 
-# ── surface (MODE 4) ────────────────────────────────────────────────────────
+# ── block (MODE 4) ────────────────────────────────────────────────────────
 
 def _surface_cube(dev, n=20, lo=7, hi=13, value=0.9, background=0.5):
     vol = np.full((n, n, n), background, np.float16)
@@ -597,7 +597,7 @@ def _surface_cube(dev, n=20, lo=7, hi=13, value=0.9, background=0.5):
 
 
 @pytest.mark.parametrize("density", [0.0, 0.3, 1.0])
-def test_surface_uniform_block_is_one_flat_surface(dev, density):
+def test_block_uniform_block_is_one_flat_surface(dev, density):
     """A uniform 6^3 block lights up once, at its outer surface: every pixel it
     covers shows its windowed value exactly (no lines where voxels share a face),
     whatever the density, and the background below the window is empty."""
@@ -613,22 +613,7 @@ def test_surface_uniform_block_is_one_flat_surface(dev, density):
     assert out[empty].max() == 0.0
 
 
-def test_surface_cosine_lighting_shades_each_face(dev):
-    """With lighting 1 a cube shows three flat shades, its value times |ray . normal|
-    for the three faces toward the camera."""
-    sc = _surface_cube(dev, value=1.0, background=0.0)
-    inv, d, *_ = _ortho(0.6, 0.4, 16.0)
-    u = _uniform(inv, (20, 20, 20), 4, density=1.0, show_lab=0, window=(0.0, 1.0))
-    out = sc.compute(u, 4, 1, 0, 256, 256, faces=1.0)[..., 3]
-    vals = out[out > 0.05]
-    cos = np.sort(np.abs(d))
-    for c in cos:
-        share = np.mean(np.abs(vals - c) < 3e-3)
-        assert share > 0.1, (c, share)                      # each face is a flat patch of its cosine
-    assert np.mean(np.min(np.abs(vals[:, None] - cos[None]), 1) < 3e-3) > 0.97
-
-
-def test_surface_brick_skipping_changes_nothing(dev):
+def test_block_brick_skipping_changes_nothing(dev):
     rng = np.random.default_rng(5)
     vol = (rng.random((40, 36, 44)) * 0.5).astype(np.float16)
     vol[20:30, 4:14, 25:40] = (0.7 + 0.3 * rng.random((10, 10, 15))).astype(np.float16)
@@ -653,35 +638,43 @@ def _front_back_scene(dev, gap, n=48, front=0.7, back=0.95):
     return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
 
 
-@pytest.mark.parametrize("gap", [1, 6, 16, 30])
-@pytest.mark.parametrize("occl", [0.0, 0.5, 0.7, 0.9])
-def test_surface_occlusion_is_winner_take_all(dev, gap, occl):
-    """Each pixel shows ONE voxel's value, never a blend. A brighter voxel behind
-    takes over only if it beats the one in front by o (1 - e^(-gap / 4)): a dim
-    slab (a) in front of a brighter cube (b) `gap` voxels behind shows b only if
-    b > a + that margin. Occlusion 0 is MIP (always b)."""
+def _smoothstep(e0, e1, x):
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
+
+
+@pytest.mark.parametrize("gap", [8, 20])
+@pytest.mark.parametrize("occl,soft", [(0.0, 0.0), (0.5, 0.0), (0.7, 0.0), (0.8, 0.0), (0.7, 0.1), (0.7, 0.3)])
+def test_block_relative_blocking(dev, gap, occl, soft):
+    """A dim object (a) in front of a brighter one (b), empty space between: the
+    front blocks it if a / b >= X = 1 - occlusion (softness fades that in over
+    X +- soft), whatever the distance. The pixel shows a + (b - a)(1 - blocked):
+    with softness 0 exactly one object's peak. Occlusion 0 is MIP (b)."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
     u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0))
-    out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
+    out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=soft)[..., 3]   # (softness: u[47])
     a, b = (0.7 - 0.6) / 0.4, (0.95 - 0.6) / 0.4
-    expect = b if b > a + occl * (1.0 - np.exp(-gap / 4.0)) else a
+    X, r = 1.0 - occl, a / b
+    blocked = float(r >= X) if soft == 0 else _smoothstep(X - soft, X + soft, r)
+    expect = a + (b - a) * (1.0 - blocked)
     mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
     assert np.abs(out[mid] - expect).max() < 2e-3, (out[mid].min(), out[mid].max(), expect)
 
 
-def test_surface_core_behind_its_rim_shows_but_a_separate_object_is_hidden(dev):
-    """Same intensities, different distance: a bright core 1 voxel behind a dim
-    rim wins; the same brightness 30 voxels behind loses to the dim object in front."""
+def test_block_core_behind_its_rim_is_one_object(dev):
+    """Same intensities: touching (a rim right in front of its core) they are one
+    object and its peak shows, as in MIP; separated by empty space the dim one
+    blocks the bright one."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)
     u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, window=(0.6, 1.0))
-    near = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    far = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    touching = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    apart = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     a, b = 0.25, 0.875
-    assert np.abs(near - b).max() < 2e-3
-    assert np.abs(far - a).max() < 2e-3
+    assert np.abs(touching - b).max() < 2e-3
+    assert np.abs(apart - a).max() < 2e-3
 
 
-def test_surface_is_mip_without_lighting_or_density(dev):
+def test_block_is_mip_without_lighting_or_density(dev):
     rng = np.random.default_rng(9)
     vol = rng.random((24, 28, 32)).astype(np.float16)
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
@@ -691,7 +684,7 @@ def test_surface_is_mip_without_lighting_or_density(dev):
     assert np.abs(surf[..., 3] - mip[..., 3]).max() < 2e-3
 
 
-def test_surface_dim_speckle_far_in_front_does_not_win(dev):
+def test_block_dim_speckle_far_in_front_does_not_win(dev):
     """A near-black voxel far in front of a bright object only beats what is dimmer
     than itself plus the occlusion margin, so the object still shows."""
     n = 48

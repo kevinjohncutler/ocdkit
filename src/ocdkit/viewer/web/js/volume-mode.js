@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, surfLight: curSurfLight, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoft: curBlockSoft, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -148,12 +148,11 @@
     const VOX_DENSITY_DEFAULT = 0.4;
     const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
-    // Surface (projection 4): always windowed per voxel; each pixel shows one voxel.
-    // Its density slider sets OCCLUSION, the brightness margin (0..1, at full
-    // distance) a voxel further back needs to beat the one in front (0 = MIP), and
-    // its lighting runs from flat emitters (0) to faces shaded by angle (1).
+    // Block (projection 4): MIP with relative blocking between objects. Its density
+    // slider sets OCCLUSION: the object in front blocks one behind if it is at least
+    // (1 - occlusion) as bright (0 = MIP); softness fades the block in around that.
     let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
-    let curSurfLight = typeof _vs.surfLight === "number" ? Math.min(1, Math.max(0, _vs.surfLight)) : 1.0;
+    let curBlockSoft = typeof _vs.blockSoft === "number" ? Math.min(0.5, Math.max(0, _vs.blockSoft)) : 0.1;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
@@ -532,7 +531,7 @@
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
           classify: curClassify,
-          surfaceLight: curSurfLight,
+          blockSoftness: curBlockSoft,
           depthCue: curDepthCue,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
@@ -761,35 +760,35 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
-    // ── Surface lighting slider (Surface only) ──
-    const slRow = document.getElementById("surfLightRow");
-    const slRange = document.getElementById("surfLightSlider");
-    const slNum = document.getElementById("surfLightInput");
-    function setSurfLight(t, from) {
-      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 1));
-      curSurfLight = t;
+    // ── Block softness slider (Block only) ──
+    const slRow = document.getElementById("blockSoftRow");
+    const slRange = document.getElementById("blockSoftSlider");
+    const slNum = document.getElementById("blockSoftInput");
+    function setBlockSoft(t, from) {
+      t = Math.max(0, Math.min(0.5, Number.isFinite(Number(t)) ? Number(t) : 0.1));
+      curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
-        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("surfLightSlider");
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockSoftSlider");
       }
       if (slNum && from !== "num") slNum.value = t.toFixed(2);
-      if (vgpu) vgpu.setSurfaceLight(t);
+      if (vgpu) vgpu.setBlockSoftness(t);
       saveVolState();
     }
     if (slRange) {
-      slRange.value = String(curSurfLight);
-      slRange.addEventListener("input", () => setSurfLight(slRange.value, "range"));
-      const sroot = document.getElementById("surfLightSliderRoot");
+      slRange.value = String(curBlockSoft);
+      slRange.addEventListener("input", () => setBlockSoft(slRange.value, "range"));
+      const sroot = document.getElementById("blockSoftSliderRoot");
       if (sroot && window.ViewerUI && ViewerUI.registerSlider) {
-        sroot.dataset.sliderId = "surfLightSlider";
+        sroot.dataset.sliderId = "blockSoftSlider";
         ViewerUI.registerSlider(sroot);
       }
     }
     if (slNum) {
-      slNum.value = curSurfLight.toFixed(2);
-      slNum.addEventListener("change", () => setSurfLight(slNum.value, "num"));
+      slNum.value = curBlockSoft.toFixed(2);
+      slNum.addEventListener("change", () => setBlockSoft(slNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(slNum, (d) => setSurfLight(curSurfLight + d));
+        ViewerUI.attachNumberInputStepper(slNum, (d) => setBlockSoft(curBlockSoft + d));
       }
     }
 
@@ -840,7 +839,7 @@
         const wasHiddenS = slRow.hidden;
         slRow.hidden = !showSl;
         if (showSl && wasHiddenS && window.ViewerUI && ViewerUI.refreshSlider) {
-          requestAnimationFrame(() => ViewerUI.refreshSlider("surfLightSlider"));
+          requestAnimationFrame(() => ViewerUI.refreshSlider("blockSoftSlider"));
         }
       }
       if (vwRow) vwRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
@@ -858,7 +857,7 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       densRow.title = curProj === 4
-        ? "Occlusion: 0 = MIP (the brightest voxel along each ray shows). Higher: a voxel further back shows only if it is brighter than the one in front by up to this much (less when they are close, as for a bright core right behind its own rim), so nearer objects hide brighter ones behind them. Each pixel still shows one voxel at its own value"
+        ? "Occlusion: an object in front blocks one behind it if it is at least (1 - occlusion) as bright (0.3: at least 70% as bright). 0 = MIP. Within one object the brightest voxel shows, so a bright core behind its own dim rim is never blocked"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

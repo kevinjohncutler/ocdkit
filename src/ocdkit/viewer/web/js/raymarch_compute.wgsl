@@ -62,7 +62,7 @@ struct U {
 @group(0) @binding(5) var brickImg : texture_3d<f32>;   // max normalized intensity per brick
 @group(0) @binding(6) var brickLab : texture_3d<u32>;   // 1 if the brick holds any label voxel
 
-override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA, 4 surface
+override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA, 4 block
 override SHOW_IMG : bool = true;
 override SHOW_LAB : bool = true;
 override SHADE_LAB : bool = true;
@@ -92,32 +92,27 @@ override CLASSIFY : bool = false;
 // a voxel reads w times its windowed value in every mode, including the ones
 // that window their result (MIP, mean, EA, MIDA): fading raw values toward 0
 // pushed them below a high low end and blacked the image out. Per-voxel-window
-// modes (Surface, and EA/MIDA with CLASSIFY) scale the windowed value itself.
+// modes (Block, and EA/MIDA with CLASSIFY) scale the windowed value itself.
 // A pipeline constant: with the cue off nothing changes and nothing is computed.
 override CUE : bool = false;
-// Surface (MODE 4): MIP with occlusion, winner take all. Each pixel shows ONE
-// voxel, at its own windowed value (times its face lighting), never a blend.
-// Front to back, a voxel brighter than everything so far takes over from the
-// current winner (value w, d voxels in front of it) only if
-//     v > w + o (1 - e^(-d / SURF_SEP)),
-// o = the occlusion slider (0..1). With o = 0 the brightest voxel wins: MIP
-// exactly. With o > 0 a voxel further back must be brighter than the one in
-// front by a margin that grows with the distance between them and levels off
-// after a few voxels: so a dimmer object in front hides a brighter one well
-// behind it (how much depends on its intensity: the one behind must beat it by
-// the margin), while the bright core of the same object right behind its own dim
-// rim (small d, small margin) still wins, and a dim noise voxel far in front can
-// only beat what is dimmer than itself plus o (a score that decays with distance
-// let near-black speckles far in front win whole regions). Only voxels brighter
-// than all in front can win, so bricks at or below max(low end, running max) are
-// skipped, and the march stops once nothing brighter can win any more.
-// A face between equal voxels is not a new candidate, so a uniform stack shows
-// as one solid block and a lone voxel of value v shows v.
-const SURF_SEP : f32 = 4.0;   // voxels over which the occlusion margin builds up
-// Lighting t = u.win.w scales each face by mix(1, cos, t), cos = |ray . normal|:
-// 0 = every surface equally bright (a flat emitter), 1 = shaded by its angle to
-// the camera. Always windowed per voxel (values at or below the window's low end
-// are empty space); bricks that can't rise above max(low end, m) are skipped.
+// Block (MODE 4): MIP with relative blocking between objects. Along the ray,
+// voxels above the window's low end form objects: an object ends where the
+// value drops to the low end or dips below BLOCK_SPLIT of that object's peak
+// (so touching objects with a darker boundary between them separate). Each
+// object is represented by its peak (MIP within an object: a bright core right
+// behind its own dim rim always shows, and noise inside an object does not
+// matter). Objects are composited front to back: one brighter than what is
+// shown so far (V) replaces it unless the front blocks it, by how bright the
+// front is RELATIVE to it: blocked = smoothstep(X - soft, X + soft, V / m),
+// X = 1 - occlusion (the front blocks an object if it is at least X as bright),
+// soft = u.win.w (0: a hard on/off block, so each pixel shows one object's
+// peak). The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
+// Unlike EA, where the front removes the same fraction of light from
+// everything behind it, a dim object here blocks what is only a little
+// brighter than itself while something much brighter behind still shows (so
+// dim noise far in front hides almost nothing). Bricks at or below the low end
+// are empty space: skipped, and they end the current object.
+const BLOCK_SPLIT : f32 = 0.6;
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
 // shading peaks where the ray crosses the most of it, like a distance field).
@@ -216,6 +211,14 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   let A1 = beta * exp(-mu * segLen) * A0 + expWeightedIntegral(segLen, mu, 1.0, omL / omM, omL / om0);
   *acc = vec4<f32>(sv * A1 + (I0 - sv * A0) * beta, 0.0, 0.0, A1);
   *mx = 1.0 - omL;
+}
+// Block (MODE 4): composite an object of peak m behind what is shown so far (V).
+fn blockComposite(V : f32, m : f32, X : f32, soft : f32) -> f32 {
+  if (m <= V) { return V; }
+  if (V <= 0.0) { return m; }                         // nothing in front: nothing blocks
+  let r = V / m;
+  let blocked = select(select(0.0, 1.0, r >= X), smoothstep(X - soft, X + soft, r), soft > 1e-4);
+  return V + (m - V) * (1.0 - blocked);
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
@@ -349,13 +352,12 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
-    var sPrev = 0.0;                                  // surface: running max of the windowed value
-    var tBest = 0.0;                                  // surface: ray parameter of the current winner
-    let dvLen = length(dv0);                          // voxels per unit of the ray parameter
+    let blockX = 1.0 - density;                       // block: the front blocks at this relative brightness
+    let blockSoft = clamp(u.win.w, 0.0, 0.5);         // block: fade width (0 = on/off)
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
-    let faceMix = clamp(u.win.w, 0.0, 1.0);          // (surface: lighting)
+    let faceMix = clamp(u.win.w, 0.0, 1.0);
     // depth cue: the ray parameter of the visible data's front (its bounding box's
     // nearest corner along the ray) and the falloff length
     var tRef = 0.0;
@@ -368,7 +370,6 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       }
       cueL = length(span) * (1.0 - u.cueLo.w) / max(u.cueLo.w, 1e-4);
     }
-    let dn = abs(dv0) / max(length(dv0), 1e-8);       // surface: |ray . axis| per axis
     for (var g = 0; g < maxIter; g = g + 1) {
       // Keep this check FLAT (bv computed every step, one combined condition).
       // Nesting it under its own `if (MODE == 1)` measured up to 35% slower for
@@ -378,15 +379,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         curB = bv;
         // MIP: the brick can't raise the max; per-voxel window: it is all empty space
         // (surface: nothing at or below the running max emits or blocks, so the same test as MIP)
-        // (depth cue: MIP and surface compare weighted values; the weight at the
-        // brick's entry is the largest inside it)
+        // (depth cue: MIP compares faded values; the weight at the brick's entry is
+        // the largest inside it)
         let wc = select(1.0, cueWeight(tnear + tPrev, tRef, cueL), CUE);
         if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <=
-            select(select(u.win.x, u.win.x + sPrev / max(wc * u.win.y, 1e-20), MODE == 4),
+            select(u.win.x,
                    select(imgMip, u.win.x + (imgMip - u.win.x) / max(wc, 1e-20), CUE && imgMip > u.win.x),
                    MODE == 1)) {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
+          if (MODE == 4 && imgAcc.y > 0.0) {                // block: empty space ends the object
+            imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); imgAcc.y = 0.0;
+          }
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
           continue;
@@ -417,24 +421,13 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 4) {
+        // imgAcc.x = what is shown so far, imgAcc.y = the current object's peak (0: none)
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
-        if (sw > sPrev) {
-          // the face the ray entered this voxel through: the axis whose entry plane
-          // it crossed last (also right after a brick jump and at the volume's edge)
-          let tEnt = (vox + select(vec3<f32>(1.0), vec3<f32>(0.0), stp > vec3<f32>(0.0)) - p0) / dv;
-          let cosF = select(select(dn.z, dn.y, tEnt.y >= tEnt.z), dn.x, tEnt.x >= tEnt.y && tEnt.x >= tEnt.z);
-          // takes over from the winner (imgAcc.y its value, imgAcc.x lit) if brighter
-          // by the margin for its distance behind it
-          let margin = density * (1.0 - exp(-(tPrev - tBest) * dvLen / SURF_SEP));
-          if (imgAcc.y <= 0.0 || sw > imgAcc.y + margin) {
-            imgAcc.y = sw;
-            imgAcc.x = sw * mix(1.0, cosF, faceMix);
-            tBest = tPrev;
-          }
-          sPrev = sw;
-          // nothing can beat the winner any more (values stop at 1, margins only grow)
-          if (sPrev >= 1.0 || imgAcc.y + margin >= 1.0) { break; }
+        if (imgAcc.y > 0.0 && (sw <= 0.0 || sw < BLOCK_SPLIT * imgAcc.y)) {   // the object ends
+          imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); imgAcc.y = 0.0;
+          if (imgAcc.x >= min(blockX + blockSoft, 1.0)) { break; }        // nothing further can show
         }
+        if (sw > 0.0) { imgAcc.y = max(imgAcc.y, sw); }
       } else if (MODE == 1) {
         imgMip = max(imgMip, select(s, cueFade(s, u.win.x, wq), CUE));
       } else {
@@ -452,6 +445,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
+    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
     else {
@@ -470,7 +464,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       //   Window per voxel: the result is already windowed (0..1), so only gamma
       //         and the colormap remain
       var raw = imgAcc.x;
-      //   Surface: the light from the faces the ray entered, already windowed
+      //   Block: the peak of the object that shows, already windowed
       if (MODE == 0 && !CLASSIFY) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
       let v = select(pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma),
                      pow(clamp(raw, 0.0, 1.0), gamma), CLASSIFY || MODE == 4);

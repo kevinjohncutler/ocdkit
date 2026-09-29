@@ -124,7 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Surface: MIP with occlusion. Values below the display window's low end are empty space; each pixel shows one voxel; occlusion 0 is MIP, and higher lets nearer objects hide brighter ones behind them"><span>Surf</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Block: MIP with relative blocking. Each object along a ray shows at its brightest voxel; an object in front blocks one behind it if it is at least (1 - occlusion) as bright, so a dim object hides what is only a little brighter while something much brighter behind still shows. Values below the display window's low end are empty space"><span>Block</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
@@ -163,15 +163,15 @@
               </div>
             </div>
           </div>
-          <div class="control slider-inline" id="surfLightRow" hidden
-               title="Surface lighting: 0 lights every surface equally (flat emitters), 1 shades each voxel face by its angle to the camera">
-            <span class="control-heading control-heading--lower control-heading--icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,8A4,4 0 0,0 8,12A4,4 0 0,0 12,16A4,4 0 0,0 16,12A4,4 0 0,0 12,8M12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6A6,6 0 0,1 18,12A6,6 0 0,1 12,18M20,8.69V4H15.31L12,0.69L8.69,4H4V8.69L0.69,12L4,15.31V20H8.69L12,23.31L15.31,20H20V15.31L23.31,12L20,8.69Z"/></svg></span>
+          <div class="control slider-inline" id="blockSoftRow" hidden
+               title="Softness: 0 blocks on/off at the occlusion threshold (each pixel shows one object); higher fades the block in over the threshold +- softness">
+            <span class="control-heading control-heading--lower control-heading--icon"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20V4Z"/></svg></span>
             <div class="slider-row">
-              <div class="slider" id="surfLightSliderRoot" data-slider-type="single">
-                <input type="range" id="surfLightSlider" min="0" max="1" step="0.01" value="1" />
+              <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
+                <input type="range" id="blockSoftSlider" min="0" max="0.5" step="0.01" value="0.1" />
               </div>
-              <div class="number-field" data-number-id="surfLightInput">
-                <input type="number" id="surfLightInput" min="0" max="1" step="0.05" value="1.00" />
+              <div class="number-field" data-number-id="blockSoftInput">
+                <input type="number" id="blockSoftInput" min="0" max="0.5" step="0.05" value="0.10" />
               </div>
             </div>
           </div>

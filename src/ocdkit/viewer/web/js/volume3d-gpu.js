@@ -250,7 +250,7 @@
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._surfLight = opts.surfaceLight != null ? Math.min(1, Math.max(0, +opts.surfaceLight)) : 1.0;   // surface lighting
+      this._blockSoft = opts.blockSoftness != null ? Math.min(0.5, Math.max(0, +opts.blockSoftness)) : 0.1;   // block softness
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -915,8 +915,8 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      // window, EA exposure, voxel shading (surface: its lighting instead)
-      u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._surfLight : (this._facesMix || 0)], 44);
+      // window, EA exposure, voxel shading (block: its softness instead)
+      u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._blockSoft : (this._facesMix || 0)], 44);
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
       u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
@@ -1184,10 +1184,10 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Surface projection (mode 4) lighting, 0..1: 0 lights every surface equally
-     *  (flat emitters), 1 shades each voxel face by its angle to the camera. */
-    setSurfaceLight(t) {
-      this._surfLight = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 1));
+    /** Block projection (mode 4) softness, 0..0.5: 0 blocks on/off at the
+     *  threshold, higher fades the block in over threshold +- softness. */
+    setBlockSoftness(t) {
+      this._blockSoft = Math.min(0.5, Math.max(0, Number.isFinite(+t) ? +t : 0.1));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
