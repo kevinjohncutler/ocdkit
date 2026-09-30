@@ -124,7 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Block: MIP with relative blocking. Each object along a ray shows at its brightest voxel; an object in front blocks one behind it if it is at least X as bright (X from 100% at occlusion 0, which is MIP, down to 0 at occlusion 1), so a dim object hides what is only a little brighter while something much brighter behind still shows. Values below the display window's low end are empty space"><span>Block</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Block: bright structures block the light from behind them, in proportion to their brightness relative to that light, and cumulatively: a thick enough dim region hides even very bright light behind it. Brightness weights brightness against thickness; block depth is how much material it takes. Values below the display window's low end are empty"><span>Block</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
@@ -178,19 +178,19 @@
             </div>
           </div>
           <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Softness: 0 blocks on/off at the occlusion threshold (each pixel shows one object); higher fades the block in from (1 - softness) to (1 + softness) times the threshold. At occlusion 1 anything in front blocks fully whatever the softness">
-            <span class="control-heading control-heading--lower">softness</span>
+               title="Brightness: how much a blocker's brightness, relative to the light behind it, matters against its thickness. A voxel blocks at the rate (its brightness / the light behind)^brightness: 0 = only thickness matters (any material blocks), 1 = half as bright blocks at half the rate, 3 = only material nearly as bright blocks noticeably. Faint background barely blocks at 2 and above">
+            <span class="control-heading control-heading--lower">brightness</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="1" step="0.01" value="0.9" />
+                <input type="range" id="blockSoftSlider" min="0" max="4" step="0.05" value="2" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="1" step="0.05" value="0.90" />
+                <input type="number" id="blockSoftInput" min="0" max="4" step="0.1" value="2.00" />
               </div>
             </div>
           </div>
           <div class="control slider-inline" id="blockMinRow" hidden
-               title="Block depth (voxels): how many voxels of a blocker (a voxel at least X as bright as the light behind it, see occlusion) hide 95% of that light. Fewer voxels block gradually less, so a thin or grazed object blocks a little and a thick one fully">
+               title="Block depth (voxels, 0.5 to 100): how many voxels of material as bright as the light behind it hide 95% of that light. Dimmer material needs more (see brightness). Blocking accumulates, so a thick dim region can hide a bright one behind it. Larger values approach MIP">
             <span class="control-heading control-heading--lower">block depth</span>
             <div class="slider-row">
               <div class="slider" id="blockMinSliderRoot" data-slider-type="single">

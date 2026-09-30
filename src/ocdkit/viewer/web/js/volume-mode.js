@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockOcc03: curSurfOcc, blockSoft09: curBlockSoft, blockDepth20: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockPower: curBlockSoft, blockDepth20: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -156,7 +156,8 @@
     let curSurfOcc = typeof _vs.blockOcc03 === "number" && _vs.blockOcc03 >= 0 ? _vs.blockOcc03 : 0.3;
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
-    let curBlockSoft = typeof _vs.blockSoft09 === "number" ? Math.min(1, Math.max(0, _vs.blockSoft09)) : 0.9;
+    // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
+    let curBlockSoft = typeof _vs.blockPower === "number" ? Math.min(4, Math.max(0, _vs.blockPower)) : 2;
     let curBlockDepth = typeof _vs.blockDepth20 === "number" ? Math.min(100, Math.max(0.5, _vs.blockDepth20)) : 20;   // block depth (voxels)
     // the block depth slider is logarithmic: position p in 0..1 -> 0.5 x 200^p voxels (0.5..100)
     const depthFromPos = (p) => 0.5 * Math.pow(200, Math.max(0, Math.min(1, p)));
@@ -167,7 +168,7 @@
     let curFadeZ = _vs.fadeZEnds === true;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
-    const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
+    const densityMode = () => curProj === 0 || curProj === 3;   // modes with a density slider (Block has its own)
     const activeDensity = () => (curProj === 4 ? curSurfOcc
                                : curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
                                : (curClassify ? curEaVox : curDensity));
@@ -543,7 +544,7 @@
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
           classify: curClassify,
-          blockSoftness: curBlockSoft,
+          blockPower: curBlockSoft,
           blockDepth: curBlockDepth,
           depthCue: curDepthCue,
           levelFrames: curLevel,
@@ -775,19 +776,19 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
-    // ── Block softness slider (Block only) ──
+    // ── Block brightness weight slider (Block only) ──
     const slRow = document.getElementById("blockSoftRow");
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.9));
+      t = Math.max(0, Math.min(4, Number.isFinite(Number(t)) ? Number(t) : 2));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockSoftSlider");
       }
       if (slNum) slNum.value = t.toFixed(2);
-      if (vgpu) vgpu.setBlockSoftness(t);
+      if (vgpu) vgpu.setBlockPower(t);
       saveVolState();
     }
     if (slRange) {

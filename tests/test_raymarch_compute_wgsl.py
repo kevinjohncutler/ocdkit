@@ -643,30 +643,6 @@ def _smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
-def test_block_is_mip_without_lighting_or_density(dev):
-    rng = np.random.default_rng(9)
-    vol = rng.random((24, 28, 32)).astype(np.float16)
-    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
-    inv, *_ = _ortho(0.7, 0.3, 24.0)
-    surf = sc.compute(_uniform(inv, (32, 28, 24), 4, density=0.0, show_lab=0, exposure=0.0, window=(0.3, 0.9)), 4, 1, 0, 128, 128, faces=0.0)
-    mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
-    assert np.abs(surf[..., 3] - mip[..., 3]).max() < 2e-3
-
-
-def test_block_dim_speckle_far_in_front_does_not_win(dev):
-    """At moderate occlusion a near-black sheet far in front of a bright object
-    blocks only what is not much brighter than itself, so the object still shows."""
-    n = 48
-    vol = np.zeros((n, n, n), np.float16)
-    vol[2, 10:38, 10:38] = 0.62                          # a sheet of speckle just above the low end
-    vol[36:42, 20:28, 20:28] = 0.95                      # bright cube 34 voxels behind it
-    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (n, n, n), 4, density=0.3, show_lab=0, exposure=0.0, window=(0.6, 1.0))
-    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    assert np.abs(out - (0.95 - 0.6) / 0.4).max() < 2e-3
-
-
 # ── depth cue (CUE) ─────────────────────────────────────────────────────────
 
 def _cue(u, vol, lo, strength):
@@ -775,15 +751,14 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert on[far].mean() < 0.8 * off[far].mean()
 
 
-def _block_voxel(C, v, L, X, soft, k):
+def _block_voxel(C, v, L, p, k):
     """numpy mirror of blockVoxel in raymarch_compute.wgsl."""
     if v > C:
         return v
-    if v <= 0 or X >= 1:
+    if v <= 0:
         return C
     r = v / max(C, 1e-6)
-    h = float(r >= X) if soft <= 1e-4 else float(_smoothstep(X * (1 - soft), X * (1 + soft), r))
-    return C + (v - C) * (1 - np.exp(-k * h * L))
+    return v + (C - v) * np.exp(-k * r ** p * L)
 
 
 def _slab_scene(dev, thick, n=48, front=0.7, back=0.95, gap=6):
@@ -800,35 +775,6 @@ _A = (float(np.float16(0.7)) - 0.6) / 0.4       # the slab, windowed (0.25)
 _B = (float(np.float16(0.95)) - 0.6) / 0.4      # the cube, windowed (0.875)
 
 
-@pytest.mark.parametrize("thick", [1, 4])
-@pytest.mark.parametrize("occl,soft,depth", [(0.5, 0.0, 3.0), (0.7, 0.0, 3.0), (0.8, 0.0, 3.0), (1.0, 0.0, 1.0),
-                                             (1.0, 0.0, 8.0), (0.72, 0.3, 3.0), (0.72, 0.6, 3.0),
-                                             (0.72, 1.0, 3.0), (0.3, 0.9, 20.0), (0.5, 0.9, 100.0)])
-def test_block_relative_blocking_by_depth(dev, thick, occl, soft, depth):
-    """Back to front: the light from the cube (b) passes a dim slab (a). The slab
-    blocks only if a >= X b (X = 1 - occlusion), and then by how many of its
-    voxels the ray crosses: C = a + (b - a) e^(-3 thick / depth) for a hard
-    threshold; the same per-voxel rule (numpy mirror) with softness."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0), exposure=depth)
-    out = _slab_scene(dev, thick).compute(u, 4, 1, 0, 128, 128, faces=soft)[60:68, 60:68, 3]
-    X = 1.0 - occl
-    C = _B
-    for _ in range(thick):
-        C = _block_voxel(C, _A, 1.0, X, soft, 3.0 / depth)
-    assert np.abs(out - C).max() < 3e-3, (out.min(), out.max(), C)
-
-
-def test_block_dim_voxels_never_block_brighter_light(dev):
-    """A voxel dimmer than X times the light behind it is transparent, however many
-    of them the ray crosses: a 20-voxel slab at 29% of the cube behind it hides
-    nothing when X = 50%."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=1.0)
-    out = _slab_scene(dev, 20, gap=2).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    assert np.abs(out - _B).max() < 2e-3
-
-
 def test_block_brightness_does_not_stack(dev):
     """Inside a uniform object the light settles at its value: a 24-voxel-deep
     block reads exactly its windowed value, like a 2-voxel one."""
@@ -842,4 +788,55 @@ def test_block_brightness_does_not_stack(dev):
         outs.append(sc.compute(u, 4, 1, 0, 128, 128, faces=0.3)[60:68, 60:68, 3])
     for o in outs:
         assert np.abs(o - 0.75).max() < 2e-3
+
+
+@pytest.mark.parametrize("thick", [1, 4, 20])
+@pytest.mark.parametrize("power,depth", [(0.0, 3.0), (1.0, 3.0), (1.5, 20.0), (3.0, 20.0), (1.0, 100.0)])
+def test_block_cumulative_relative_blocking(dev, thick, power, depth):
+    """Back to front: the light from the cube (b) passes a dimmer slab (a) `thick`
+    voxels deep; each voxel blocks at the rate (3 / depth) (a / C)^power and moves C
+    toward a (numpy mirror of the per-voxel rule)."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=depth)
+    out = _slab_scene(dev, thick, gap=2).compute(u, 4, 1, 0, 128, 128, faces=power)[60:68, 60:68, 3]
+    C = _B
+    for _ in range(thick):
+        C = _block_voxel(C, _A, 1.0, power, 3.0 / depth)
+    assert np.abs(out - C).max() < 3e-3, (out.min(), out.max(), C)
+
+
+def test_block_thick_dim_region_hides_bright_light(dev):
+    """Blocking accumulates: 30 voxels of material at 29% of the bright light behind
+    it hide most of that light (and show as themselves)."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=10.0)
+    out = _slab_scene(dev, 30, gap=1).compute(u, 4, 1, 0, 128, 128, faces=1.0)[60:68, 60:68, 3]
+    assert out.max() < _A + 0.1 * (_B - _A)
+
+
+@pytest.mark.parametrize("power", [1.5, 3.0])
+def test_block_faint_background_barely_blocks(dev, power):
+    """A 20-voxel slab of faint material at 6% of the light behind it: at the default
+    brightness weight 1.5 it removes about 4% of that light (exactly the per-voxel
+    rule), and at 3 under 1%: the weight sets how much faint background blocks."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=20.0)
+    out = _slab_scene(dev, 20, gap=2, front=0.62).compute(u, 4, 1, 0, 128, 128, faces=power)[60:68, 60:68, 3]
+    a = (float(np.float16(0.62)) - 0.6) / 0.4
+    C = _B
+    for _ in range(20):
+        C = _block_voxel(C, a, 1.0, power, 3.0 / 20.0)
+    assert np.abs(out - C).max() < 2e-3, (out.min(), C)
+    if power >= 3:
+        assert out.min() > 0.99 * _B
+
+
+def test_block_is_mip_when_block_depth_is_huge(dev):
+    rng = np.random.default_rng(9)
+    vol = rng.random((24, 28, 32)).astype(np.float16)
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.7, 0.3, 24.0)
+    blk = sc.compute(_uniform(inv, (32, 28, 24), 4, show_lab=0, window=(0.3, 0.9), exposure=1e7), 4, 1, 0, 128, 128, faces=1.5)
+    mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
+    assert np.abs(blk[..., 3] - mip[..., 3]).max() < 2e-3
 

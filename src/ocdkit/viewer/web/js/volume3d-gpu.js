@@ -310,7 +310,7 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockSoft = opts.blockSoftness != null ? Math.min(1, Math.max(0, +opts.blockSoftness)) : 0.9;   // block softness
+      this._blockPower = opts.blockPower != null ? Math.min(8, Math.max(0, +opts.blockPower)) : 2;   // block: brightness weight p
       this._blockDepth = opts.blockDepth > 0 ? Math.min(100, Math.max(0.5, +opts.blockDepth)) : 20;   // block: voxels that block 95%
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
@@ -980,7 +980,7 @@
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       // window, EA exposure, voxel shading (block: its block depth and softness instead)
       const blk = this.mode === 4;
-      u.set([this._win[0], this._win[1], blk ? this._blockDepth : this._eaExposure, blk ? this._blockSoft : (this._facesMix || 0)], 44);
+      u.set([this._win[0], this._win[1], blk ? this._blockDepth : this._eaExposure, blk ? this._blockPower : (this._facesMix || 0)], 44);
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
       u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
@@ -1295,10 +1295,12 @@
       this._blockDepth = Math.min(100, Math.max(0.5, Number.isFinite(+v) ? +v : 20));
       this._requestRender();
     }
-    /** Block projection (mode 4) softness, 0..1: 0 blocks on/off at the
-     *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
-    setBlockSoftness(t) {
-      this._blockSoft = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 0.9));
+    /** Block projection (mode 4) brightness weight p: a dimmer voxel blocks the light
+     *  behind it at the rate (v / C)^p x 3 / block depth, so 0 = only thickness
+     *  matters, 1 = in proportion to its relative brightness, 3 = only material
+     *  nearly as bright as the light behind blocks noticeably. */
+    setBlockPower(p) {
+      this._blockPower = Math.min(8, Math.max(0, Number.isFinite(+p) ? +p : 2));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
