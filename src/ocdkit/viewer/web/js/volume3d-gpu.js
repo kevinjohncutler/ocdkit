@@ -286,8 +286,8 @@
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.5;   // block softness
-      this._blockDepth = opts.blockDepth > 0 ? Math.min(20, Math.max(0.5, +opts.blockDepth)) : 8;   // block: voxels that block 95%
+      this._blockSoft = opts.blockSoftness != null ? Math.min(1, Math.max(0, +opts.blockSoftness)) : 0.5;   // block softness
+      this._blockDepth = opts.blockDepth > 0 ? Math.min(100, Math.max(0.5, +opts.blockDepth)) : 8;   // block: voxels that block 95%
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -1246,17 +1246,18 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4) block depth, voxels (0.5..20): how many voxels of a
+    /** Block projection (mode 4) block depth, voxels (0.5..100): how many voxels of a
      *  blocker (a voxel at least X as bright as the light behind it) hide 95% of that
      *  light; fewer block gradually less. */
     setBlockDepth(v) {
-      this._blockDepth = Math.min(20, Math.max(0.5, Number.isFinite(+v) ? +v : 8));
+      this._blockDepth = Math.min(100, Math.max(0.5, Number.isFinite(+v) ? +v : 8));
       this._requestRender();
     }
-    /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
-     *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
+    /** Block projection (mode 4) softness, 0..1: 0 blocks on/off at the threshold X,
+     *  higher fades the block in over X / f .. X f, f = 1 + 3 softness (a quarter to four
+     *  times X at 1). */
     setBlockSoftness(t) {
-      this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.5));
+      this._blockSoft = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 0.5));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }

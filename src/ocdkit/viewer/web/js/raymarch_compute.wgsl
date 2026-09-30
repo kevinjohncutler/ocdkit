@@ -104,9 +104,12 @@ override CUE : bool = false;
 //   v <= C      it blocks by how bright it is relative to that light: C moves
 //               toward v by 1 - e^(-k h(v / C) L), L = the path length through it
 //               (voxels), k = 3 / D (D = u.win.z, the block depth: that many
-//               voxels of blocker hide 95% of what is behind them), and
-//               h(r) = smoothstep(X (1 - soft), X (1 + soft), r) (a step at X for
-//               soft 0), X = 1 - occlusion (linear: occlusion 0.5 means a voxel
+//               voxels of blocker hide 95% of what is behind them), and h(r) a
+//               smooth step in log r from X / f to X f, f = 1 + 3 soft (a step at
+//               X for soft 0; at soft 1 from X / 4 to 4 X: the band never reaches
+//               0, so voxels well below X stay transparent at any softness, where
+//               a linear band down to X (1 - soft) let near-zero ratios block and,
+//               summed over long rays, haze too), X = 1 - occlusion (linear: occlusion 0.5 means a voxel
 //               must be at least half as bright as the light behind it to block,
 //               so faint haze in front of bright structure never does; a log
 //               scale let haze at 10-20% block at modest settings)
@@ -224,7 +227,9 @@ fn blockVoxel(C : f32, v : f32, L : f32, X : f32, soft : f32, k : f32) -> f32 {
   if (v > C) { return v; }                            // brighter: replaces what is behind
   if (v <= 0.0 || X >= 1.0) { return C; }             // empty, or occlusion 0 (MIP)
   let r = v / max(C, 1e-6);
-  let h = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
+  if (X <= 0.0) { return C + (v - C) * (1.0 - exp(-k * L)); }   // occlusion 1: anything blocks
+  let f = log(1.0 + 3.0 * soft);
+  let h = select(select(0.0, 1.0, r >= X), smoothstep(log(X) - f, log(X) + f, log(r)), soft > 1e-4);
   return C + (v - C) * (1.0 - exp(-k * h * L));
 }
 fn labelColor(lab : u32) -> vec3<f32> {
@@ -365,7 +370,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     // its fade width, the absorption per voxel (block depth D: 3 / D), voxels per
     // unit of the ray parameter
     let blockX = clamp(1.0 - density, 0.0, 1.0);
-    let blockSoft = clamp(u.win.w, 0.0, 0.9);
+    let blockSoft = clamp(u.win.w, 0.0, 1.0);
     let blockK = 3.0 / max(u.win.z, 0.05);
     let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);

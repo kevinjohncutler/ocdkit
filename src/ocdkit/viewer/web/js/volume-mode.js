@@ -155,8 +155,11 @@
     // (a new key: the scale changed to linear, X = 1 - occlusion)
     let curSurfOcc = typeof _vs.blockOcclusion === "number" && _vs.blockOcclusion >= 0 ? _vs.blockOcclusion : 0.3;
     // (saved under new keys: the meanings changed, and the defaults are gentler)
-    let curBlockSoft = typeof _vs.blockSoftness === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftness)) : 0.5;
-    let curBlockDepth = typeof _vs.blockDepth === "number" ? Math.min(20, Math.max(0.5, _vs.blockDepth)) : 8;   // block depth (voxels)
+    let curBlockSoft = typeof _vs.blockSoftness === "number" ? Math.min(1, Math.max(0, _vs.blockSoftness)) : 0.5;
+    let curBlockDepth = typeof _vs.blockDepth === "number" ? Math.min(100, Math.max(0.5, _vs.blockDepth)) : 8;   // block depth (voxels)
+    // the block depth slider is logarithmic: position p in 0..1 -> 0.5 x 200^p voxels (0.5..100)
+    const depthFromPos = (p) => 0.5 * Math.pow(200, Math.max(0, Math.min(1, p)));
+    const posFromDepth = (d) => Math.log(Math.max(0.5, Math.min(100, d)) / 0.5) / Math.log(200);
     // Level frames (every 3D mode): divide each z slice by its median background
     let curLevel = _vs.levelFrames === true;
     // Depth cue (every 3D mode): 0 = off
@@ -773,7 +776,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(0.9, Number.isFinite(Number(t)) ? Number(t) : 0.5));
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.5));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
@@ -837,18 +840,19 @@
     const bmRange = document.getElementById("blockMinSlider");
     const bmNum = document.getElementById("blockMinInput");
     function setBlockDepthUI(v, from) {
-      v = Math.max(0.5, Math.min(20, Number.isFinite(Number(v)) ? Number(v) : 8));
+      if (from === "range") v = depthFromPos(Number(v));
+      v = Math.max(0.5, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 8));
       curBlockDepth = v;
       if (bmRange && from !== "range") {
-        bmRange.value = String(v);
+        bmRange.value = String(posFromDepth(v));
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockMinSlider");
       }
-      if (bmNum) bmNum.value = v.toFixed(1);
+      if (bmNum) bmNum.value = v < 10 ? v.toFixed(1) : v.toFixed(0);
       if (vgpu) vgpu.setBlockDepth(v);
       saveVolState();
     }
     if (bmRange) {
-      bmRange.value = String(curBlockDepth);
+      bmRange.value = String(posFromDepth(curBlockDepth));
       bmRange.addEventListener("input", () => setBlockDepthUI(bmRange.value, "range"));
       const broot = document.getElementById("blockMinSliderRoot");
       if (broot && window.ViewerUI && ViewerUI.registerSlider) {
@@ -857,10 +861,10 @@
       }
     }
     if (bmNum) {
-      bmNum.value = curBlockDepth.toFixed(1);
+      bmNum.value = curBlockDepth < 10 ? curBlockDepth.toFixed(1) : curBlockDepth.toFixed(0);
       bmNum.addEventListener("change", () => setBlockDepthUI(bmNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth + d));
+        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth * (d > 0 ? 1.25 : 0.8)));
       }
     }
 
