@@ -113,6 +113,10 @@ override CUE : bool = false;
 // in front blocks completely whatever the softness (a fixed-width band let the
 // brightest objects behind dim ones leak through at the top of the slider).
 // The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
+// Min blocker (u.win.z, windowed units): what is shown in front blocks nothing
+// unless it is at least this bright itself, so dim noise just above the low end
+// never hides the brighter structure behind it (at high occlusion, with X near
+// 0, any speck in front blocked everything and blacked out regions).
 // Unlike EA, where the front removes the same fraction of light from
 // everything behind it, a dim object here blocks what is only a little
 // brighter than itself while something much brighter behind still shows (so
@@ -219,9 +223,9 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   *mx = 1.0 - omL;
 }
 // Block (MODE 4): composite an object of peak m behind what is shown so far (V).
-fn blockComposite(V : f32, m : f32, X : f32, soft : f32) -> f32 {
+fn blockComposite(V : f32, m : f32, X : f32, soft : f32, vmin : f32) -> f32 {
   if (m <= V) { return V; }
-  if (V <= 0.0) { return m; }                         // nothing in front: nothing blocks
+  if (V <= 0.0 || V < vmin) { return m; }            // nothing (bright enough) in front: nothing blocks
   let r = V / m;
   if (X <= 0.0) { return V; }                        // occlusion 1: anything in front blocks
   let blocked = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
@@ -361,6 +365,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var midaMax = 0.0;
     let blockX = select(pow(10.0, -3.0 * density), 0.0, density >= 1.0);   // block: relative brightness that blocks
     let blockSoft = clamp(u.win.w, 0.0, 0.9);         // block: relative fade width (0 = on/off)
+    let blockMin = clamp(u.win.z, 0.0, 1.0);          // block: dimmer than this never blocks
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -396,7 +401,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
           if (MODE == 4 && imgAcc.y > 0.0) {                // block: empty space ends the object
-            imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); imgAcc.y = 0.0;
+            imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); imgAcc.y = 0.0;
           }
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
@@ -431,8 +436,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // imgAcc.x = what is shown so far, imgAcc.y = the current object's peak (0: none)
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
         if (imgAcc.y > 0.0 && (sw <= 0.0 || sw < BLOCK_SPLIT * imgAcc.y)) {   // the object ends
-          imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); imgAcc.y = 0.0;
-          if (imgAcc.x >= min(blockX * (1.0 + blockSoft), 1.0)) { break; }   // nothing further can show
+          imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); imgAcc.y = 0.0;
+          if (imgAcc.x >= max(min(blockX * (1.0 + blockSoft), 1.0), blockMin)) { break; }   // nothing further can show
         }
         if (sw > 0.0) { imgAcc.y = max(imgAcc.y, sw); }
       } else if (MODE == 1) {
@@ -452,7 +457,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft); }
+    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
     else {

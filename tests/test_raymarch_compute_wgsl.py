@@ -603,7 +603,7 @@ def test_block_uniform_block_is_one_flat_surface(dev, density):
     whatever the density, and the background below the window is empty."""
     sc = _surface_cube(dev)
     inv, *_ = _ortho(0.6, 0.4, 16.0)
-    u = _uniform(inv, (20, 20, 20), 4, density=density, show_lab=0, window=(0.6, 1.0))
+    u = _uniform(inv, (20, 20, 20), 4, density=density, show_lab=0, exposure=0.0, window=(0.6, 1.0))
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
     mip = sc.compute(_uniform(inv, (20, 20, 20), 1, show_lab=0, window=(0.6, 1.0)), 1, 1, 0, 128, 128)[..., 3]
     core, empty = mip > 0.7, mip == 0.0
@@ -622,7 +622,7 @@ def test_block_brick_skipping_changes_nothing(dev):
     bz, by, bx = [-(-d // BRICK) for d in vol.shape]
     full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
     inv, *_ = _ortho(0.8, 0.35, 30.0)
-    u = _uniform(inv, (44, 36, 40), 4, density=0.3, show_lab=0, window=(0.55, 1.0))
+    u = _uniform(inv, (44, 36, 40), 4, density=0.3, show_lab=0, exposure=0.0, window=(0.55, 1.0))
     a = sc.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
     b = full.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
     assert a.max() > 0.2
@@ -653,7 +653,7 @@ def test_block_relative_blocking(dev, gap, occl, soft):
     a + (b - a)(1 - blocked): with softness 0 exactly one object's peak.
     Occlusion 0 is MIP (b); occlusion 1 always blocks, whatever the softness."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
-    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0))
+    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, exposure=0.0, window=(0.6, 1.0))
     out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=soft)[..., 3]   # (softness: u[47])
     # the volume holds float16 values (0.7 -> 0.7002, 0.95 -> 0.9502): the fade is steep near X
     a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
@@ -669,7 +669,7 @@ def test_block_core_behind_its_rim_is_one_object(dev):
     object and its peak shows, as in MIP; separated by empty space the dim one
     blocks the bright one."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, window=(0.6, 1.0))
+    u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, exposure=0.0, window=(0.6, 1.0))
     touching = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     apart = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     a, b = 0.25, 0.875
@@ -682,7 +682,7 @@ def test_block_is_mip_without_lighting_or_density(dev):
     vol = rng.random((24, 28, 32)).astype(np.float16)
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.7, 0.3, 24.0)
-    surf = sc.compute(_uniform(inv, (32, 28, 24), 4, density=0.0, show_lab=0, window=(0.3, 0.9)), 4, 1, 0, 128, 128, faces=0.0)
+    surf = sc.compute(_uniform(inv, (32, 28, 24), 4, density=0.0, show_lab=0, exposure=0.0, window=(0.3, 0.9)), 4, 1, 0, 128, 128, faces=0.0)
     mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
     assert np.abs(surf[..., 3] - mip[..., 3]).max() < 2e-3
 
@@ -696,7 +696,7 @@ def test_block_dim_speckle_far_in_front_does_not_win(dev):
     vol[36:42, 20:28, 20:28] = 0.95                      # bright cube 34 voxels behind it
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (n, n, n), 4, density=0.3, show_lab=0, window=(0.6, 1.0))
+    u = _uniform(inv, (n, n, n), 4, density=0.3, show_lab=0, exposure=0.0, window=(0.6, 1.0))
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     assert np.abs(out - (0.95 - 0.6) / 0.4).max() < 2e-3
 
@@ -807,3 +807,16 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert off[near].mean() > 0.05
     assert on[near].mean() > 0.7 * off[near].mean()
     assert on[far].mean() < 0.8 * off[far].mean()
+
+
+
+@pytest.mark.parametrize("bmin,expect_blocked", [(0.0, True), (0.2, True), (0.3, False), (0.6, False)])
+def test_block_min_blocker(dev, bmin, expect_blocked):
+    """At full occlusion, a dim object in front (windowed 0.25) blocks the bright one
+    behind only if it is at least as bright as the min blocker; dimmer, it blocks
+    nothing (dim noise never hides what is behind it)."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, density=1.0, show_lab=0, window=(0.6, 1.0), exposure=bmin)
+    out = _front_back_scene(dev, 16).compute(u, 4, 1, 0, 128, 128, faces=0.2)[60:68, 60:68, 3]
+    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
+    assert np.abs(out - (a if expect_blocked else b)).max() < 2e-3

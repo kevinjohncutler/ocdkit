@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftRel: curBlockSoft, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftRel: curBlockSoft, blockMin: curBlockMin, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -154,6 +154,9 @@
     // the block in around X.
     let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
     let curBlockSoft = typeof _vs.blockSoftRel === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftRel)) : 0.2;
+    let curBlockMin = typeof _vs.blockMin === "number" ? Math.min(1, Math.max(0, _vs.blockMin)) : 0.3;
+    // Level frames (every 3D mode): divide each z slice by its median background
+    let curLevel = _vs.levelFrames === true;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
@@ -533,7 +536,9 @@
           facesMix: curFacesMix,
           classify: curClassify,
           blockSoftness: curBlockSoft,
+          blockMin: curBlockMin,
           depthCue: curDepthCue,
+          levelFrames: curLevel,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -825,8 +830,61 @@
       }
     }
 
+    // ── Block min blocker slider (Block only) ──
+    const bmRow = document.getElementById("blockMinRow");
+    const bmRange = document.getElementById("blockMinSlider");
+    const bmNum = document.getElementById("blockMinInput");
+    function setBlockMin(v, from) {
+      v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0.3));
+      curBlockMin = v;
+      if (bmRange && from !== "range") {
+        bmRange.value = String(v);
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockMinSlider");
+      }
+      if (bmNum) bmNum.value = v.toFixed(2);
+      if (vgpu) vgpu.setBlockMin(v);
+      saveVolState();
+    }
+    if (bmRange) {
+      bmRange.value = String(curBlockMin);
+      bmRange.addEventListener("input", () => setBlockMin(bmRange.value, "range"));
+      const broot = document.getElementById("blockMinSliderRoot");
+      if (broot && window.ViewerUI && ViewerUI.registerSlider) {
+        broot.dataset.sliderId = "blockMinSlider";
+        ViewerUI.registerSlider(broot);
+      }
+    }
+    if (bmNum) {
+      bmNum.value = curBlockMin.toFixed(2);
+      bmNum.addEventListener("change", () => setBlockMin(bmNum.value, "num"));
+      if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
+        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockMin(curBlockMin + d));
+      }
+    }
+
+    // ── Level frames toggle (3D, every mode) ──
+    const lvRow = document.getElementById("levelFramesRow");
+    const lvToggle = document.getElementById("levelFramesToggle");
+    if (lvToggle) {
+      lvToggle.checked = curLevel;
+      lvToggle.addEventListener("change", () => {
+        curLevel = lvToggle.checked;
+        if (vgpu) vgpu.setLevelFrames(curLevel);
+        saveVolState();
+      });
+    }
+
     function syncDensityRow() {
       syncSpinRow();
+      if (lvRow) lvRow.hidden = mode !== "3d";
+      if (bmRow) {
+        const showBm = mode === "3d" && curProj === 4;
+        const wasHiddenB = bmRow.hidden;
+        bmRow.hidden = !showBm;
+        if (showBm && wasHiddenB && window.ViewerUI && ViewerUI.refreshSlider) {
+          requestAnimationFrame(() => ViewerUI.refreshSlider("blockMinSlider"));
+        }
+      }
       if (cueRow) {
         const showCue = mode === "3d";
         const wasHiddenC = cueRow.hidden;

@@ -65,6 +65,41 @@
     return out;
   }
 
+  /** Level the frames (z slices) of a half-float volume: divide each slice by its
+   *  median, in the data's own units (valueRange [lo, hi]; the texture holds
+   *  (v - lo) / (hi - lo)), and scale to the median of all slice medians. For a
+   *  time-lapse or depth stack whose illumination drifts (phase contrast is
+   *  illumination x sample, so the correction is a division, not a shift): a
+   *  global window can then hide the background of every frame, instead of the
+   *  brightest frames lighting up as a textured face of the volume. The median is
+   *  read from a 4096-bin histogram per slice. Values clamp to [0, 1]. */
+  function _levelFramesF16(src, NX, NY, NZ, valueRange) {
+    const H = halfTable(), per = NX * NY, BINS = 4096;
+    const lo = valueRange ? +valueRange[0] : 0, span = valueRange ? +valueRange[1] - lo : 1;
+    const med = new Float64Array(NZ), hist = new Uint32Array(BINS);
+    for (let z = 0; z < NZ; z++) {
+      hist.fill(0);
+      for (let i = z * per, e = i + per; i < e; i++) {
+        const t = H[src[i]];
+        hist[Math.min(BINS - 1, Math.max(0, (t * BINS) | 0))]++;
+      }
+      let acc = 0, b = 0;
+      for (; b < BINS; b++) { acc += hist[b]; if (acc * 2 >= per) break; }
+      med[z] = lo + ((b + 0.5) / BINS) * span;              // data units
+    }
+    const sorted = Array.from(med).sort((a, c) => a - c), g = sorted[NZ >> 1];
+    const f = new Float32Array(src.length);
+    for (let z = 0; z < NZ; z++) {
+      const k = med[z] > 0 ? g / med[z] : 1;
+      for (let i = z * per, e = i + per; i < e; i++) {
+        const v = (lo + H[src[i]] * span) * k;               // data units, leveled
+        const t = span > 0 ? (v - lo) / span : 0;
+        f[i] = t < 0 ? 0 : t > 1 ? 1 : t;
+      }
+    }
+    return _toF16(f);
+  }
+
   // half-float bits -> float, as a 64K lookup table (built on first use)
   let _HALF = null;
   function halfTable() {
@@ -249,8 +284,10 @@
       this._gain = opts.gain > 0 ? opts.gain : 1.0;
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
+      this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
       this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.2;   // block softness
+      this._blockMin = opts.blockMin != null ? Math.min(1, Math.max(0, +opts.blockMin)) : 0.3;   // block: min blocker brightness
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -419,7 +456,8 @@
         f16 = _toF16(f);
       }
       this._volF16Orig = f16;        // as loaded; the texture holds 1 - value while inverted
-      if (this._invert) f16 = _invertF16(f16);
+      this._volF16Leveled = null;    // frames leveled (setLevelFrames), built on first use
+      f16 = this._displayF16();
       this._volF16 = f16;            // kept for the cube renderer and the EA exposure estimate
       this._cubesBuilt = false;
       this.volTex = device.createTexture({
@@ -915,8 +953,9 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      // window, EA exposure, voxel shading (block: its softness instead)
-      u.set([this._win[0], this._win[1], this._eaExposure, this.mode === 4 ? this._blockSoft : (this._facesMix || 0)], 44);
+      // window, EA exposure, voxel shading (block: its min blocker and softness instead)
+      const blk = this.mode === 4;
+      u.set([this._win[0], this._win[1], blk ? this._blockMin : this._eaExposure, blk ? this._blockSoft : (this._facesMix || 0)], 44);
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
       u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
@@ -1145,10 +1184,33 @@
       on = !!on;
       if (on === !!this._invert) return;
       this._invert = on;
+      this._refreshVolume();
+    }
+    /** Level the frames (z slices): divide each by its median background before
+     *  display, so illumination drift along z (a time-lapse, or depth attenuation)
+     *  no longer lights up the brightest frames. Applied before Invert. */
+    setLevelFrames(on) {
+      on = !!on;
+      if (on === !!this._level) return;
+      this._level = on;
+      this._refreshVolume();
+    }
+    isLevelFrames() { return !!this._level; }
+    /** The volume as displayed: as loaded, frames leveled if on, then inverted if on. */
+    _displayF16() {
+      let f16 = this._volF16Orig;
+      if (this._level && f16) {
+        if (!this._volF16Leveled) this._volF16Leveled = _levelFramesF16(f16, this.NX, this.NY, this.NZ, this.valueRange);
+        f16 = this._volF16Leveled;
+      }
+      return this._invert ? _invertF16(f16) : f16;
+    }
+    /** Re-upload the displayed volume (after invert / leveling changed) with its bricks. */
+    _refreshVolume() {
       const orig = this._volF16Orig;
       if (orig && this.volTex) {
         const { device, NX, NY, NZ } = this;
-        const f16 = on ? _invertF16(orig) : orig;
+        const f16 = this._displayF16();
         this._volF16 = f16;
         this._cubesBuilt = false;
         device.queue.writeTexture({ texture: this.volTex }, f16.buffer, { bytesPerRow: NX * 2, rowsPerImage: NY }, [NX, NY, NZ]);
@@ -1186,6 +1248,12 @@
     isClassify() { return !!this._classify; }
     /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
      *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
+    /** Block projection: what is shown in front blocks nothing unless it is at least
+     *  this bright (windowed, 0..1), so dim noise never hides what is behind it. */
+    setBlockMin(v) {
+      this._blockMin = Math.min(1, Math.max(0, Number.isFinite(+v) ? +v : 0.3));
+      this._requestRender();
+    }
     setBlockSoftness(t) {
       this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.2));
       this._requestRender();
