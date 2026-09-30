@@ -171,26 +171,26 @@
             </div>
           </div>
           <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Softness: 0 blocks on/off at the occlusion threshold; higher fades the block in gradually around it, at 1 from a quarter to four times the threshold. Voxels well below the threshold stay transparent at any softness">
+               title="Softness: 0 blocks on/off at the occlusion threshold (each pixel shows one object); higher fades the block in from (1 - softness) to (1 + softness) times the threshold. At occlusion 1 anything in front blocks fully whatever the softness">
             <span class="control-heading control-heading--lower">softness</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="1" step="0.01" value="0.5" />
+                <input type="range" id="blockSoftSlider" min="0" max="0.9" step="0.01" value="0.9" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="1" step="0.05" value="0.50" />
+                <input type="number" id="blockSoftInput" min="0" max="0.9" step="0.05" value="0.90" />
               </div>
             </div>
           </div>
           <div class="control slider-inline" id="blockMinRow" hidden
-               title="Block depth (voxels, 0.5 to 100 on a log scale): how many voxels of a blocker (a voxel at least X as bright as the light behind it, see occlusion) hide 95% of that light. Fewer voxels block gradually less. Larger values approach MIP: only thick foreground hides what is behind it">
+               title="Block depth (voxels): how many voxels of a blocker (a voxel at least X as bright as the light behind it, see occlusion) hide 95% of that light. Fewer voxels block gradually less, so a thin or grazed object blocks a little and a thick one fully">
             <span class="control-heading control-heading--lower">block depth</span>
             <div class="slider-row">
               <div class="slider" id="blockMinSliderRoot" data-slider-type="single">
-                <input type="range" id="blockMinSlider" min="0" max="1" step="0.001" value="0.5233" />
+                <input type="range" id="blockMinSlider" min="0.5" max="20" step="0.5" value="20" />
               </div>
               <div class="number-field" data-number-id="blockMinInput">
-                <input type="number" id="blockMinInput" min="0.5" max="100" step="1" value="8.0" />
+                <input type="number" id="blockMinInput" min="0.5" max="20" step="0.5" value="20.0" />
               </div>
             </div>
           </div>
