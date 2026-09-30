@@ -113,10 +113,17 @@ override CUE : bool = false;
 // in front blocks completely whatever the softness (a fixed-width band let the
 // brightest objects behind dim ones leak through at the top of the slider).
 // The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
-// Min blocker (u.win.z, windowed units): what is shown in front blocks nothing
-// unless it is at least this bright itself, so dim noise just above the low end
-// never hides the brighter structure behind it (at high occlusion, with X near
-// 0, any speck in front blocked everything and blacked out regions).
+// How much an object blocks depends on how much of it above the min blocker b
+// (u.win.z, windowed) the ray crossed: its amount a = sum of max(value - b, 0) x
+// path length (voxels), and its blocking power w = 1 - e^(-3 a / BLOCK_AMOUNT)
+// (one voxel of full excess blocks 95%). The blocking powers of everything in
+// front combine as W = 1 - prod(1 - w), and the relative rule's block is scaled
+// by W. So haze below b blocks nothing however deep it is, a ray that only grazes
+// an object's dim edge (or a noise speck) hides almost nothing behind it, a ray
+// through a whole object hides fully, and every step is gradual. (An all-or-
+// nothing peak cutoff left single dark voxel faces floating where rays clipped
+// a dim edge and swung with b; counting the whole value let deep haze block.)
+const BLOCK_AMOUNT : f32 = 1.0;
 // Unlike EA, where the front removes the same fraction of light from
 // everything behind it, a dim object here blocks what is only a little
 // brighter than itself while something much brighter behind still shows (so
@@ -222,14 +229,23 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   *acc = vec4<f32>(sv * A1 + (I0 - sv * A0) * beta, 0.0, 0.0, A1);
   *mx = 1.0 - omL;
 }
-// Block (MODE 4): composite an object of peak m behind what is shown so far (V).
-fn blockComposite(V : f32, m : f32, X : f32, soft : f32, vmin : f32) -> f32 {
-  if (m <= V) { return V; }
-  if (V <= 0.0 || V < vmin) { return m; }            // nothing (bright enough) in front: nothing blocks
-  let r = V / m;
-  if (X <= 0.0) { return V; }                        // occlusion 1: anything in front blocks
-  let blocked = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
-  return V + (m - V) * (1.0 - blocked);
+// Block (MODE 4): close the current object (st.y its peak m, st.z its amount a)
+// behind what is shown so far (st.x = V), with st.w = W the blocking power of
+// everything in front; returns the state with the object composited.
+fn blockStep(st : vec4<f32>, X : f32, soft : f32) -> vec4<f32> {
+  let V = st.x; let m = st.y; let W = st.w;
+  var Vn = V;
+  if (m > V) {
+    var rel = 1.0;                                   // how much the relative rule blocks
+    if (V <= 0.0) { rel = 0.0; }
+    else if (X > 0.0) {
+      let r = V / m;
+      rel = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
+    }
+    Vn = V + (m - V) * (1.0 - rel * W);
+  }
+  let w = 1.0 - exp(-3.0 * st.z / BLOCK_AMOUNT);     // this object's blocking power
+  return vec4<f32>(Vn, 0.0, 0.0, 1.0 - (1.0 - W) * (1.0 - w));
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
@@ -365,7 +381,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var midaMax = 0.0;
     let blockX = select(pow(10.0, -3.0 * density), 0.0, density >= 1.0);   // block: relative brightness that blocks
     let blockSoft = clamp(u.win.w, 0.0, 0.9);         // block: relative fade width (0 = on/off)
-    let blockMin = clamp(u.win.z, 0.0, 1.0);          // block: dimmer than this never blocks
+    let blockMin = clamp(u.win.z, 0.0, 1.0);          // block: brightness where material starts to block
+    let dvLenB = length(dv0);                         // block: voxels per unit of the ray parameter
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -401,7 +418,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
           if (MODE == 4 && imgAcc.y > 0.0) {                // block: empty space ends the object
-            imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); imgAcc.y = 0.0;
+            imgAcc = blockStep(imgAcc, blockX, blockSoft);
           }
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
@@ -433,13 +450,18 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 4) {
-        // imgAcc.x = what is shown so far, imgAcc.y = the current object's peak (0: none)
+        // imgAcc: x = what is shown so far, y = the current object's peak (0: none),
+        // z = its amount (value x voxels), w = blocking power of everything in front
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
         if (imgAcc.y > 0.0 && (sw <= 0.0 || sw < BLOCK_SPLIT * imgAcc.y)) {   // the object ends
-          imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); imgAcc.y = 0.0;
-          if (imgAcc.x >= max(min(blockX * (1.0 + blockSoft), 1.0), blockMin)) { break; }   // nothing further can show
+          imgAcc = blockStep(imgAcc, blockX, blockSoft);
+          // nothing further can show: fully blocked, and the shown value beats the fade band
+          if (imgAcc.w >= 0.995 && imgAcc.x >= min(blockX * (1.0 + blockSoft), 1.0)) { break; }
         }
-        if (sw > 0.0) { imgAcc.y = max(imgAcc.y, sw); }
+        if (sw > 0.0) {
+          imgAcc.y = max(imgAcc.y, sw);
+          imgAcc.z = imgAcc.z + max(sw - blockMin, 0.0) * max(tExit - tPrev, 0.0) * dvLenB;
+        }
       } else if (MODE == 1) {
         imgMip = max(imgMip, select(s, cueFade(s, u.win.x, wq), CUE));
       } else {
@@ -457,7 +479,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc.x = blockComposite(imgAcc.x, imgAcc.y, blockX, blockSoft, blockMin); }
+    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc = blockStep(imgAcc, blockX, blockSoft); }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
     else {

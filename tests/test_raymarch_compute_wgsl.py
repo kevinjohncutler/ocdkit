@@ -659,7 +659,8 @@ def test_block_relative_blocking(dev, gap, occl, soft):
     a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
     X, r = (0.0 if occl >= 1 else 10 ** (-3 * occl)), a / b
     blocked = 1.0 if X <= 0 else float(r >= X) if soft == 0 else _smoothstep(X * (1 - soft), X * (1 + soft), r)
-    expect = a + (b - a) * (1.0 - blocked)
+    w = 1.0 - np.exp(-3.0 * a * 4)                        # the 4-voxel slab's blocking power (min blocker 0)
+    expect = a + (b - a) * (1.0 - blocked * w)
     mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
     assert np.abs(out[mid] - expect).max() < 2e-3, (out[mid].min(), out[mid].max(), expect)
 
@@ -672,9 +673,10 @@ def test_block_core_behind_its_rim_is_one_object(dev):
     u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, exposure=0.0, window=(0.6, 1.0))
     touching = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
     apart = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    a, b = 0.25, 0.875
+    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
+    w = 1.0 - np.exp(-3.0 * a * 4)                        # the 4-voxel slab's blocking power (min blocker 0)
     assert np.abs(touching - b).max() < 2e-3
-    assert np.abs(apart - a).max() < 2e-3
+    assert np.abs(apart - (a + (b - a) * (1.0 - w))).max() < 2e-3
 
 
 def test_block_is_mip_without_lighting_or_density(dev):
@@ -810,13 +812,22 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
 
 
 
-@pytest.mark.parametrize("bmin,expect_blocked", [(0.0, True), (0.2, True), (0.3, False), (0.6, False)])
-def test_block_min_blocker(dev, bmin, expect_blocked):
-    """At full occlusion, a dim object in front (windowed 0.25) blocks the bright one
-    behind only if it is at least as bright as the min blocker; dimmer, it blocks
-    nothing (dim noise never hides what is behind it)."""
+@pytest.mark.parametrize("thick", [1, 4])
+@pytest.mark.parametrize("bmin", [0.0, 0.1, 0.2, 0.3])
+def test_block_blocks_by_amount_above_min_blocker(dev, thick, bmin):
+    """At full occlusion a dim object in front (windowed 0.25, `thick` voxels deep)
+    blocks the bright one behind by its amount above the min blocker b:
+    a_amt = max(value - b, 0) x voxels, w = 1 - e^(-3 a_amt). The pixel reads
+    a + (b - a)(1 - w): thin or dim-edge crossings block little, and material
+    below b (haze) not at all."""
+    n = 48
+    vol = np.zeros((n, n, n), np.float16)
+    vol[4:4 + thick, 12:36, 12:36] = 0.7
+    vol[20:26, 21:27, 21:27] = 0.95
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=1.0, show_lab=0, window=(0.6, 1.0), exposure=bmin)
-    out = _front_back_scene(dev, 16).compute(u, 4, 1, 0, 128, 128, faces=0.2)[60:68, 60:68, 3]
+    u = _uniform(inv, (n, n, n), 4, density=1.0, show_lab=0, window=(0.6, 1.0), exposure=bmin)
+    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.5)[60:68, 60:68, 3]
     a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
-    assert np.abs(out - (a if expect_blocked else b)).max() < 2e-3
+    w = 1.0 - np.exp(-3.0 * max(a - bmin, 0.0) * thick)
+    assert np.abs(out - (a + (b - a) * (1.0 - w))).max() < 3e-3, (out.min(), out.max(), a + (b - a) * (1 - w))

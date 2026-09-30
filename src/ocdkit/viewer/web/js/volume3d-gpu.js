@@ -286,8 +286,8 @@
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.2;   // block softness
-      this._blockMin = opts.blockMin != null ? Math.min(1, Math.max(0, +opts.blockMin)) : 0.3;   // block: min blocker brightness
+      this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.5;   // block softness
+      this._blockMin = opts.blockMin != null ? Math.min(1, Math.max(0, +opts.blockMin)) : 0.3;   // block: brightness where blocking starts
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -1246,16 +1246,18 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
-     *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
-    /** Block projection: what is shown in front blocks nothing unless it is at least
-     *  this bright (windowed, 0..1), so dim noise never hides what is behind it. */
+    /** Block projection (mode 4): the brightness (windowed, 0..1) above which an
+     *  object's material starts to block; it blocks by how much of it above this the
+     *  ray crossed (value above it x voxels), so haze below it never blocks and a ray
+     *  grazing a dim edge hides almost nothing. */
     setBlockMin(v) {
       this._blockMin = Math.min(1, Math.max(0, Number.isFinite(+v) ? +v : 0.3));
       this._requestRender();
     }
+    /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
+     *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
     setBlockSoftness(t) {
-      this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.2));
+      this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.5));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }

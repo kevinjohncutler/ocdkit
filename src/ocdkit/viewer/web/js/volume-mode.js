@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftRel: curBlockSoft, blockMin: curBlockMin, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftness: curBlockSoft, blockFloor: curBlockMin, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -153,8 +153,9 @@
     // X = 10^(-3 occlusion) as bright (0 = MIP, 1 = anything blocks); softness fades
     // the block in around X.
     let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
-    let curBlockSoft = typeof _vs.blockSoftRel === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftRel)) : 0.2;
-    let curBlockMin = typeof _vs.blockMin === "number" ? Math.min(1, Math.max(0, _vs.blockMin)) : 0.3;
+    // (saved under new keys: the meanings changed, and the defaults are gentler)
+    let curBlockSoft = typeof _vs.blockSoftness === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftness)) : 0.5;
+    let curBlockMin = typeof _vs.blockFloor === "number" ? Math.min(1, Math.max(0, _vs.blockFloor)) : 0.3;
     // Level frames (every 3D mode): divide each z slice by its median background
     let curLevel = _vs.levelFrames === true;
     // Depth cue (every 3D mode): 0 = off
@@ -771,7 +772,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(0.9, Number.isFinite(Number(t)) ? Number(t) : 0.2));
+      t = Math.max(0, Math.min(0.9, Number.isFinite(Number(t)) ? Number(t) : 0.5));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
