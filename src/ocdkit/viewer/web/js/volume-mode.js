@@ -673,7 +673,7 @@
         densRange.value = String(v);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("eaDensitySlider");
       }
-      if (densNum && from !== "num") densNum.value = v.toFixed(2);
+      if (densNum) densNum.value = v.toFixed(2);
       if (vgpu) vgpu.setDensity(v);
       saveVolState();
     }
@@ -723,7 +723,7 @@
         facesRange.value = String(t);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("faceMixSlider");
       }
-      if (facesNum && from !== "num") facesNum.value = t.toFixed(2);
+      if (facesNum) facesNum.value = t.toFixed(2);
       if (vgpu) vgpu.setFacesMix(t);
       saveVolState();
     }
@@ -772,7 +772,7 @@
         slRange.value = String(t);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockSoftSlider");
       }
-      if (slNum && from !== "num") slNum.value = t.toFixed(2);
+      if (slNum) slNum.value = t.toFixed(2);
       if (vgpu) vgpu.setBlockSoftness(t);
       saveVolState();
     }
@@ -804,7 +804,7 @@
         cueRange.value = String(v);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("depthCueSlider");
       }
-      if (cueNum && from !== "num") cueNum.value = v.toFixed(2);
+      if (cueNum) cueNum.value = v.toFixed(2);
       if (vgpu) vgpu.setDepthCue(v);
       saveVolState();
     }
@@ -857,6 +857,8 @@
       const show = mode === "3d" && densityMode();
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
+      const densLabel = document.getElementById("eaDensityLabel");
+      if (densLabel) densLabel.textContent = curProj === 4 ? "occlusion" : curProj === 3 ? "opacity" : "density";
       densRow.title = curProj === 4
         ? "Occlusion: an object in front blocks one behind it if it is at least X as bright, on a log scale: X = 100% at 0 (MIP), 10% at 0.33, 1% at 0.67, and 0 at 1 (anything in front blocks). Within one object the brightest voxel shows, so a bright core behind its own dim rim is never blocked"
         : curClassify
