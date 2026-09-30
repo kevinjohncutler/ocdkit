@@ -95,41 +95,30 @@ override CLASSIFY : bool = false;
 // modes (Block, and EA/MIDA with CLASSIFY) scale the windowed value itself.
 // A pipeline constant: with the cue off nothing changes and nothing is computed.
 override CUE : bool = false;
-// Block (MODE 4): MIP with relative blocking between objects. Along the ray,
-// voxels above the window's low end form objects: an object ends where the
-// value drops to the low end or dips below BLOCK_SPLIT of that object's peak
-// (so touching objects with a darker boundary between them separate). Each
-// object is represented by its peak (MIP within an object: a bright core right
-// behind its own dim rim always shows, and noise inside an object does not
-// matter). Objects are composited front to back: one brighter than what is
-// shown so far (V) replaces it unless the front blocks it, by how bright the
-// front is RELATIVE to it: blocked = smoothstep(X (1 - soft), X (1 + soft), V / m),
-// X = 10^(-3 occlusion), and 0 at occlusion 1 (the front blocks an object if it
-// is at least X as bright: 100% at 0 = MIP, 10% at 1/3, 1% at 2/3, 0.1% near 1;
-// a log scale, since most of the blocking in real data comes from fronts under
-// 10% as bright as what is behind, which a linear X crammed into its last tenth),
-// soft = u.win.w (0: a hard on/off block, so each pixel shows one object's
-// peak). The fade band is proportional to X, so at occlusion 1 (X = 0) anything
-// in front blocks completely whatever the softness (a fixed-width band let the
-// brightest objects behind dim ones leak through at the top of the slider).
-// The pixel shows V + (m - V)(1 - blocked). Occlusion 0 is MIP exactly.
-// How much an object blocks depends on how much of it above the min blocker b
-// (u.win.z, windowed) the ray crossed: its amount a = sum of max(value - b, 0) x
-// path length (voxels), and its blocking power w = 1 - e^(-3 a / BLOCK_AMOUNT)
-// (one voxel of full excess blocks 95%). The blocking powers of everything in
-// front combine as W = 1 - prod(1 - w), and the relative rule's block is scaled
-// by W. So haze below b blocks nothing however deep it is, a ray that only grazes
-// an object's dim edge (or a noise speck) hides almost nothing behind it, a ray
-// through a whole object hides fully, and every step is gradual. (An all-or-
-// nothing peak cutoff left single dark voxel faces floating where rays clipped
-// a dim edge and swung with b; counting the whole value let deep haze block.)
-const BLOCK_AMOUNT : f32 = 1.0;
-// Unlike EA, where the front removes the same fraction of light from
-// everything behind it, a dim object here blocks what is only a little
-// brighter than itself while something much brighter behind still shows (so
-// dim noise far in front hides almost nothing). Bricks at or below the low end
-// are empty space: skipped, and they end the current object.
-const BLOCK_SPLIT : f32 = 0.6;
+// Block (MODE 4): MIP where bright voxels block the light from behind them,
+// by their brightness RELATIVE to that light. The ray is marched BACK TO FRONT,
+// carrying C, the light arriving from behind (windowed; 0 at the far end). At a
+// voxel of windowed value v:
+//   v > C       C = v: it replaces the light from behind (MIP; a bright voxel
+//               with nothing brighter behind it shows)
+//   v <= C      it blocks by how bright it is relative to that light: C moves
+//               toward v by 1 - e^(-k h(v / C) L), L = the path length through it
+//               (voxels), k = 3 / D (D = u.win.z, the block depth: that many
+//               voxels of blocker hide 95% of what is behind them), and
+//               h(r) = smoothstep(X (1 - soft), X (1 + soft), r) (a step at X for
+//               soft 0), X = 1 - occlusion (linear: occlusion 0.5 means a voxel
+//               must be at least half as bright as the light behind it to block,
+//               so faint haze in front of bright structure never does; a log
+//               scale let haze at 10-20% block at modest settings)
+// So dark voxels (v < X C) are transparent however many there are and never
+// block brighter light; a foreground object blocks by how many of its voxels
+// the ray crosses; inside a uniform object C settles at its value, so brightness
+// does not stack, and an object's own voxels block its dimmer interior the same
+// way. Occlusion 0 blocks nothing: MIP exactly. No absolute threshold: values at
+// or below the window's low end are 0, i.e. empty, and their bricks are skipped.
+// (Replaced: objects split per ray with an all-or-nothing peak rule, which a ray
+// grazing a dim edge tripped, leaving dark faces, and a min blocker threshold the
+// result was very sensitive to.)
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
 // shading peaks where the ray crosses the most of it, like a distance field).
@@ -229,23 +218,14 @@ fn midaStep(acc : ptr<function, vec4<f32>>, mx : ptr<function, f32>, s : f32, se
   *acc = vec4<f32>(sv * A1 + (I0 - sv * A0) * beta, 0.0, 0.0, A1);
   *mx = 1.0 - omL;
 }
-// Block (MODE 4): close the current object (st.y its peak m, st.z its amount a)
-// behind what is shown so far (st.x = V), with st.w = W the blocking power of
-// everything in front; returns the state with the object composited.
-fn blockStep(st : vec4<f32>, X : f32, soft : f32) -> vec4<f32> {
-  let V = st.x; let m = st.y; let W = st.w;
-  var Vn = V;
-  if (m > V) {
-    var rel = 1.0;                                   // how much the relative rule blocks
-    if (V <= 0.0) { rel = 0.0; }
-    else if (X > 0.0) {
-      let r = V / m;
-      rel = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
-    }
-    Vn = V + (m - V) * (1.0 - rel * W);
-  }
-  let w = 1.0 - exp(-3.0 * st.z / BLOCK_AMOUNT);     // this object's blocking power
-  return vec4<f32>(Vn, 0.0, 0.0, 1.0 - (1.0 - W) * (1.0 - w));
+// Block (MODE 4): one voxel of windowed value v and path length L (voxels) in
+// front of the light C from behind; returns the light in front of it.
+fn blockVoxel(C : f32, v : f32, L : f32, X : f32, soft : f32, k : f32) -> f32 {
+  if (v > C) { return v; }                            // brighter: replaces what is behind
+  if (v <= 0.0 || X >= 1.0) { return C; }             // empty, or occlusion 0 (MIP)
+  let r = v / max(C, 1e-6);
+  let h = select(select(0.0, 1.0, r >= X), smoothstep(X * (1.0 - soft), X * (1.0 + soft), r), soft > 1e-4);
+  return C + (v - C) * (1.0 - exp(-k * h * L));
 }
 fn labelColor(lab : u32) -> vec3<f32> {
   if (lab == 0u) { return vec3<f32>(0.0); }
@@ -368,9 +348,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
   var imgPC = vec3<f32>(0.0); var imgA = 0.0;
   if (SHOW_IMG && labA < 1.0) {
     let res = vec3<f32>(u.dims.xyz);
-    let dv0 = rd / span * res;
+    // (Block marches back to front: its rule needs the light from behind)
+    let rev = MODE == 4;
+    let dv0 = select(rd, -rd, rev) / span * res;
     let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
-    let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;
+    let p0 = (ro + rd * select(tnear, tfar, rev) - u.boxMin.xyz) / span * res;
     let stp = sign(dv);
     let tDelta = abs(1.0 / dv);
     let maxIter = dims.x + dims.y + dims.z + 3;
@@ -379,10 +361,13 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
-    let blockX = select(pow(10.0, -3.0 * density), 0.0, density >= 1.0);   // block: relative brightness that blocks
-    let blockSoft = clamp(u.win.w, 0.0, 0.9);         // block: relative fade width (0 = on/off)
-    let blockMin = clamp(u.win.z, 0.0, 1.0);          // block: brightness where material starts to block
-    let dvLenB = length(dv0);                         // block: voxels per unit of the ray parameter
+    // block: the relative brightness that blocks (1 at occlusion 0: nothing does),
+    // its fade width, the absorption per voxel (block depth D: 3 / D), voxels per
+    // unit of the ray parameter
+    let blockX = clamp(1.0 - density, 0.0, 1.0);
+    let blockSoft = clamp(u.win.w, 0.0, 0.9);
+    let blockK = 3.0 / max(u.win.z, 0.05);
+    let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
     let faceLen = 1.0 / max(abs(dv0.x) + abs(dv0.y) + abs(dv0.z), 1e-6);
@@ -410,16 +395,13 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // (surface: nothing at or below the running max emits or blocks, so the same test as MIP)
         // (depth cue: MIP compares faded values; the weight at the brick's entry is
         // the largest inside it)
-        let wc = select(1.0, cueWeight(tnear + tPrev, tRef, cueL), CUE);
+        let wc = select(1.0, cueWeight(select(tnear + tPrev, tfar - tPrev, rev), tRef, cueL), CUE);
         if (textureLoad(brickImg, vec3<i32>(bv), 0).r * iscale <=
             select(u.win.x,
                    select(imgMip, u.win.x + (imgMip - u.win.x) / max(wc, 1e-20), CUE && imgMip > u.win.x),
                    MODE == 1)) {
           let j = brickExit(p0, dv, stp, vox);
           vox = j.xyz; tPrev = j.w;
-          if (MODE == 4 && imgAcc.y > 0.0) {                // block: empty space ends the object
-            imgAcc = blockStep(imgAcc, blockX, blockSoft);
-          }
           tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
           if (any(vox < vec3<f32>(0.0)) || any(vox >= res)) { break; }
           continue;
@@ -427,7 +409,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       }
       let ci = clamp(vec3<i32>(vox), vec3<i32>(0), dims - vec3<i32>(1));
       let s = textureLoad(volTex, ci, 0).r * iscale;
-      let wq = select(1.0, cueWeight(tnear + tPrev, tRef, cueL), CUE);   // depth cue at this voxel's entry
+      let wq = select(1.0, cueWeight(select(tnear + tPrev, tfar - tPrev, rev), tRef, cueL), CUE);   // depth cue at this voxel's entry
       let tExit = min(tMax.x, min(tMax.y, tMax.z));
       if (MODE == 0) {
         // Emission-absorption on the data at its FULL range (no window, no gamma:
@@ -450,18 +432,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 4) {
-        // imgAcc: x = what is shown so far, y = the current object's peak (0: none),
-        // z = its amount (value x voxels), w = blocking power of everything in front
+        // imgAcc.x = C, the light from behind (marching back to front)
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
-        if (imgAcc.y > 0.0 && (sw <= 0.0 || sw < BLOCK_SPLIT * imgAcc.y)) {   // the object ends
-          imgAcc = blockStep(imgAcc, blockX, blockSoft);
-          // nothing further can show: fully blocked, and the shown value beats the fade band
-          if (imgAcc.w >= 0.995 && imgAcc.x >= min(blockX * (1.0 + blockSoft), 1.0)) { break; }
-        }
-        if (sw > 0.0) {
-          imgAcc.y = max(imgAcc.y, sw);
-          imgAcc.z = imgAcc.z + max(sw - blockMin, 0.0) * max(tExit - tPrev, 0.0) * dvLenB;
-        }
+        imgAcc.x = blockVoxel(imgAcc.x, sw, max(tExit - tPrev, 0.0) * dvLenB, blockX, blockSoft, blockK);
       } else if (MODE == 1) {
         imgMip = max(imgMip, select(s, cueFade(s, u.win.x, wq), CUE));
       } else {
@@ -479,7 +452,6 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         if (vox.z < 0.0 || vox.z >= res.z) { break; }
       }
     }
-    if (MODE == 4 && imgAcc.y > 0.0) { imgAcc = blockStep(imgAcc, blockX, blockSoft); }
     if (MODE == 1) { let v = pow(clamp((imgMip - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(v); let ta = select(1.0, c4.a, TRANSP); imgA = v * ta; imgPC = c4.rgb * ta; }
     else if (MODE == 2) { let m = pow(clamp((imgSum / max(imgCnt, 1.0) - u.win.x) * u.win.y, 0.0, 1.0), gamma); let c4 = lutRGBA(m); let ta = select(1.0, c4.a, TRANSP); imgA = m * ta; imgPC = c4.rgb * ta; }
     else {

@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, surfOcc: curSurfOcc, blockSoftness: curBlockSoft, blockFloor: curBlockMin, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockOcclusion: curSurfOcc, blockSoftness: curBlockSoft, blockDepth: curBlockDepth, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -152,10 +152,11 @@
     // slider sets OCCLUSION: the object in front blocks one behind if it is at least
     // X = 10^(-3 occlusion) as bright (0 = MIP, 1 = anything blocks); softness fades
     // the block in around X.
-    let curSurfOcc = typeof _vs.surfOcc === "number" && _vs.surfOcc >= 0 ? _vs.surfOcc : 0.3;
+    // (a new key: the scale changed to linear, X = 1 - occlusion)
+    let curSurfOcc = typeof _vs.blockOcclusion === "number" && _vs.blockOcclusion >= 0 ? _vs.blockOcclusion : 0.3;
     // (saved under new keys: the meanings changed, and the defaults are gentler)
     let curBlockSoft = typeof _vs.blockSoftness === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoftness)) : 0.5;
-    let curBlockMin = typeof _vs.blockFloor === "number" ? Math.min(1, Math.max(0, _vs.blockFloor)) : 0.3;
+    let curBlockDepth = typeof _vs.blockDepth === "number" ? Math.min(20, Math.max(0.5, _vs.blockDepth)) : 8;   // block depth (voxels)
     // Level frames (every 3D mode): divide each z slice by its median background
     let curLevel = _vs.levelFrames === true;
     // Depth cue (every 3D mode): 0 = off
@@ -537,7 +538,7 @@
           facesMix: curFacesMix,
           classify: curClassify,
           blockSoftness: curBlockSoft,
-          blockMin: curBlockMin,
+          blockDepth: curBlockDepth,
           depthCue: curDepthCue,
           levelFrames: curLevel,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
@@ -831,24 +832,24 @@
       }
     }
 
-    // ── Block min blocker slider (Block only) ──
+    // ── Block depth slider (Block only; voxels) ──
     const bmRow = document.getElementById("blockMinRow");
     const bmRange = document.getElementById("blockMinSlider");
     const bmNum = document.getElementById("blockMinInput");
-    function setBlockMin(v, from) {
-      v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0.3));
-      curBlockMin = v;
+    function setBlockDepthUI(v, from) {
+      v = Math.max(0.5, Math.min(20, Number.isFinite(Number(v)) ? Number(v) : 8));
+      curBlockDepth = v;
       if (bmRange && from !== "range") {
         bmRange.value = String(v);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockMinSlider");
       }
-      if (bmNum) bmNum.value = v.toFixed(2);
-      if (vgpu) vgpu.setBlockMin(v);
+      if (bmNum) bmNum.value = v.toFixed(1);
+      if (vgpu) vgpu.setBlockDepth(v);
       saveVolState();
     }
     if (bmRange) {
-      bmRange.value = String(curBlockMin);
-      bmRange.addEventListener("input", () => setBlockMin(bmRange.value, "range"));
+      bmRange.value = String(curBlockDepth);
+      bmRange.addEventListener("input", () => setBlockDepthUI(bmRange.value, "range"));
       const broot = document.getElementById("blockMinSliderRoot");
       if (broot && window.ViewerUI && ViewerUI.registerSlider) {
         broot.dataset.sliderId = "blockMinSlider";
@@ -856,10 +857,10 @@
       }
     }
     if (bmNum) {
-      bmNum.value = curBlockMin.toFixed(2);
-      bmNum.addEventListener("change", () => setBlockMin(bmNum.value, "num"));
+      bmNum.value = curBlockDepth.toFixed(1);
+      bmNum.addEventListener("change", () => setBlockDepthUI(bmNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockMin(curBlockMin + d));
+        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth + d));
       }
     }
 
@@ -919,7 +920,7 @@
       const densLabel = document.getElementById("eaDensityLabel");
       if (densLabel) densLabel.textContent = curProj === 4 ? "occlusion" : curProj === 3 ? "opacity" : "density";
       densRow.title = curProj === 4
-        ? "Occlusion: an object in front blocks one behind it if it is at least X as bright, on a log scale: X = 100% at 0 (MIP), 10% at 0.33, 1% at 0.67, and 0 at 1 (anything in front blocks). Within one object the brightest voxel shows, so a bright core behind its own dim rim is never blocked"
+        ? "Occlusion: a voxel blocks the light from behind it if it is at least (1 - occlusion) as bright as that light: 0 = MIP (nothing blocks), 0.5 = at least half as bright, 1 = anything blocks. Dimmer voxels are transparent and never block brighter light"
         : curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3

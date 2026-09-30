@@ -643,42 +643,6 @@ def _smoothstep(e0, e1, x):
     return t * t * (3 - 2 * t)
 
 
-@pytest.mark.parametrize("gap", [8, 20])
-@pytest.mark.parametrize("occl,soft", [(0.0, 0.0), (0.1, 0.0), (0.2, 0.0), (0.5, 0.0), (0.17, 0.1), (0.17, 0.3),
-                                       (1.0, 0.0), (1.0, 0.5), (1.0, 0.9)])
-def test_block_relative_blocking(dev, gap, occl, soft):
-    """A dim object (a) in front of a brighter one (b), empty space between: the
-    front blocks it if a / b >= X = 10^(-3 occlusion) (0 at 1; softness fades that in over
-    X (1 - soft) .. X (1 + soft)), whatever the distance. The pixel shows
-    a + (b - a)(1 - blocked): with softness 0 exactly one object's peak.
-    Occlusion 0 is MIP (b); occlusion 1 always blocks, whatever the softness."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)                    # straight along z, the slab in front
-    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, exposure=0.0, window=(0.6, 1.0))
-    out = _front_back_scene(dev, gap).compute(u, 4, 1, 0, 128, 128, faces=soft)[..., 3]   # (softness: u[47])
-    # the volume holds float16 values (0.7 -> 0.7002, 0.95 -> 0.9502): the fade is steep near X
-    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
-    X, r = (0.0 if occl >= 1 else 10 ** (-3 * occl)), a / b
-    blocked = 1.0 if X <= 0 else float(r >= X) if soft == 0 else _smoothstep(X * (1 - soft), X * (1 + soft), r)
-    w = 1.0 - np.exp(-3.0 * a * 4)                        # the 4-voxel slab's blocking power (min blocker 0)
-    expect = a + (b - a) * (1.0 - blocked * w)
-    mid = (slice(60, 68), slice(60, 68))                 # pixels over the cube's middle
-    assert np.abs(out[mid] - expect).max() < 2e-3, (out[mid].min(), out[mid].max(), expect)
-
-
-def test_block_core_behind_its_rim_is_one_object(dev):
-    """Same intensities: touching (a rim right in front of its core) they are one
-    object and its peak shows, as in MIP; separated by empty space the dim one
-    blocks the bright one."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, density=0.8, show_lab=0, exposure=0.0, window=(0.6, 1.0))
-    touching = _front_back_scene(dev, 1).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    apart = _front_back_scene(dev, 30).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
-    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
-    w = 1.0 - np.exp(-3.0 * a * 4)                        # the 4-voxel slab's blocking power (min blocker 0)
-    assert np.abs(touching - b).max() < 2e-3
-    assert np.abs(apart - (a + (b - a) * (1.0 - w))).max() < 2e-3
-
-
 def test_block_is_mip_without_lighting_or_density(dev):
     rng = np.random.default_rng(9)
     vol = rng.random((24, 28, 32)).astype(np.float16)
@@ -811,23 +775,70 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert on[far].mean() < 0.8 * off[far].mean()
 
 
+def _block_voxel(C, v, L, X, soft, k):
+    """numpy mirror of blockVoxel in raymarch_compute.wgsl."""
+    if v > C:
+        return v
+    if v <= 0 or X >= 1:
+        return C
+    r = v / max(C, 1e-6)
+    h = float(r >= X) if soft <= 1e-4 else float(_smoothstep(X * (1 - soft), X * (1 + soft), r))
+    return C + (v - C) * (1 - np.exp(-k * h * L))
+
+
+def _slab_scene(dev, thick, n=48, front=0.7, back=0.95, gap=6):
+    """A dim slab `thick` voxels deep in front of a brighter 6^3 cube, empty space
+    between; viewed along z (the slab is nearer)."""
+    vol = np.zeros((n, n, n), np.float16)
+    vol[4:4 + thick, 12:36, 12:36] = front
+    z0 = 4 + thick + gap
+    vol[z0:z0 + 6, 21:27, 21:27] = back
+    return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+
+
+_A = (float(np.float16(0.7)) - 0.6) / 0.4       # the slab, windowed (0.25)
+_B = (float(np.float16(0.95)) - 0.6) / 0.4      # the cube, windowed (0.875)
+
 
 @pytest.mark.parametrize("thick", [1, 4])
-@pytest.mark.parametrize("bmin", [0.0, 0.1, 0.2, 0.3])
-def test_block_blocks_by_amount_above_min_blocker(dev, thick, bmin):
-    """At full occlusion a dim object in front (windowed 0.25, `thick` voxels deep)
-    blocks the bright one behind by its amount above the min blocker b:
-    a_amt = max(value - b, 0) x voxels, w = 1 - e^(-3 a_amt). The pixel reads
-    a + (b - a)(1 - w): thin or dim-edge crossings block little, and material
-    below b (haze) not at all."""
-    n = 48
-    vol = np.zeros((n, n, n), np.float16)
-    vol[4:4 + thick, 12:36, 12:36] = 0.7
-    vol[20:26, 21:27, 21:27] = 0.95
-    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+@pytest.mark.parametrize("occl,soft,depth", [(0.5, 0.0, 3.0), (0.7, 0.0, 3.0), (0.8, 0.0, 3.0), (1.0, 0.0, 1.0),
+                                             (1.0, 0.0, 8.0), (0.72, 0.3, 3.0), (0.72, 0.6, 3.0)])
+def test_block_relative_blocking_by_depth(dev, thick, occl, soft, depth):
+    """Back to front: the light from the cube (b) passes a dim slab (a). The slab
+    blocks only if a >= X b (X = 1 - occlusion), and then by how many of its
+    voxels the ray crosses: C = a + (b - a) e^(-3 thick / depth) for a hard
+    threshold; the same per-voxel rule (numpy mirror) with softness."""
     inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (n, n, n), 4, density=1.0, show_lab=0, window=(0.6, 1.0), exposure=bmin)
-    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.5)[60:68, 60:68, 3]
-    a, b = (float(np.float16(0.7)) - 0.6) / 0.4, (float(np.float16(0.95)) - 0.6) / 0.4
-    w = 1.0 - np.exp(-3.0 * max(a - bmin, 0.0) * thick)
-    assert np.abs(out - (a + (b - a) * (1.0 - w))).max() < 3e-3, (out.min(), out.max(), a + (b - a) * (1 - w))
+    u = _uniform(inv, (48, 48, 48), 4, density=occl, show_lab=0, window=(0.6, 1.0), exposure=depth)
+    out = _slab_scene(dev, thick).compute(u, 4, 1, 0, 128, 128, faces=soft)[60:68, 60:68, 3]
+    X = 1.0 - occl
+    C = _B
+    for _ in range(thick):
+        C = _block_voxel(C, _A, 1.0, X, soft, 3.0 / depth)
+    assert np.abs(out - C).max() < 3e-3, (out.min(), out.max(), C)
+
+
+def test_block_dim_voxels_never_block_brighter_light(dev):
+    """A voxel dimmer than X times the light behind it is transparent, however many
+    of them the ray crosses: a 20-voxel slab at 29% of the cube behind it hides
+    nothing when X = 50%."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=1.0)
+    out = _slab_scene(dev, 20, gap=2).compute(u, 4, 1, 0, 128, 128, faces=0.0)[60:68, 60:68, 3]
+    assert np.abs(out - _B).max() < 2e-3
+
+
+def test_block_brightness_does_not_stack(dev):
+    """Inside a uniform object the light settles at its value: a 24-voxel-deep
+    block reads exactly its windowed value, like a 2-voxel one."""
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    outs = []
+    for deep in (2, 24):
+        vol = np.zeros((48, 48, 48), np.float16)
+        vol[10:10 + deep, 18:30, 18:30] = 0.9
+        sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+        u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=3.0)
+        outs.append(sc.compute(u, 4, 1, 0, 128, 128, faces=0.3)[60:68, 60:68, 3])
+    for o in outs:
+        assert np.abs(o - 0.75).max() < 2e-3
+

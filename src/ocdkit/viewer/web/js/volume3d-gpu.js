@@ -287,7 +287,7 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
       this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.5;   // block softness
-      this._blockMin = opts.blockMin != null ? Math.min(1, Math.max(0, +opts.blockMin)) : 0.3;   // block: brightness where blocking starts
+      this._blockDepth = opts.blockDepth > 0 ? Math.min(20, Math.max(0.5, +opts.blockDepth)) : 8;   // block: voxels that block 95%
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -953,9 +953,9 @@
       u.set([steps, this.density, this.labelOpacity, this.showLabels], 32);
       u.set([1.0, this.showImage, this.shadeLabels, this.gamma], 36);   // iscale, showImage, shadeLabels, gamma
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
-      // window, EA exposure, voxel shading (block: its min blocker and softness instead)
+      // window, EA exposure, voxel shading (block: its block depth and softness instead)
       const blk = this.mode === 4;
-      u.set([this._win[0], this._win[1], blk ? this._blockMin : this._eaExposure, blk ? this._blockSoft : (this._facesMix || 0)], 44);
+      u.set([this._win[0], this._win[1], blk ? this._blockDepth : this._eaExposure, blk ? this._blockSoft : (this._facesMix || 0)], 44);
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
       u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
@@ -1246,12 +1246,11 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4): the brightness (windowed, 0..1) above which an
-     *  object's material starts to block; it blocks by how much of it above this the
-     *  ray crossed (value above it x voxels), so haze below it never blocks and a ray
-     *  grazing a dim edge hides almost nothing. */
-    setBlockMin(v) {
-      this._blockMin = Math.min(1, Math.max(0, Number.isFinite(+v) ? +v : 0.3));
+    /** Block projection (mode 4) block depth, voxels (0.5..20): how many voxels of a
+     *  blocker (a voxel at least X as bright as the light behind it) hide 95% of that
+     *  light; fewer block gradually less. */
+    setBlockDepth(v) {
+      this._blockDepth = Math.min(20, Math.max(0.5, Number.isFinite(+v) ? +v : 8));
       this._requestRender();
     }
     /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
