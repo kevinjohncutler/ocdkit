@@ -802,7 +802,8 @@ _B = (float(np.float16(0.95)) - 0.6) / 0.4      # the cube, windowed (0.875)
 
 @pytest.mark.parametrize("thick", [1, 4])
 @pytest.mark.parametrize("occl,soft,depth", [(0.5, 0.0, 3.0), (0.7, 0.0, 3.0), (0.8, 0.0, 3.0), (1.0, 0.0, 1.0),
-                                             (1.0, 0.0, 8.0), (0.72, 0.3, 3.0), (0.72, 0.6, 3.0)])
+                                             (1.0, 0.0, 8.0), (0.72, 0.3, 3.0), (0.72, 0.6, 3.0),
+                                             (0.72, 1.0, 3.0), (0.3, 0.9, 20.0), (0.5, 0.9, 100.0)])
 def test_block_relative_blocking_by_depth(dev, thick, occl, soft, depth):
     """Back to front: the light from the cube (b) passes a dim slab (a). The slab
     blocks only if a >= X b (X = 1 - occlusion), and then by how many of its

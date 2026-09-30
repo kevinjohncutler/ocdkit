@@ -365,7 +365,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     // its fade width, the absorption per voxel (block depth D: 3 / D), voxels per
     // unit of the ray parameter
     let blockX = clamp(1.0 - density, 0.0, 1.0);
-    let blockSoft = clamp(u.win.w, 0.0, 0.9);
+    let blockSoft = clamp(u.win.w, 0.0, 1.0);
     let blockK = 3.0 / max(u.win.z, 0.05);
     let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);

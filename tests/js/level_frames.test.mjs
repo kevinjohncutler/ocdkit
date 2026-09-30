@@ -53,4 +53,18 @@ test("in the data's own units when the texture is normalized over [lo, hi]", () 
   const data = (t) => 100 + 100 * t;
   for (let z = 0; z < NZ; z++) assert.ok(Math.abs(data(at(out, NX, NY, 0, 0, z)) - 120) < 1.5, `slice ${z}`);
 });
+test("fade z ends: the outermost slices blend toward the background, the middle is untouched", () => {
+  // 40 slices of 8 x 8: background 0.1 everywhere, a bright voxel column of 0.9 in every slice
+  const NX = 8, NY = 8, NZ = 40, a = new Uint16Array(NX * NY * NZ);
+  for (let z = 0; z < NZ; z++) for (let i = 0; i < NX * NY; i++) a[z * NX * NY + i] = toF16(i === 27 ? 0.9 : 0.1);
+  const g = { NX, NY, NZ, valueRange: [0, 1], _volF16Orig: a, _level: false, _fadeZ: true, _invert: false };
+  const out = VolumeGPU.prototype._displayF16.call(g);
+  const col = (z) => fromF16(out[z * NX * NY + 27]);
+  assert.ok(Math.abs(col(20) - 0.9) < 0.01, "the middle is untouched");
+  assert.ok(Math.abs(col(0) - 0.1) < 0.05 && Math.abs(col(NZ - 1) - 0.1) < 0.05, `the ends reach the background (${col(0)}, ${col(NZ - 1)})`);
+  assert.ok(col(0) < col(2) && col(2) < col(4) && col(4) < col(6), "a smooth ramp inward");
+  assert.ok(Math.abs(fromF16(out[0]) - 0.1) < 0.01, "the background stays the background");
+  const off = VolumeGPU.prototype._displayF16.call({ ...g, _fadeZ: false, _volF16Faded: {} });
+  assert.equal(off, a);
+});
 console.log(`${n} passed`);

@@ -146,6 +146,13 @@
               <span class="toggle-switch"></span>
             </label>
           </div>
+          <div class="control label-style-row" id="fadeZRow" hidden>
+            <span class="control-heading control-heading--lower" title="Fade z ends: blend the first and last 15% of z slices toward the background, so the out-of-focus light a widefield stack cuts off at its top and bottom does not show as a flat bright sheet on those faces">fade z ends</span>
+            <label class="toggle toggle-left" title="Fade z ends: blend the outermost z slices toward the background">
+              <input type="checkbox" id="fadeZToggle" />
+              <span class="toggle-switch"></span>
+            </label>
+          </div>
           <div class="control slider-inline" id="eaDensityRow" hidden
                title="Density (absorption): 0 = every voxel glows and nothing blocks; higher = nearer structures hide what is behind them">
             <span class="control-heading control-heading--lower" id="eaDensityLabel">density</span>
@@ -175,10 +182,10 @@
             <span class="control-heading control-heading--lower">softness</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="0.9" step="0.01" value="0.9" />
+                <input type="range" id="blockSoftSlider" min="0" max="1" step="0.01" value="0.9" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="0.9" step="0.05" value="0.90" />
+                <input type="number" id="blockSoftInput" min="0" max="1" step="0.05" value="0.90" />
               </div>
             </div>
           </div>
@@ -187,10 +194,10 @@
             <span class="control-heading control-heading--lower">block depth</span>
             <div class="slider-row">
               <div class="slider" id="blockMinSliderRoot" data-slider-type="single">
-                <input type="range" id="blockMinSlider" min="0.5" max="20" step="0.5" value="20" />
+                <input type="range" id="blockMinSlider" min="0" max="1" step="0.001" value="0.6962" />
               </div>
               <div class="number-field" data-number-id="blockMinInput">
-                <input type="number" id="blockMinInput" min="0.5" max="20" step="0.5" value="20.0" />
+                <input type="number" id="blockMinInput" min="0.5" max="100" step="1" value="20" />
               </div>
             </div>
           </div>

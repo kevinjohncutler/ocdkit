@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockOcc03: curSurfOcc, blockSoft09: curBlockSoft, blockDepth20: curBlockDepth, levelFrames: curLevel, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockOcc03: curSurfOcc, blockSoft09: curBlockSoft, blockDepth20: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -156,10 +156,15 @@
     let curSurfOcc = typeof _vs.blockOcc03 === "number" && _vs.blockOcc03 >= 0 ? _vs.blockOcc03 : 0.3;
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
-    let curBlockSoft = typeof _vs.blockSoft09 === "number" ? Math.min(0.9, Math.max(0, _vs.blockSoft09)) : 0.9;
-    let curBlockDepth = typeof _vs.blockDepth20 === "number" ? Math.min(20, Math.max(0.5, _vs.blockDepth20)) : 20;   // block depth (voxels)
+    let curBlockSoft = typeof _vs.blockSoft09 === "number" ? Math.min(1, Math.max(0, _vs.blockSoft09)) : 0.9;
+    let curBlockDepth = typeof _vs.blockDepth20 === "number" ? Math.min(100, Math.max(0.5, _vs.blockDepth20)) : 20;   // block depth (voxels)
+    // the block depth slider is logarithmic: position p in 0..1 -> 0.5 x 200^p voxels (0.5..100)
+    const depthFromPos = (p) => 0.5 * Math.pow(200, Math.max(0, Math.min(1, p)));
+    const posFromDepth = (d) => Math.log(Math.max(0.5, Math.min(100, d)) / 0.5) / Math.log(200);
     // Level frames (every 3D mode): divide each z slice by its median background
     let curLevel = _vs.levelFrames === true;
+    // Fade z ends (every 3D mode): the outermost z slices blend toward the background
+    let curFadeZ = _vs.fadeZEnds === true;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3 || curProj === 4;   // modes with a density slider
@@ -542,6 +547,7 @@
           blockDepth: curBlockDepth,
           depthCue: curDepthCue,
           levelFrames: curLevel,
+          fadeZEnds: curFadeZ,
           window: window.__viewerGetWindow ? window.__viewerGetWindow() : null,   // 2D histogram bounds
           // Inherit the current (persisted) HDR toggle state so the volume opens
           // lifted if HDR is on. Gate on `available` too so we don't lift before
@@ -774,7 +780,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(0.9, Number.isFinite(Number(t)) ? Number(t) : 0.9));
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.9));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
@@ -838,18 +844,19 @@
     const bmRange = document.getElementById("blockMinSlider");
     const bmNum = document.getElementById("blockMinInput");
     function setBlockDepthUI(v, from) {
-      v = Math.max(0.5, Math.min(20, Number.isFinite(Number(v)) ? Number(v) : 20));
+      if (from === "range") v = depthFromPos(Number(v));
+      v = Math.max(0.5, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 20));
       curBlockDepth = v;
       if (bmRange && from !== "range") {
-        bmRange.value = String(v);
+        bmRange.value = String(posFromDepth(v));
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockMinSlider");
       }
-      if (bmNum) bmNum.value = v.toFixed(1);
+      if (bmNum) bmNum.value = v < 10 ? v.toFixed(1) : v.toFixed(0);
       if (vgpu) vgpu.setBlockDepth(v);
       saveVolState();
     }
     if (bmRange) {
-      bmRange.value = String(curBlockDepth);
+      bmRange.value = String(posFromDepth(curBlockDepth));
       bmRange.addEventListener("input", () => setBlockDepthUI(bmRange.value, "range"));
       const broot = document.getElementById("blockMinSliderRoot");
       if (broot && window.ViewerUI && ViewerUI.registerSlider) {
@@ -858,10 +865,10 @@
       }
     }
     if (bmNum) {
-      bmNum.value = curBlockDepth.toFixed(1);
+      bmNum.value = curBlockDepth < 10 ? curBlockDepth.toFixed(1) : curBlockDepth.toFixed(0);
       bmNum.addEventListener("change", () => setBlockDepthUI(bmNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth + d));
+        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth * (d > 0 ? 1.25 : 0.8)));
       }
     }
 
@@ -877,9 +884,22 @@
       });
     }
 
+    // ── Fade z ends toggle (3D, every mode) ──
+    const fzRow = document.getElementById("fadeZRow");
+    const fzToggle = document.getElementById("fadeZToggle");
+    if (fzToggle) {
+      fzToggle.checked = curFadeZ;
+      fzToggle.addEventListener("change", () => {
+        curFadeZ = fzToggle.checked;
+        if (vgpu) vgpu.setFadeZEnds(curFadeZ);
+        saveVolState();
+      });
+    }
+
     function syncDensityRow() {
       syncSpinRow();
       if (lvRow) lvRow.hidden = mode !== "3d";
+      if (fzRow) fzRow.hidden = mode !== "3d";
       if (bmRow) {
         const showBm = mode === "3d" && curProj === 4;
         const wasHiddenB = bmRow.hidden;

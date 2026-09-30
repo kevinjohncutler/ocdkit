@@ -100,6 +100,29 @@
     return _toF16(f);
   }
 
+  /** Fade the z ends of a half-float volume: the outermost 15% of slices at each
+   *  end (at least 4) blend toward the volume's background (its median) on a
+   *  raised-cosine ramp. A widefield stack cuts the microscope's out-of-focus
+   *  light cones off at its first and last slice; without a fade, rays skimming
+   *  those faces see that cut-off halo light as a flat bright sheet, inconsistent
+   *  with the same light inside the volume. (Tapering a truncated signal to its
+   *  baseline is the standard way to hide the cut.) */
+  function _fadeZEndsF16(src, NX, NY, NZ) {
+    const H = halfTable(), per = NX * NY, BINS = 4096, hist = new Uint32Array(BINS);
+    for (let i = 0; i < src.length; i++) hist[Math.min(BINS - 1, Math.max(0, (H[src[i]] * BINS) | 0))]++;
+    let acc = 0, b = 0;
+    for (; b < BINS; b++) { acc += hist[b]; if (acc * 2 >= src.length) break; }
+    const bg = (b + 0.5) / BINS;
+    const w = Math.min(Math.floor(NZ / 2), Math.max(4, Math.round(0.15 * NZ)));
+    const f = new Float32Array(src.length);
+    for (let z = 0; z < NZ; z++) {
+      const d = Math.min(z, NZ - 1 - z);                    // slices from the nearer end
+      const k = d >= w ? 1 : 0.5 - 0.5 * Math.cos(Math.PI * (d + 0.5) / w);
+      for (let i = z * per, e = i + per; i < e; i++) f[i] = bg + (H[src[i]] - bg) * k;
+    }
+    return _toF16(f);
+  }
+
   // half-float bits -> float, as a 64K lookup table (built on first use)
   let _HALF = null;
   function halfTable() {
@@ -285,9 +308,10 @@
       this._transparent = !!opts.transparent;           // colormap alpha follows lightness
       this._classify = !!opts.classify;                 // window per voxel in EA / MIDA (setClassify)
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
+      this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockSoft = opts.blockSoftness != null ? Math.min(0.9, Math.max(0, +opts.blockSoftness)) : 0.9;   // block softness
-      this._blockDepth = opts.blockDepth > 0 ? Math.min(20, Math.max(0.5, +opts.blockDepth)) : 20;   // block: voxels that block 95%
+      this._blockSoft = opts.blockSoftness != null ? Math.min(1, Math.max(0, +opts.blockSoftness)) : 0.9;   // block softness
+      this._blockDepth = opts.blockDepth > 0 ? Math.min(100, Math.max(0.5, +opts.blockDepth)) : 20;   // block: voxels that block 95%
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -457,6 +481,7 @@
       }
       this._volF16Orig = f16;        // as loaded; the texture holds 1 - value while inverted
       this._volF16Leveled = null;    // frames leveled (setLevelFrames), built on first use
+      this._volF16Faded = {};        // z ends faded (setFadeZEnds), per leveling state
       f16 = this._displayF16();
       this._volF16 = f16;            // kept for the cube renderer and the EA exposure estimate
       this._cubesBuilt = false;
@@ -1196,12 +1221,29 @@
       this._refreshVolume();
     }
     isLevelFrames() { return !!this._level; }
-    /** The volume as displayed: as loaded, frames leveled if on, then inverted if on. */
+    /** Fade the z ends (the first and last 15% of slices) toward the background, so
+     *  the out-of-focus light a widefield stack cuts off there does not show as a flat
+     *  sheet on the top and bottom faces. Applied after leveling, before Invert. */
+    setFadeZEnds(on) {
+      on = !!on;
+      if (on === !!this._fadeZ) return;
+      this._fadeZ = on;
+      this._refreshVolume();
+    }
+    isFadeZEnds() { return !!this._fadeZ; }
+    /** The volume as displayed: as loaded, frames leveled if on, z ends faded if on,
+     *  then inverted if on. */
     _displayF16() {
       let f16 = this._volF16Orig;
       if (this._level && f16) {
         if (!this._volF16Leveled) this._volF16Leveled = _levelFramesF16(f16, this.NX, this.NY, this.NZ, this.valueRange);
         f16 = this._volF16Leveled;
+      }
+      if (this._fadeZ && f16) {
+        const key = this._level ? "leveled" : "orig";
+        if (!this._volF16Faded) this._volF16Faded = {};
+        if (!this._volF16Faded[key]) this._volF16Faded[key] = _fadeZEndsF16(f16, this.NX, this.NY, this.NZ);
+        f16 = this._volF16Faded[key];
       }
       return this._invert ? _invertF16(f16) : f16;
     }
@@ -1246,17 +1288,17 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4) block depth, voxels (0.5..20): how many voxels of a
+    /** Block projection (mode 4) block depth, voxels (0.5..100): how many voxels of a
      *  blocker (a voxel at least X as bright as the light behind it) hide 95% of that
      *  light; fewer block gradually less. */
     setBlockDepth(v) {
-      this._blockDepth = Math.min(20, Math.max(0.5, Number.isFinite(+v) ? +v : 8));
+      this._blockDepth = Math.min(100, Math.max(0.5, Number.isFinite(+v) ? +v : 20));
       this._requestRender();
     }
-    /** Block projection (mode 4) softness, 0..0.9: 0 blocks on/off at the
+    /** Block projection (mode 4) softness, 0..1: 0 blocks on/off at the
      *  threshold X, higher fades the block in over X (1 - softness) .. X (1 + softness). */
     setBlockSoftness(t) {
-      this._blockSoft = Math.min(0.9, Math.max(0, Number.isFinite(+t) ? +t : 0.5));
+      this._blockSoft = Math.min(1, Math.max(0, Number.isFinite(+t) ? +t : 0.9));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
