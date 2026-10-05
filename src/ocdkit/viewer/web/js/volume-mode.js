@@ -567,6 +567,8 @@
         });
         vgpu.setOverlay("axes", false);
         if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom
+        // labels as opaque as the label alpha slider says (as in 2D)
+        if (window.__viewerGetMaskOpacity && vgpu.setLabelOpacity) vgpu.setLabelOpacity(window.__viewerGetMaskOpacity());
         window.__volumeGPU = vgpu;
         // how long 3D took to appear, shown briefly in the status readout
         vgpu.device.queue.onSubmittedWorkDone().then(() => {

@@ -3501,6 +3501,11 @@ function setMaskOpacity(value, { silent = false } = {}) {
   }
   maskOpacity = clamped;
   syncMaskOpacityControls();
+  // the 3D view's labels too
+  try {
+    const vg = window.__volumeMode && window.__volumeMode.gpu && window.__volumeMode.gpu();
+    if (vg && vg.setLabelOpacity) vg.setLabelOpacity(maskOpacity);
+  } catch (e) { /* not in 3D */ }
   if (!silent) {
     if (!isWebglPipelineActive()) {
       redrawMaskCanvas();
@@ -7877,6 +7882,7 @@ function setImageInvert(on, { save = true } = {}) {
   if (save) scheduleStateSave();
 }
 window.__viewerGetInvert = () => imageInverted;
+window.__viewerGetMaskOpacity = () => maskOpacity;   // (the 3D view's label opacity)
 if (imageInvertToggle) imageInvertToggle.addEventListener('change', () => setImageInvert(imageInvertToggle.checked));
 const HIST_PREFS_KEY = 'ocdkit-histogram-prefs';
 // clip bounds in percent; 0 / 100 (the data's full range) by default, so nothing
