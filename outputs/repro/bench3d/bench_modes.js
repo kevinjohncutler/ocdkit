@@ -61,7 +61,7 @@
     }
     // _writeUniform() layout from volume3d-gpu.js (56 floats)
     function uniformData(cam, NX, NY, NZ, m) {
-      const u = new Float32Array(56);
+      const u = new Float32Array(60);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([...cam.box.min, 0], 20); u.set([...cam.box.max, 0], 24);
@@ -141,7 +141,7 @@
     const lutTex = device.createTexture({ size: [256, 1], format: "rgba16float", usage: U.TEXTURE_BINDING | U.COPY_DST });
     { const r = new Float32Array(1024); for (let i = 0; i < 256; i++) r.set([i / 255, i / 255, i / 255, 1], 4 * i);
       device.queue.writeTexture({ texture: lutTex }, new Uint16Array(new Float16Array(r).buffer), { bytesPerRow: 2048 }, [256, 1]); }
-    const ub = device.createBuffer({ size: 56 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const ub = device.createBuffer({ size: 60 * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const q25 = Math.log(0.5) / Math.log(0.75);
 
     for (const ds of DS) {

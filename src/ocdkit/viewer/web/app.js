@@ -7852,6 +7852,7 @@ window.__viewerGetMask = function () { return maskValues; };
 
 // Brush radius in pixels (for the 3D sphere brush) + the active label.
 window.__viewerBrushRadius = function () { return Math.max(1, Math.round(brushDiameter / 2)); };
+window.__viewerBrushSnap = function () { return brushKernelMode === BRUSH_KERNEL_MODES.SNAPPED; };   // (the 3D brush too)
 window.__viewerEraseActive = function () { return eraseActive; };
 window.__viewerActiveTool = function () { return getActiveToolMode(); };   // 'draw'|'erase'|'fill'|'picker'
 window.__viewerSpacePan = function () { return spacePan; };   // space held → orbit/pan override

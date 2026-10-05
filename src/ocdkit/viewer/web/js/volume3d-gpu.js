@@ -358,7 +358,7 @@
       // frame rate. The settled frame uses the full step count for a clean still.
       this.nstepsInteract = Math.max(96, Math.round(this.nsteps * 0.5));
       // Camera = quaternion arcball (free rotation, no three.js); see _initCamera.
-      this.uniform = device_buf(this.device, 56 * 4);
+      this.uniform = device_buf(this.device, 60 * 4);
       // Display window (the 2D histogram bounds), in the volume's data units.
       // valueRange maps those units to the normalized texture; see setWindow.
       this.valueRange = decoded.valueRange || null;
@@ -520,6 +520,7 @@
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       this._labBpe = bpe; this._labCtor = Ctor;       // for in-place updateLabels
+      this._labHost = lab;                             // host copy: the 3D brush picks and stamps it
       device.queue.writeTexture({ texture: this.labTex }, lab.buffer,
         { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
       this._writeLabelBricks(lab);
@@ -527,7 +528,8 @@
 
     _writeLabelBricks(lab) {
       const { NX, NY, NZ } = this, bd = brickDims(NX, NY, NZ, BRICK);
-      this.device.queue.writeTexture({ texture: this.brickLabTex }, brickAny(lab, NX, NY, NZ, BRICK),
+      this._labBrickHost = brickAny(lab, NX, NY, NZ, BRICK);
+      this.device.queue.writeTexture({ texture: this.brickLabTex }, this._labBrickHost,
         { bytesPerRow: bd[0], rowsPerImage: bd[1] }, bd);
     }
 
@@ -777,8 +779,111 @@
       this.device.queue.writeTexture({ texture: this.labTex }, buf.buffer,
         { bytesPerRow: NX * bpe, rowsPerImage: NY }, [NX, NY, NZ]);
       this._writeLabelBricks(buf);
+      this._labHost = (buf === data) ? buf.slice() : buf;   // (own copy: brush stamps write into it)
       this.render();
     }
+
+    // ── 3D brush ──────────────────────────────────────────────────────────
+    /** Show the brush preview: a ball of `radius` voxels at `center` ([x, y, z]
+     *  voxel-index coordinates), or nothing (null). */
+    setBrush(center, radius) {
+      this._brush = center ? [center[0], center[1], center[2], Math.max(0.5, +radius || 0)] : null;
+      this._requestRender();
+    }
+
+    /** What the 3D brush paints at canvas pixel (px, py): the first labelled voxel
+     *  when labels are drawn (they are drawn first), else the voxel the projection
+     *  shows (the brightest in the display window; for AMIP the brightest after
+     *  attenuation). Returns { point: [x, y, z] continuous voxel-index coords at
+     *  that voxel's middle along the ray, voxel: [i, j, k] } or null. */
+    pickBrush(px, py) {
+      const ray = this.pickRayWorld(px, py), box = this._box();
+      const NX = this.NX, NY = this.NY, NZ = this.NZ, res = [NX, NY, NZ];
+      const span = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
+      const len = Math.hypot(ray.rd[0], ray.rd[1], ray.rd[2]) || 1;
+      const rd = ray.rd.map((v) => v / len), ro = ray.ro;
+      let tn = -Infinity, tf = Infinity;
+      for (let a = 0; a < 3; a++) {
+        const inv = 1 / (Math.abs(rd[a]) < 1e-12 ? 1e-12 : rd[a]);
+        let t1 = (box.min[a] - ro[a]) * inv, t2 = (box.max[a] - ro[a]) * inv;
+        if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+        tn = Math.max(tn, t1); tf = Math.min(tf, t2);
+      }
+      tn = Math.max(tn, 0);
+      if (!(tn < tf)) return null;
+      const dv = rd.map((v, a) => { const d = v / span[a] * res[a]; return Math.abs(d) < 1e-9 ? 1e-9 : d; });
+      const p0 = ro.map((v, a) => (v + rd[a] * tn - box.min[a]) / span[a] * res[a]);
+      const vox = p0.map((v, a) => Math.min(res[a] - 1, Math.max(0, Math.floor(v))));
+      const stp = dv.map(Math.sign), tDelta = dv.map((d) => Math.abs(1 / d));
+      const tMax = vox.map((v, a) => (v + Math.max(stp[a], 0) - p0[a]) / dv[a]);
+      const H = this._halfTable || (this._halfTable = halfTable());
+      const vol = this._volF16, lab = this._labHost;
+      const labelsFirst = lab && this.showLabels > 0 && this.labelOpacity > 0;
+      const lo = this._win[0], sc = this._win[1];
+      const amip = this.mode === 4, q = this._amipQ, kq = 3 / Math.max(this._amipDepth || 25, 0.05);
+      const dvLen = Math.hypot(dv[0], dv[1], dv[2]), selfDim = this._amipSelf === false ? 0 : 0.5;
+      let best = 0, bestVox = null, bestT0 = 0, bestT1 = 0, tPrev = 0, tau = 0;
+      for (let n = 0; n < NX + NY + NZ + 3; n++) {
+        const idx = (vox[2] * NY + vox[1]) * NX + vox[0];
+        const tExit = Math.min(tMax[0], tMax[1], tMax[2]);
+        if (labelsFirst && lab[idx] > 0) { bestVox = vox.slice(); bestT0 = tPrev; bestT1 = tExit; best = 1; break; }
+        const sw = Math.min(1, Math.max(0, (H[vol[idx]] - lo) * sc));
+        let v = sw;
+        if (amip && sw > 0 && Number.isFinite(q)) {
+          const dTau = kq * Math.pow(sw, q) * Math.max(tExit - tPrev, 0) * dvLen;
+          v = sw * Math.exp(-(tau + selfDim * dTau));
+          tau += dTau;
+        }
+        if (v > best) { best = v; bestVox = vox.slice(); bestT0 = tPrev; bestT1 = tExit; }
+        tPrev = tExit;
+        const a = (tMax[0] < tMax[1] && tMax[0] < tMax[2]) ? 0 : (tMax[1] < tMax[2] ? 1 : 2);
+        vox[a] += stp[a]; tMax[a] += tDelta[a];
+        if (vox[a] < 0 || vox[a] >= res[a]) break;
+      }
+      if (!bestVox || best <= 0.02) return null;
+      const tm = 0.5 * (bestT0 + bestT1);
+      return { point: p0.map((v, a) => v + dv[a] * tm), voxel: bestVox };
+    }
+
+    /** Paint a brush ball into the 3D label texture right away (the server's
+     *  result replaces it when the stroke is committed): voxels whose centers are
+     *  within `radius` of `center` get `value` (an ncolor group; 0 erases). */
+    stampLabels(center, radius, value) {
+      const lab = this._labHost;
+      if (!lab || !this.labTex) return;
+      const NX = this.NX, NY = this.NY, NZ = this.NZ, R = Math.max(0.5, radius), r2 = R * R;
+      const x0 = Math.max(0, Math.floor(center[0] - R)), x1 = Math.min(NX, Math.ceil(center[0] + R) + 1);
+      const y0 = Math.max(0, Math.floor(center[1] - R)), y1 = Math.min(NY, Math.ceil(center[1] + R) + 1);
+      const z0 = Math.max(0, Math.floor(center[2] - R)), z1 = Math.min(NZ, Math.ceil(center[2] + R) + 1);
+      if (x1 <= x0 || y1 <= y0 || z1 <= z0) return;
+      const w = x1 - x0, h = y1 - y0, d = z1 - z0, C = this._labCtor || Uint8Array;
+      const sub = new C(w * h * d);
+      for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const i = (z * NY + y) * NX + x;
+        const dx = x + 0.5 - center[0], dy = y + 0.5 - center[1], dz = z + 0.5 - center[2];
+        if (dx * dx + dy * dy + dz * dz <= r2) lab[i] = value;
+        sub[((z - z0) * h + (y - y0)) * w + (x - x0)] = lab[i];
+      }
+      const bpe = this._labBpe || 1;
+      this.device.queue.writeTexture({ texture: this.labTex, origin: [x0, y0, z0] }, sub.buffer,
+        { bytesPerRow: w * bpe, rowsPerImage: h }, [w, h, d]);
+      if (value > 0) {                                 // the label pass skips empty bricks: mark these occupied
+        const bd = brickDims(NX, NY, NZ, BRICK);
+        if (!this._labBrickHost) this._labBrickHost = brickAny(lab, NX, NY, NZ, BRICK);
+        const B = this._labBrickHost;
+        for (let bz = Math.floor(z0 / BRICK); bz <= Math.floor((z1 - 1) / BRICK); bz++)
+          for (let by = Math.floor(y0 / BRICK); by <= Math.floor((y1 - 1) / BRICK); by++)
+            for (let bx = Math.floor(x0 / BRICK); bx <= Math.floor((x1 - 1) / BRICK); bx++) B[(bz * bd[1] + by) * bd[0] + bx] = 1;
+        this.device.queue.writeTexture({ texture: this.brickLabTex }, B, { bytesPerRow: bd[0], rowsPerImage: bd[1] }, bd);
+      }
+      this._requestRender();
+    }
+
+    /** Hook the 3D brush up: { active(tool) -> bool, radius() -> voxels,
+     *  snap() -> bool, value(tool) -> group (0 erases), onStroke(centers, value) }.
+     *  With it set, a left-drag with the draw or erase tool paints; holding space
+     *  rotates instead (as space pans in 2D). */
+    setBrushHandler(h) { this._brushHandler = h || null; }
 
     /** World-space pick ray for a canvas pixel — same math as the render shader
      *  (WebGPU depth near=0/far=1, column-major invViewProj), so a pick matches
@@ -799,8 +904,40 @@
     _attachInput() {
       const c = this.canvas, self = this;
       let drag = 0, lx = 0, ly = 0;   // 0 none, 1 rotate, 2 pan
+      let painting = null;             // a 3D brush stroke: { tool, value, centers }
       c.addEventListener("contextmenu", (e) => e.preventDefault());
+      // ── 3D brush: hover preview and painting (draw / erase tools) ──
+      const brushTool = () => {
+        const h = self._brushHandler;
+        if (!h || typeof window.__viewerActiveTool !== "function") return null;
+        const t = window.__viewerActiveTool();
+        return (t === "draw" || t === "erase") && h.active(t) ? t : null;
+      };
+      const spaceDown = () => !!(window.__viewerSpacePan && window.__viewerSpacePan());
+      const brushAt = (e) => {
+        const r = c.getBoundingClientRect(), hit = self.pickBrush(e.clientX - r.left, e.clientY - r.top);
+        if (!hit) return null;
+        const h = self._brushHandler, snap = h.snap();
+        const center = snap ? hit.voxel.map((v) => v + 0.5) : hit.point;
+        return { center, radius: h.radius() };
+      };
+      const previewAt = (e) => {
+        if (!brushTool() || spaceDown() || drag) { if (self._brush) self.setBrush(null); return null; }
+        const b = brushAt(e);
+        self.setBrush(b ? b.center : null, b ? b.radius : 0);
+        return b;
+      };
+      c.addEventListener("pointerleave", () => { if (!painting && self._brush) self.setBrush(null); });
       c.addEventListener("pointerdown", (e) => {
+        const tool = e.button === 0 && !e.shiftKey && !spaceDown() ? brushTool() : null;
+        if (tool) {                                     // paint (space + drag rotates instead)
+          const b = previewAt(e);
+          const h = self._brushHandler, value = h.value(tool);
+          painting = { tool, value, centers: [] };
+          if (b) { painting.centers.push(b.center); self.stampLabels(b.center, b.radius, value); }
+          c.setPointerCapture(e.pointerId);
+          return;
+        }
         // picker / fill tool: click the cell under the cursor (ray-pick) instead
         // of rotating. Left button only; other buttons still rotate/pan. Holding
         // space is the orbit/pan override, so it always rotates regardless of tool.
@@ -815,8 +952,15 @@
         }
         drag = (e.button === 2 || e.button === 1 || e.shiftKey) ? 2 : 1;
         lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId);
+        if (self._brush) self.setBrush(null);
       });
       c.addEventListener("pointerup", (e) => {
+        if (painting) {                                 // commit the stroke (one undo step)
+          const p = painting; painting = null;
+          try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+          if (p.centers.length && self._brushHandler) self._brushHandler.onStroke(p.centers, p.value);
+          return;
+        }
         const was = drag; drag = 0; try { c.releasePointerCapture(e.pointerId); } catch (_) {}
         if (was) ensureAnim();                          // full-quality frame on release
       });
@@ -913,7 +1057,21 @@
       const ensureAnim = () => { if (!anim) anim = requestAnimationFrame(step); };
 
       c.addEventListener("pointermove", (e) => {
-        if (!drag) return;
+        if (painting) {
+          const b = previewAt(e);
+          if (b) {
+            const last = painting.centers[painting.centers.length - 1];
+            // stamp along the segment so a fast drag shows no gaps (as the server sweeps it)
+            const n = last ? Math.max(1, Math.ceil(Math.hypot(b.center[0] - last[0], b.center[1] - last[1], b.center[2] - last[2]) / (0.5 * b.radius))) : 1;
+            for (let i = 1; i <= n; i++) {
+              const cc = last ? last.map((v, a) => v + (b.center[a] - v) * (i / n)) : b.center;
+              self.stampLabels(cc, b.radius, painting.value);
+            }
+            painting.centers.push(b.center);
+          }
+          return;
+        }
+        if (!drag) { previewAt(e); return; }
         const dx = e.clientX - lx, dy = e.clientY - ly;
         lx = e.clientX; ly = e.clientY;
         if (drag === 2) { ppx += dx; ppy += dy; } else { pdx += dx; pdy += dy; }
@@ -969,7 +1127,7 @@
 
     _writeUniform(cam) {
       const box = this._box();
-      const u = new Float32Array(56);
+      const u = new Float32Array(60);
       u.set(cam.invViewProj, 0);
       u.set([cam.eye[0], cam.eye[1], cam.eye[2], 1], 16);
       u.set([box.min[0], box.min[1], box.min[2], 0], 20);
@@ -986,6 +1144,7 @@
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
       u.set([cb.max[0], cb.max[1], cb.max[2], blk && !this._amipSelf ? 1 : 0], 52);   // w: AMIP without self-dimming
+      u.set(this._brush || [0, 0, 0, 0], 56);                           // 3D brush preview (radius 0 = off)
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 

@@ -53,6 +53,7 @@ struct U {
   win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; voxel shading t
   cueLo       : vec4<f32>,   // depth cue: the visible data's bounding box min (world), strength s
   cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world); w: 1 = AMIP without self-dimming
+  brush       : vec4<f32>,   // 3D brush preview: center (voxel-index coords) and radius (voxels); radius 0 = off
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -463,7 +464,53 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     }
   }
 
-  return vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA));
+  return brushOverlay(vec4<f32>(labPC + imgPC * (1.0 - labA), labA + imgA * (1.0 - labA)), ro, rd, tnear, tfar);
+}
+
+// 3D brush preview: the voxels the brush would paint (centers within u.brush.w of
+// u.brush.xyz, in voxel-index coordinates) tinted a translucent gray where the ray
+// first meets one, each cube face shaded a little differently so the ball's
+// voxels read as solid. A DDA over the ball's bounding box only.
+fn brushOverlay(base : vec4<f32>, ro : vec3<f32>, rd : vec3<f32>, tnear : f32, tfar : f32) -> vec4<f32> {
+  let R = u.brush.w;
+  if (R <= 0.0) { return base; }
+  let span = u.boxMax.xyz - u.boxMin.xyz;
+  let res = vec3<f32>(u.dims.xyz);
+  let dv0 = rd / span * res;
+  let dv = select(dv0, vec3<f32>(1e-8), abs(dv0) < vec3<f32>(1e-8));
+  let p0 = (ro + rd * tnear - u.boxMin.xyz) / span * res;
+  let c = u.brush.xyz;
+  let lo = max(floor(c - vec3<f32>(R)), vec3<f32>(0.0));
+  let hi = min(floor(c + vec3<f32>(R)) + vec3<f32>(1.0), res);
+  if (any(hi <= lo)) { return base; }
+  let inv = vec3<f32>(1.0) / dv;
+  let ta = (lo - p0) * inv;
+  let tb = (hi - p0) * inv;
+  let tmn = min(ta, tb);
+  let tmx = max(ta, tb);
+  let tn = max(max(max(tmn.x, tmn.y), tmn.z), 0.0);
+  let tf = min(min(min(tmx.x, tmx.y), tmx.z), tfar - tnear);
+  if (tn > tf) { return base; }
+  var axis = 2;
+  if (tmn.x >= tmn.y && tmn.x >= tmn.z) { axis = 0; } else if (tmn.y >= tmn.z) { axis = 1; }
+  var vox = clamp(floor(p0 + dv * (tn + 1e-4)), lo, hi - vec3<f32>(1.0));
+  let stp = sign(dv);
+  var tMax = (vox + max(stp, vec3<f32>(0.0)) - p0) / dv;
+  let tDelta = abs(inv);
+  let n = i32(3.0 * (2.0 * R + 2.0)) + 4;
+  for (var i = 0; i < n; i = i + 1) {
+    let d = vox + vec3<f32>(0.5) - c;
+    if (dot(d, d) <= R * R) {
+      let face = select(select(0.8, 1.0, axis == 1), 0.64, axis == 2);
+      let a = 0.42;
+      return vec4<f32>(base.rgb * (1.0 - a) + vec3<f32>(0.62 * face * a), base.a + a * (1.0 - base.a));
+    }
+    if (tMax.x < tMax.y && tMax.x < tMax.z) { vox.x = vox.x + stp.x; tMax.x = tMax.x + tDelta.x; axis = 0; }
+    else if (tMax.y < tMax.z) { vox.y = vox.y + stp.y; tMax.y = tMax.y + tDelta.y; axis = 1; }
+    else { vox.z = vox.z + stp.z; tMax.z = tMax.z + tDelta.z; axis = 2; }
+    if (any(vox < lo) || any(vox >= hi)) { break; }
+  }
+  return base;
 }
 
 @compute @workgroup_size(8, 8, 1)

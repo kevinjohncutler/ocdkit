@@ -68,7 +68,7 @@ def _ortho(yaw, pitch, half):
 def _uniform(inv, dims, mode, density=1.0, opacity=1.0, show_img=1, show_lab=1, window=(0.0, 1.0),
              exposure=1.0, faces_mix=0.0):
     NX, NY, NZ = dims
-    u = np.zeros(56, np.float32)                   # (48..55: depth cue box + strength, off)
+    u = np.zeros(60, np.float32)                   # (48..55: depth cue box + strength, off; 56..59: brush preview, off)
     u[0:16] = inv
     u[20:24] = [-NX / 2, -NY / 2, -NZ / 2, 0]
     u[24:28] = [NX / 2, NY / 2, NZ / 2, 0]
@@ -850,3 +850,51 @@ def test_amip_is_mip_when_depth_is_huge(dev):
     mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
     assert np.abs(sct[..., 3] - mip[..., 3]).max() < 2e-3
 
+
+
+# ── 3D brush preview (u.brush: center in voxel-index coords, radius; 0 = off) ──
+
+def _brush_scene(dev):
+    vol = np.zeros((48, 48, 48), np.float16)
+    vol[20:28, 20:28, 20:28] = 0.6                     # something to draw behind the brush
+    return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+
+
+def test_brush_preview_off_changes_nothing(dev):
+    sc = _brush_scene(dev)
+    inv, *_ = _ortho(0.4, 0.3, 24.0)
+    u = _uniform(inv, (48, 48, 48), 1, show_lab=0)
+    off = sc.compute(u, 1, 1, 0, 96, 96)
+    u2 = u.copy(); u2[56:60] = [24, 24, 24, 0]          # radius 0 = off
+    np.testing.assert_array_equal(sc.compute(u2, 1, 1, 0, 96, 96), off)
+
+
+@pytest.mark.parametrize("R", [3.0, 6.0])
+def test_brush_preview_tints_exactly_the_ball(dev, R):
+    """Looking straight down z at a voxel-centered ball: the tinted pixels span
+    2R + 1 voxels both ways (2 px per voxel), its widest row is that wide, and
+    nothing outside it changes."""
+    sc = _brush_scene(dev)
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 1, show_lab=0)
+    base = sc.compute(u, 1, 1, 0, 96, 96)
+    u2 = u.copy(); u2[56:60] = [24.5, 24.5, 24.5, R]
+    out = sc.compute(u2, 1, 1, 0, 96, 96)
+    d = np.abs(out.astype(np.float32) - base.astype(np.float32)).max(-1) > 1e-3
+    ys, xs = np.nonzero(d)
+    n = 2 * (2 * int(R) + 1)
+    assert ys.max() - ys.min() + 1 == n and xs.max() - xs.min() + 1 == n
+    assert d.sum(1).max() == n
+    assert out[ys.min() + n // 2, xs.min() + n // 2, 3] > 0.4     # translucent gray over the dark background
+
+
+def test_brush_preview_snapped_vs_smooth_center(dev):
+    """A center between voxels covers a different voxel set than the snapped one."""
+    sc = _brush_scene(dev)
+    inv, *_ = _ortho(0.0, 0.0, 24.0)
+    u = _uniform(inv, (48, 48, 48), 1, show_lab=0)
+    snapped = u.copy(); snapped[56:60] = [24.5, 24.5, 24.5, 3]
+    between = u.copy(); between[56:60] = [25.0, 24.5, 24.5, 3]
+    a = sc.compute(snapped, 1, 1, 0, 96, 96)[49, :, 3]
+    b = sc.compute(between, 1, 1, 0, 96, 96)[49, :, 3]
+    assert not np.array_equal(a, b)

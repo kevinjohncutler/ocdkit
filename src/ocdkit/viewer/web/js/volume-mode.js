@@ -425,6 +425,46 @@
       } catch (e) { /* transient */ }
     };
 
+    // ----- 3D-view brush: paint balls on the render (draw / erase tools) -----
+    // The renderer previews and stamps the stroke locally; on release it lands
+    // here and is committed on the server (one undo step), then the 3D labels are
+    // refreshed from the server's result.
+    async function paint3DStroke(centers, value) {
+      if (!cfg.isVolume || !centers.length) return;
+      const radius = window.__viewerBrushRadius ? window.__viewerBrushRadius() : 3;
+      const snap = !!(window.__viewerBrushSnap && window.__viewerBrushSnap());
+      try {
+        const r = await fetch("/api/paint_balls/" + encodeURIComponent(cfg.sessionId) +
+          "?group=" + (value | 0) + "&radius=" + radius + "&snap=" + (snap ? 1 : 0),
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ centers }) });
+        if (r.ok) {
+          const j = await r.json();
+          srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
+          hasMask = true; window.__viewerMaskEdited = false;
+        }
+        await fetchNColorMap();
+        await refresh3DLabels();                 // the server's result (or a revert, on failure)
+        await updateMaskSlice(slice);            // and the 2D slice behind it
+        if (window.__viewerUpdateHistory) window.__viewerUpdateHistory();
+      } catch (e) { refresh3DLabels(); }
+    }
+    function attach3DBrush(g) {
+      if (!g || !g.setBrushHandler) return;
+      g.setBrushHandler({
+        // no painting on labels you cannot see (as in 2D)
+        active: () => !(window.__viewerLabelsVisible && !window.__viewerLabelsVisible()),
+        radius: () => (window.__viewerBrushRadius ? window.__viewerBrushRadius() : 3),
+        snap: () => !!(window.__viewerBrushSnap && window.__viewerBrushSnap()),
+        value: (tool) => {
+          if (!g.showLabels) g.setShowLabels(true);      // (a volume opened without labels)
+          if (tool === "erase") return 0;
+          const grp = window.__viewerCurrentLabel ? (window.__viewerCurrentLabel() | 0) : 0;
+          return grp > 0 ? grp : 0;                      // the zero marker erases, as in 2D
+        },
+        onStroke: (centers, value) => paint3DStroke(centers, value),
+      });
+    }
+
     function setBrushDim(d) {
       brushDim = d | 0;
       if (brushDimRow) brushDimRow.querySelectorAll("[data-brush]").forEach((x) =>
@@ -566,6 +606,7 @@
           onFps: (fps, scale) => showFps(fps, scale),
         });
         vgpu.setOverlay("axes", false);
+        attach3DBrush(vgpu);                                       // draw / erase paint on the render
         if (camState && vgpu.setCamera) vgpu.setCamera(camState);   // restore saved rotation/zoom
         // labels as opaque as the label alpha slider says (as in 2D)
         if (window.__viewerGetMaskOpacity && vgpu.setLabelOpacity) vgpu.setLabelOpacity(window.__viewerGetMaskOpacity());

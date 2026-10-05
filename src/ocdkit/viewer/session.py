@@ -718,6 +718,96 @@ class SessionManager:
         self.schedule_autosave(state)
         return int(target)
 
+    @staticmethod
+    def ball_stroke_mask(shape, centers, radius: float, snap: bool = False):
+        """The voxels a 3D brush stroke paints: the union of balls of ``radius``
+        (voxels) around each center, swept between consecutive centers so a fast
+        drag leaves no gaps. Centers are continuous ``[x, y, z]`` voxel-index
+        coordinates (a voxel's center is ``i + 0.5``); with ``snap`` each center
+        moves to its voxel's center. A voxel is painted when its center is within
+        ``radius`` of a center. Returns ``(mask, (z0, y0, x0))``: a bool array for
+        the stroke's bounding box (clipped to ``shape`` = (Z, Y, X)) and its origin,
+        or ``(None, None)`` when nothing lands inside the volume."""
+        R = max(0.5, float(radius))
+        pts = np.asarray(centers, dtype=np.float64).reshape(-1, 3)
+        if snap:
+            pts = np.floor(pts) + 0.5
+        if len(pts) > 1:                                  # sweep: samples <= R / 2 apart
+            seg = [pts[:1]]
+            for a, b in zip(pts[:-1], pts[1:]):
+                n = max(1, int(np.ceil(np.linalg.norm(b - a) / (0.5 * R))))
+                seg.append(a + (b - a) * (np.arange(1, n + 1)[:, None] / n))
+            pts = np.concatenate(seg)
+        Z, Y, X = (int(v) for v in shape)
+        lo = np.floor(pts.min(0) - R).astype(int)         # x, y, z
+        hi = np.ceil(pts.max(0) + R).astype(int)
+        lo = np.maximum(lo, 0)
+        hi = np.minimum(hi, [X, Y, Z])
+        if np.any(hi <= lo):
+            return None, None
+        zz, yy, xx = np.meshgrid(np.arange(lo[2], hi[2]) + 0.5, np.arange(lo[1], hi[1]) + 0.5,
+                                 np.arange(lo[0], hi[0]) + 0.5, indexing="ij")
+        mask = np.zeros(zz.shape, bool)
+        r2 = R * R
+        for cx, cy, cz in pts:
+            mask |= (xx - cx) ** 2 + (yy - cy) ** 2 + (zz - cz) ** 2 <= r2
+        if not mask.any():
+            return None, None
+        return mask, (int(lo[2]), int(lo[1]), int(lo[0]))
+
+    def paint_balls(self, state: SessionState, centers, radius: float, group: int,
+                    snap: bool = False) -> int:
+        """A 3D-view brush stroke: paint the union of balls (``ball_stroke_mask``)
+        with ncolor ``group``, merged into adjacent cells of the same colour exactly
+        as ``paint_sphere`` does (group 0 erases). One undo entry per stroke.
+        Returns the affected label."""
+        vol = state.current_volume
+        if vol is None:
+            raise ValueError("no volume loaded")
+        from scipy import ndimage
+        mv = state.current_mask_volume
+        if mv is None:
+            mv = np.zeros(vol.shape, np.uint32)
+            state.current_mask_volume = mv
+        mask, origin = self.ball_stroke_mask(mv.shape, centers, radius, snap)
+        if mask is None:
+            return 0
+        self.ensure_ncolor(state)
+        lg = state.label_group if state.label_group is not None else {}
+        group = int(group)
+        if int(mv.max()) + 1 > int(np.iinfo(mv.dtype).max):
+            mv = state.current_mask_volume = mv.astype(np.uint32)
+        before_mv = mv.copy()
+        before_lg = dict(lg)
+        z0, y0, x0 = origin
+        dz, dy, dx = mask.shape
+        if group <= 0:
+            target = 0
+        else:
+            # cells of this colour touching the stroke: extend / merge them
+            pz0, py0, px0 = max(z0 - 1, 0), max(y0 - 1, 0), max(x0 - 1, 0)
+            pz1, py1, px1 = min(z0 + dz + 1, mv.shape[0]), min(y0 + dy + 1, mv.shape[1]), min(x0 + dx + 1, mv.shape[2])
+            fp = np.zeros((pz1 - pz0, py1 - py0, px1 - px0), bool)
+            fp[z0 - pz0:z0 - pz0 + dz, y0 - py0:y0 - py0 + dy, x0 - px0:x0 - px0 + dx] = mask
+            border = ndimage.binary_dilation(fp) & ~fp
+            near = mv[pz0:pz1, py0:py1, px0:px1][border]
+            same = sorted(int(l) for l in np.unique(near) if int(l) > 0 and lg.get(int(l)) == group)
+            if same:
+                target = same[0]
+                for l in same[1:]:                 # a stroke bridging two same-colour cells merges them
+                    mv[mv == l] = target
+                    lg.pop(l, None)
+            else:
+                target = int(mv.max()) + 1         # isolated: a new region of the same colour
+            lg[target] = group
+            state.label_group = lg
+        sub = mv[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
+        sub[mask] = target
+        state.current_ncolor_volume = None
+        self._record_edit(state, before_mv, before_lg)
+        self.schedule_autosave(state)
+        return int(target)
+
     # ----- whole-cell ops: 3D colour picker + 3D fill (merge / delete) -----
 
     def label_at(self, state: SessionState, z: int, axis: int, y: int, x: int):

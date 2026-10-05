@@ -357,6 +357,25 @@ async def api_paint_sphere(session_id: str, request: Request, z: int = 0, axis: 
             "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
 
 
+@router.post("/paint_balls/{session_id}")
+async def api_paint_balls(session_id: str, request: Request, group: int = 1,
+                          radius: float = 1.0, snap: int = 0) -> dict:
+    """3D-view brush stroke (body: ``{"centers": [[x, y, z], ...]}`` in voxel-index
+    coordinates): paint the swept union of balls of ``radius`` voxels with colour
+    ``group``, merged into adjacent same-colour cells (group 0 erases)."""
+    try:
+        state = SESSION_MANAGER.get(session_id)
+    except KeyError as exc:
+        raise UnknownSession() from exc
+    body = await request.json()
+    try:
+        written = SESSION_MANAGER.paint_balls(state, body.get("centers") or [], radius, group, bool(snap))
+    except ValueError as exc:
+        raise BadRequest("paint_failed", detail=str(exc)) from exc
+    return {"ok": True, "label": written,
+            "canUndo": SESSION_MANAGER.can_undo(state), "canRedo": SESSION_MANAGER.can_redo(state)}
+
+
 @router.post("/undo/{session_id}")
 def api_undo(session_id: str) -> dict:
     """Undo the last volume mask edit (server-owned history)."""
