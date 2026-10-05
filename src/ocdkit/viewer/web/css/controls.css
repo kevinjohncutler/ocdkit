@@ -1324,7 +1324,7 @@ button:not(:disabled):hover {
 }
 
 
-/* 3D projection selector (EA / MIP / Mean / MIDA / Scatter): text labels in the
+/* 3D projection selector (EA / MIP / Mean / MIDA / AMIP): text labels in the
    segmented style. Five labels of different lengths share one row, so each option
    is sized by its label instead of an equal share.
    The label is positioned so it paints above the active-option highlight

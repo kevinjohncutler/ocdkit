@@ -124,12 +124,12 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Scatter (MIP of transmitted light): each voxel's light is scattered out of the beam by the material between it and the camera, and each pixel shows the brightest light that still arrives. So objects in front hide what is behind them, deeper things are seen through more material, and only a very bright source shows through an object of similar size. Values below the display window's low end are empty"><span>Scatter</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Attenuated MIP (as in napari): each voxel's light is dimmed by the material between it and the camera, and each pixel shows the brightest light that still arrives. So nearer objects hide what is behind them, and only a clearly brighter object shows through. Values below the display window's low end are empty"><span>AMIP</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
                title="Depth cue (every 3D mode): fade what lies behind the front of the visible data, with an inverse-square falloff. 0 = off; 0.5 = one volume diagonal behind the front reads 1/4 as bright">
-            <span class="control-heading control-heading--lower">depth</span>
+            <span class="control-heading control-heading--lower">depth cue</span>
             <div class="slider-row">
               <div class="slider" id="depthCueSliderRoot" data-slider-type="single">
                 <input type="range" id="depthCueSlider" min="0" max="0.95" step="0.01" value="0" />
@@ -177,34 +177,34 @@
               </div>
             </div>
           </div>
-          <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Block (0 to 1): how much of the display window scatters light. The top 'block' of the window scatters at least half as much as the window's top: 0 = nothing scatters (MIP), 0.5 = scattering in proportion to brightness, 1 = everything above the window's low end scatters alike. (Brightness b scatters in proportion to b^q, q = ln 0.5 / ln(1 - block).)">
+          <div class="control slider-inline" id="amipBlockRow" hidden
+               title="Block (0 to 1): how much of the display window dims the light. Material at brightness 1 - block on the window dims half as much as the window's top: 0 = nothing dims (MIP), 0.25 = mostly the brightest material (halo and background stay clear), 1 = everything above the window's low end alike. (Brightness b dims in proportion to b^q, q = ln 0.5 / ln(1 - block).)">
             <span class="control-heading control-heading--lower">block</span>
             <div class="slider-row">
-              <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="1" step="0.005" value="0.25" />
+              <div class="slider" id="amipBlockSliderRoot" data-slider-type="single">
+                <input type="range" id="amipBlockSlider" min="0" max="1" step="0.005" value="0.25" />
               </div>
-              <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="1" step="0.01" value="0.25" />
+              <div class="number-field" data-number-id="amipBlockInput">
+                <input type="number" id="amipBlockInput" min="0" max="1" step="0.01" value="0.25" />
               </div>
             </div>
           </div>
-          <div class="control slider-inline" id="blockMinRow" hidden
-               title="Scatter depth (voxels; slider 0.5 to 10000, type up to 1000000): how many voxels of full-brightness material scatter away 95% of the light passing through. Smaller: objects hide what is behind them sooner. Larger: closer to MIP, but slowly: an object t voxels thick dims what is behind it by about 3t/D, so a brighter object shows through a nearer, slightly dimmer one only once D reaches the thousands">
-            <span class="control-heading control-heading--lower">scatter depth</span>
+          <div class="control slider-inline" id="amipDepthRow" hidden
+               title="Attenuation depth (voxels; slider 0.5 to 10000, type up to 1000000): how many voxels of material at the window's top dim the light passing through them by 95%. Smaller: nearer objects hide what is behind them sooner. Larger: closer to MIP (an object t voxels thick dims what is behind it by about 3t/depth)">
+            <span class="control-heading control-heading--lower">attenuation</span>
             <div class="slider-row">
-              <div class="slider" id="blockMinSliderRoot" data-slider-type="single">
-                <input type="range" id="blockMinSlider" min="0" max="1" step="0.001" value="0.3950" />
+              <div class="slider" id="amipDepthSliderRoot" data-slider-type="single">
+                <input type="range" id="amipDepthSlider" min="0" max="1" step="0.001" value="0.3950" />
               </div>
-              <div class="number-field" data-number-id="blockMinInput">
-                <input type="number" id="blockMinInput" min="0.5" max="1000000" step="1" value="25" />
+              <div class="number-field" data-number-id="amipDepthInput">
+                <input type="number" id="amipDepthInput" min="0.5" max="1000000" step="1" value="25" />
               </div>
             </div>
           </div>
-          <div class="control label-style-row" id="scatterSelfRow" hidden>
+          <div class="control label-style-row" id="amipSelfRow" hidden>
             <span class="control-heading control-heading--lower" title="Self dimming: each voxel dims its own light by the material on half of its own path, so a ray grazing a voxel's edge shows it brighter than one through its middle (the gradient across each voxel cube). Off: each voxel shows its light as at its front face; only material in front of it dims it">self dimming</span>
             <label class="toggle toggle-left" title="Self dimming: on = gradient across each voxel cube, off = flat">
-              <input type="checkbox" id="scatterSelfToggle" checked />
+              <input type="checkbox" id="amipSelfToggle" checked />
               <span class="toggle-switch"></span>
             </label>
           </div>

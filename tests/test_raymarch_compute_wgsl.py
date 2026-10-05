@@ -684,7 +684,7 @@ def test_depth_cue_fades_the_far_object_in_every_mode(dev, mode):
     window = (0.6, 1.0) if mode == 4 else (0.0, 1.0)
     u = _cue(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=window,
                       exposure=8.0 if mode == 4 else 0.3), vol, 0.5, 0.6)
-    q = 2.0 if mode == 4 else 0.0                         # (Scatter: haze power)
+    q = 2.0 if mode == 4 else 0.0                         # (AMIP: power q)
     on = sc.compute(u, mode, 1, 0, 128, 128, cue=1, faces=q)[..., 3]
     off = sc.compute(u, mode, 1, 0, 128, 128, cue=0, faces=q)[..., 3]
     near, far = _cube_masks(off)
@@ -706,7 +706,7 @@ def test_depth_cue_brick_skipping_changes_nothing(dev, mode):
     full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
     inv, *_ = _ortho(0.8, 0.35, 30.0)
     u = _cue(_uniform(inv, (44, 36, 40), mode, density=0.3, show_lab=0, window=(0.55, 1.0), exposure=8.0), vol, 0.55, 0.6)
-    q = 2.0 if mode == 4 else 0.0                         # (Scatter: haze power)
+    q = 2.0 if mode == 4 else 0.0                         # (AMIP: power q)
     a = sc.compute(u, mode, 1, 0, 128, 128, faces=q, cue=1)[..., 3]
     b = full.compute(u, mode, 1, 0, 128, 128, faces=q, cue=1)[..., 3]
     assert a.max() > 0.2
@@ -736,8 +736,8 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert on[far].mean() < 0.8 * off[far].mean()
 
 
-def _scatter_column(col, depth, q, self_dim=0.5):
-    """numpy mirror of Scatter (MODE 4) along a straight ray through windowed values
+def _amip_column(col, depth, q, self_dim=0.5):
+    """numpy mirror of attenuated MIP (MODE 4) along a straight ray through windowed values
     `col` (front first), one voxel of path each; `self_dim` = the share of a voxel's
     own path that dims its own light (0.5, or 0 with self dimming off)."""
     k, tau, best = 3.0 / depth, 0.0, 0.0
@@ -769,7 +769,7 @@ def _windowed_column(vol, y, x, lo=0.6, hi=1.0):
 @pytest.mark.parametrize("self_dim", [0.5, 0.0])
 @pytest.mark.parametrize("thick", [1, 4, 20])
 @pytest.mark.parametrize("depth,q", [(2.0, 1.0), (8.0, 2.0), (30.0, 2.0), (8.0, 4.0), (8.0, 0.0), (12.0, 16.0)])
-def test_scatter_matches_per_voxel_rule(dev, thick, depth, q, self_dim):
+def test_amip_matches_per_voxel_rule(dev, thick, depth, q, self_dim):
     """A dim slab in front of a bright cube, straight along z: the pixel is the
     brightest v e^(-tau) along the ray (numpy mirror on the real voxel column)."""
     sc = _slab_scene(dev, thick, gap=2)
@@ -780,11 +780,11 @@ def test_scatter_matches_per_voxel_rule(dev, thick, depth, q, self_dim):
     u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=depth)
     u[55] = 1.0 if self_dim == 0.0 else 0.0                              # self dimming off
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=q)[60:68, 60:68, 3]
-    expect = _scatter_column(_windowed_column(vol, 24, 24), depth, q, self_dim)
+    expect = _amip_column(_windowed_column(vol, 24, 24), depth, q, self_dim)
     assert np.abs(out - expect).max() < 3e-3, (out.min(), out.max(), expect)
 
 
-def test_scatter_self_dimming_is_the_gradient_across_each_voxel(dev):
+def test_amip_self_dimming_is_the_gradient_across_each_voxel(dev):
     """A uniform bright block seen obliquely: with self dimming every ray through its
     near faces reads the same (nothing in front of them), so the faces are flat; with
     it, rays grazing a voxel's edge cross less of it than rays through its middle,
@@ -804,10 +804,10 @@ def test_scatter_self_dimming_is_the_gradient_across_each_voxel(dev):
     assert on.max() > 0.98 and on.min() < 0.8                            # on: edges bright, middles dimmed
 
 
-def test_scatter_dim_front_rod_stays_whole(dev):
+def test_amip_dim_front_rod_stays_whole(dev):
     """The X test: a rod half as bright lies across a brighter one below it. From either
     side the front rod is whole: at the crossing it reads exactly as it does on its own,
-    because its own scattering hides what lies behind it (numpy mirror)."""
+    because its own material hides what lies behind it (numpy mirror)."""
     n = 48
     z, y, x = np.mgrid[:n, :n, :n].astype(np.float32)
     rodA = ((y - 24) ** 2 + (z - 30) ** 2 <= 9) & (x > 6) & (x < 42)          # larger z, half as bright
@@ -819,13 +819,13 @@ def test_scatter_dim_front_rod_stays_whole(dev):
         inv, *_ = _ortho(yaw, 0.0, 24.0)
         out = sc.compute(_uniform(inv, (n, n, n), 4, show_lab=0, window=(0.0, 1.0), exposure=4.0), 4, 1, 0, 96, 96, faces=2.0)[..., 3]
         cross = out[47:49, 47:49].mean()                                     # the middle of the crossing
-        both = _scatter_column(vol[order, 24, 24], 4.0, 2.0)
-        alone = _scatter_column((vol * front)[order, 24, 24], 4.0, 2.0)
+        both = _amip_column(vol[order, 24, 24], 4.0, 2.0)
+        alone = _amip_column((vol * front)[order, 24, 24], 4.0, 2.0)
         assert abs(both - alone) < 1e-6                                     # the rod behind adds nothing
         assert abs(cross - alone) < 0.03, (yaw, cross, alone)
 
 
-def test_scatter_faint_background_barely_scatters(dev):
+def test_amip_faint_background_barely_dims(dev):
     """20 voxels of faint material at 5% of the window in front of a bright cube:
     haze 2 removes about 2% of its light, haze 4 practically none (numpy mirror)."""
     for q, worst in ((2.0, 0.97), (4.0, 0.999)):
@@ -836,12 +836,12 @@ def test_scatter_faint_background_barely_scatters(dev):
         inv, *_ = _ortho(0.0, 0.0, 24.0)
         out = sc.compute(_uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=8.0), 4, 1, 0, 128, 128, faces=q)[60:68, 60:68, 3]
         cube = (float(np.float16(0.95)) - 0.6) / 0.4
-        expect = _scatter_column(_windowed_column(vol, 24, 24), 8.0, q)
+        expect = _amip_column(_windowed_column(vol, 24, 24), 8.0, q)
         assert np.abs(out - expect).max() < 3e-3
         assert out.min() > worst * cube * np.exp(-0.5 * 3 / 8 * cube ** q)
 
 
-def test_scatter_is_mip_when_scatter_depth_is_huge(dev):
+def test_amip_is_mip_when_depth_is_huge(dev):
     rng = np.random.default_rng(9)
     vol = rng.random((24, 28, 32)).astype(np.float16)
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))

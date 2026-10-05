@@ -52,7 +52,7 @@ struct U {
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
   win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; voxel shading t
   cueLo       : vec4<f32>,   // depth cue: the visible data's bounding box min (world), strength s
-  cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world); w: 1 = scatter without self-dimming
+  cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world); w: 1 = AMIP without self-dimming
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -62,7 +62,7 @@ struct U {
 @group(0) @binding(5) var brickImg : texture_3d<f32>;   // max normalized intensity per brick
 @group(0) @binding(6) var brickLab : texture_3d<u32>;   // 1 if the brick holds any label voxel
 
-override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA, 4 scatter
+override MODE : i32 = 1;             // 0 emission-absorption, 1 MIP, 2 mean, 3 MIDA, 4 attenuated MIP
 override SHOW_IMG : bool = true;
 override SHOW_LAB : bool = true;
 override SHADE_LAB : bool = true;
@@ -92,27 +92,24 @@ override CLASSIFY : bool = false;
 // a voxel reads w times its windowed value in every mode, including the ones
 // that window their result (MIP, mean, EA, MIDA): fading raw values toward 0
 // pushed them below a high low end and blacked the image out. Per-voxel-window
-// modes (Scatter, and EA/MIDA with CLASSIFY) scale the windowed value itself.
+// modes (AMIP, and EA/MIDA with CLASSIFY) scale the windowed value itself.
 // A pipeline constant: with the cue off nothing changes and nothing is computed.
 override CUE : bool = false;
-// Scatter (MODE 4): MIP of transmitted light. Each voxel's light is scattered out
-// of the beam by the material between it and the camera, and the pixel shows the
-// brightest light that still arrives:
+// Attenuated MIP (MODE 4; napari / vispy's attenuated_mip, generalized): each
+// voxel's light is dimmed by the material between it and the camera, and the
+// pixel shows the brightest light that still arrives:
 //   pixel = max over voxels of  v e^(-tau),  tau = sum over the material in front
 //           of k v'^q L  (half of the voxel's own path counts too, unless self
 //           dimming is off, u.cueHi.w = 1: then a voxel shows as at its front face)
-// v = the windowed value, L = path length (voxels), k = 3 / D with D = u.win.z
-// the scatter depth (voxels of full-brightness material that scatter away 95%),
-// q = u.win.w the haze power (how much less faint material scatters: 0 = all
-// material above the window's low end alike, 1 = in proportion to brightness,
-// 2 = to its square; material at brightness 0.5^(1/q) scatters half as much as
-// at the window's top, so a large q leaves only the top of the window scattering). So the deeper a voxel, the more
-// material it is seen through; only a very bright source still shows through an
-// object of similar size and brightness; a dimmer object in front stays whole;
-// rays grazing an edge or a halo cross little material and block a little; and
-// faint material (noise, haze) scatters little. No objects or thresholds. Only
-// out-scattering is modeled: the scattered light's glow and blur would soften the
-// image. Values at or below the window's low end are empty (bricks skipped); the
+// v = the windowed value, L = the exact path length through each voxel (voxels),
+// k = 3 / D with D = u.win.z the attenuation depth (voxels of material at the
+// window's top that dim the light by 95%), q = u.win.w the power set by the
+// "block" slider (material at brightness 0.5^(1/q) dims half as much as the
+// window's top: 0 = everything above the low end alike, 1 = in proportion to
+// brightness, large = only the window's top dims). vispy's attenuated_mip is
+// q = 1 with a fixed step. So nearer objects hide what is behind them, deeper
+// voxels are seen through more material, and faint material (halo, noise) dims
+// little. Values at or below the window's low end are empty (bricks skipped); the
 // march stops once nothing further back can beat the brightest so far.
 // Voxel shading (EA and MIDA), t = u.win.w in 0..1: how much a voxel's weight
 // depends on the ray's path length L through it. t = 0: exactly L (a cube's
@@ -346,11 +343,11 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var tPrev = 0.0;
     var imgMip = 0.0; var imgSum = 0.0; var imgCnt = 0.0; var imgAcc = vec4<f32>(0.0);
     var midaMax = 0.0;
-    // scatter: the haze power q, the rate per voxel (scatter depth D: 3 / D),
+    // attenuated MIP: the power q, the rate per voxel (attenuation depth D: 3 / D),
     // voxels per unit of the ray parameter
-    let scatQ = clamp(u.win.w, 0.0, 1e4);
+    let attQ = clamp(u.win.w, 0.0, 1e4);
     let selfDim = select(0.5, 0.0, u.cueHi.w > 0.5);   // the share of a voxel's own path that dims its own light
-    let scatK = 3.0 / max(u.win.z, 0.05);
+    let attK = 3.0 / max(u.win.z, 0.05);
     let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);
     // voxel shading: the average world length of one voxel crossing along this ray, and t
@@ -416,9 +413,9 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         midaStep(&imgAcc, &midaMax, sm, voxelWeight(max(tExit - tPrev, 0.0), faceLen, faceMix), densV);
         if (imgAcc.w >= 0.995 && midaMax >= 0.99) { break; }
       } else if (MODE == 4) {
-        // imgAcc.x = brightest transmitted value so far, imgAcc.y = optical depth in front
+        // imgAcc.x = brightest attenuated value so far, imgAcc.y = optical depth in front
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
-        let dTau = select(0.0, scatK * pow(sw, scatQ) * max(tExit - tPrev, 0.0) * dvLenB, sw > 0.0);   // (pow(0, 0) = 1: empty never scatters)
+        let dTau = select(0.0, attK * pow(sw, attQ) * max(tExit - tPrev, 0.0) * dvLenB, sw > 0.0);   // (pow(0, 0) = 1: empty never dims)
         imgAcc.x = max(imgAcc.x, sw * exp(-(imgAcc.y + selfDim * dTau)));
         imgAcc.y = imgAcc.y + dTau;
         if (exp(-imgAcc.y) <= imgAcc.x) { break; }     // nothing further back can beat it
@@ -457,7 +454,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
       //   Window per voxel: the result is already windowed (0..1), so only gamma
       //         and the colormap remain
       var raw = imgAcc.x;
-      //   Scatter: the brightest transmitted value, already windowed
+      //   AMIP: the brightest attenuated value, already windowed
       if (MODE == 0 && !CLASSIFY) { raw = 1.0 - exp(-u.win.z * imgAcc.x); }
       let v = select(pow(clamp((raw - u.win.x) * u.win.y, 0.0, 1.0), gamma),
                      pow(clamp(raw, 0.0, 1.0), gamma), CLASSIFY || MODE == 4);

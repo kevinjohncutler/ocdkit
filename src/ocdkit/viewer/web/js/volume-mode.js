@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, scatterBlock: curBlockSoft, scatterDepth: curBlockDepth, scatterSelfDim: curScatterSelf, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, amipBlock: curAmipBlock, amipDepth: curAmipDepth, amipSelfDim: curAmipSelf, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -148,24 +148,21 @@
     const VOX_DENSITY_DEFAULT = 0.4;
     const _vd = (x) => (typeof x === "number" && x >= 0 ? x : VOX_DENSITY_DEFAULT);
     let curEaVox = _vd(_vs.eaVoxDensity), curMidaVox = _vd(_vs.midaVoxDensity);
-    // Block (projection 4): MIP with relative blocking between objects. Its density
-    // slider sets OCCLUSION: the object in front blocks one behind if it is at least
-    // X = 10^(-3 occlusion) as bright (0 = MIP, 1 = anything blocks); softness fades
-    // the block in around X.
-    // (a new key: the scale changed to linear, X = 1 - occlusion)
-    let curSurfOcc = typeof _vs.blockOcc03 === "number" && _vs.blockOcc03 >= 0 ? _vs.blockOcc03 : 0.3;
-    // (saved under new keys, so everyone starts from the defaults that look best:
-    // occlusion 0.3, softness 0.9, block depth 20)
-    // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
-    let curBlockSoft = typeof _vs.scatterBlock === "number" ? Math.min(1, Math.max(0, _vs.scatterBlock)) : 0.25;   // scatter: block (0..1)
-    let curScatterSelf = _vs.scatterSelfDim !== false;   // scatter: a voxel dims its own light (the gradient across each cube)
-    // block b: the top b of the display window scatters at least half as much as its top,
-    // i.e. brightness 1 - b scatters half: the haze power q = ln 0.5 / ln(1 - b)
-    // (b = 0: nothing scatters, b = 1: everything above the low end alike)
+    // Attenuated MIP (projection 4): the brightest light that still arrives after the
+    // material in front of it dims it. Saved under amip* keys (read the older scatter*
+    // keys once, so settings carry over).
+    const _num = (a, b) => (typeof a === "number" ? a : typeof b === "number" ? b : null);
+    let curAmipBlock = _num(_vs.amipBlock, _vs.scatterBlock);
+    curAmipBlock = curAmipBlock == null ? 0.25 : Math.min(1, Math.max(0, curAmipBlock));   // block (0..1)
+    let curAmipSelf = (_vs.amipSelfDim ?? _vs.scatterSelfDim) !== false;   // a voxel dims its own light (the gradient across each cube)
+    // block b: the top b of the display window dims at least half as much as its top,
+    // i.e. brightness 1 - b dims half as much: the power q = ln 0.5 / ln(1 - b)
+    // (b = 0: nothing dims, b = 1: everything above the low end alike)
     const qFromBlock = (b) => (b <= 0 ? Infinity : b >= 1 ? 0 : Math.log(0.5) / Math.log(1 - b));
-    let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(1e6, Math.max(0.5, _vs.scatterDepth)) : 25;   // scatter depth (voxels)
-    // the scatter depth slider is logarithmic: position p in 0..1 -> 0.5 x 20000^p voxels (0.5..10000);
-    // the number field takes larger values (up to 1e6, where Scatter is MIP to within rounding)
+    let curAmipDepth = _num(_vs.amipDepth, _vs.scatterDepth);
+    curAmipDepth = curAmipDepth == null ? 25 : Math.min(1e6, Math.max(0.5, curAmipDepth));   // attenuation depth (voxels)
+    // the AMIP depth slider is logarithmic: position p in 0..1 -> 0.5 x 20000^p voxels (0.5..10000);
+    // the number field takes larger values (up to 1e6, where AMIP is MIP to within rounding)
     const depthFromPos = (p) => 0.5 * Math.pow(20000, Math.max(0, Math.min(1, p)));
     const posFromDepth = (d) => Math.log(Math.max(0.5, Math.min(10000, d)) / 0.5) / Math.log(20000);
     // Level frames (every 3D mode): divide each z slice by its median background
@@ -177,9 +174,8 @@
     let curFadeZ = SHOW_LEVEL_FADE && _vs.fadeZEnds === true;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
-    const densityMode = () => curProj === 0 || curProj === 3;   // modes with a density slider (Block has its own)
-    const activeDensity = () => (curProj === 4 ? curSurfOcc
-                               : curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
+    const densityMode = () => curProj === 0 || curProj === 3;   // modes with a density slider (AMIP has its own)
+    const activeDensity = () => (curProj === 3 ? (curClassify ? curMidaVox : curMidaOpacity)
                                : (curClassify ? curEaVox : curDensity));
     // voxel shading (EA / MIDA): 0 = path length, 1 = voxel faces (the old on/off toggle maps to 0 / 1)
     let curFacesMix = typeof _vs.facesMix === "number" ? Math.min(1, Math.max(0, _vs.facesMix)) : (_vs.faceVoxels === true ? 1 : 0);
@@ -553,9 +549,9 @@
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
           classify: curClassify,
-          blockPower: qFromBlock(curBlockSoft),
-          scatterSelfDim: curScatterSelf,
-          blockDepth: curBlockDepth,
+          amipPower: qFromBlock(curAmipBlock),
+          amipSelfDim: curAmipSelf,
+          amipDepth: curAmipDepth,
           depthCue: curDepthCue,
           levelFrames: curLevel,
           fadeZEnds: curFadeZ,
@@ -691,8 +687,7 @@
     const densNum = document.getElementById("eaDensityInput");
     function setDensity(v, from) {
       v = Math.max(0, Math.min(1, Number.isFinite(Number(v)) ? Number(v) : 0));
-      if (curProj === 4) curSurfOcc = v;
-      else if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
+      if (curProj === 3) { if (curClassify) curMidaVox = v; else curMidaOpacity = v; }
       else if (curClassify) curEaVox = v; else curDensity = v;
       if (densRange && from !== "range") {
         densRange.value = String(v);
@@ -786,35 +781,35 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
-    // ── Scatter block slider (Scatter only) ──
-    const slRow = document.getElementById("blockSoftRow");
-    const slRange = document.getElementById("blockSoftSlider");
-    const slNum = document.getElementById("blockSoftInput");
-    function setBlockSoft(t, from) {
+    // ── AMIP block slider (AMIP only) ──
+    const slRow = document.getElementById("amipBlockRow");
+    const slRange = document.getElementById("amipBlockSlider");
+    const slNum = document.getElementById("amipBlockInput");
+    function setAmipBlock(t, from) {
       t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.25));
-      curBlockSoft = t;
+      curAmipBlock = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
-        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockSoftSlider");
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("amipBlockSlider");
       }
       if (slNum) slNum.value = t.toFixed(2);
-      if (vgpu) vgpu.setBlockPower(qFromBlock(t));
+      if (vgpu) vgpu.setAmipPower(qFromBlock(t));
       saveVolState();
     }
     if (slRange) {
-      slRange.value = String(curBlockSoft);
-      slRange.addEventListener("input", () => setBlockSoft(slRange.value, "range"));
-      const sroot = document.getElementById("blockSoftSliderRoot");
+      slRange.value = String(curAmipBlock);
+      slRange.addEventListener("input", () => setAmipBlock(slRange.value, "range"));
+      const sroot = document.getElementById("amipBlockSliderRoot");
       if (sroot && window.ViewerUI && ViewerUI.registerSlider) {
-        sroot.dataset.sliderId = "blockSoftSlider";
+        sroot.dataset.sliderId = "amipBlockSlider";
         ViewerUI.registerSlider(sroot);
       }
     }
     if (slNum) {
-      slNum.value = curBlockSoft.toFixed(2);
-      slNum.addEventListener("change", () => setBlockSoft(slNum.value, "num"));
+      slNum.value = curAmipBlock.toFixed(2);
+      slNum.addEventListener("change", () => setAmipBlock(slNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(slNum, (d) => setBlockSoft(curBlockSoft + d));
+        ViewerUI.attachNumberInputStepper(slNum, (d) => setAmipBlock(curAmipBlock + d));
       }
     }
 
@@ -850,36 +845,36 @@
       }
     }
 
-    // ── Block depth slider (Block only; voxels) ──
-    const bmRow = document.getElementById("blockMinRow");
-    const bmRange = document.getElementById("blockMinSlider");
-    const bmNum = document.getElementById("blockMinInput");
-    function setBlockDepthUI(v, from) {
+    // ── AMIP depth slider (AMIP only; voxels) ──
+    const bmRow = document.getElementById("amipDepthRow");
+    const bmRange = document.getElementById("amipDepthSlider");
+    const bmNum = document.getElementById("amipDepthInput");
+    function setAmipDepthUI(v, from) {
       if (from === "range") v = depthFromPos(Number(v));
       v = Math.max(0.5, Math.min(1e6, Number.isFinite(Number(v)) ? Number(v) : 25));
-      curBlockDepth = v;
+      curAmipDepth = v;
       if (bmRange && from !== "range") {
         bmRange.value = String(posFromDepth(v));
-        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockMinSlider");
+        if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("amipDepthSlider");
       }
       if (bmNum) bmNum.value = v < 10 ? v.toFixed(1) : v.toFixed(0);
-      if (vgpu) vgpu.setBlockDepth(v);
+      if (vgpu) vgpu.setAmipDepth(v);
       saveVolState();
     }
     if (bmRange) {
-      bmRange.value = String(posFromDepth(curBlockDepth));
-      bmRange.addEventListener("input", () => setBlockDepthUI(bmRange.value, "range"));
-      const broot = document.getElementById("blockMinSliderRoot");
+      bmRange.value = String(posFromDepth(curAmipDepth));
+      bmRange.addEventListener("input", () => setAmipDepthUI(bmRange.value, "range"));
+      const broot = document.getElementById("amipDepthSliderRoot");
       if (broot && window.ViewerUI && ViewerUI.registerSlider) {
-        broot.dataset.sliderId = "blockMinSlider";
+        broot.dataset.sliderId = "amipDepthSlider";
         ViewerUI.registerSlider(broot);
       }
     }
     if (bmNum) {
-      bmNum.value = curBlockDepth < 10 ? curBlockDepth.toFixed(1) : curBlockDepth.toFixed(0);
-      bmNum.addEventListener("change", () => setBlockDepthUI(bmNum.value, "num"));
+      bmNum.value = curAmipDepth < 10 ? curAmipDepth.toFixed(1) : curAmipDepth.toFixed(0);
+      bmNum.addEventListener("change", () => setAmipDepthUI(bmNum.value, "num"));
       if (window.ViewerUI && ViewerUI.attachNumberInputStepper) {
-        ViewerUI.attachNumberInputStepper(bmNum, (d) => setBlockDepthUI(curBlockDepth * (d > 0 ? 1.25 : 0.8)));
+        ViewerUI.attachNumberInputStepper(bmNum, (d) => setAmipDepthUI(curAmipDepth * (d > 0 ? 1.25 : 0.8)));
       }
     }
 
@@ -895,14 +890,14 @@
       });
     }
 
-    // ── Scatter self-dimming toggle (Scatter only; temporary, to compare the looks) ──
-    const ssRow = document.getElementById("scatterSelfRow");
-    const ssToggle = document.getElementById("scatterSelfToggle");
+    // ── AMIP self-dimming toggle (AMIP only) ──
+    const ssRow = document.getElementById("amipSelfRow");
+    const ssToggle = document.getElementById("amipSelfToggle");
     if (ssToggle) {
-      ssToggle.checked = curScatterSelf;
+      ssToggle.checked = curAmipSelf;
       ssToggle.addEventListener("change", () => {
-        curScatterSelf = ssToggle.checked;
-        if (vgpu) vgpu.setScatterSelfDim(curScatterSelf);
+        curAmipSelf = ssToggle.checked;
+        if (vgpu) vgpu.setAmipSelfDim(curAmipSelf);
         saveVolState();
       });
     }
@@ -929,7 +924,7 @@
         const wasHiddenB = bmRow.hidden;
         bmRow.hidden = !showBm;
         if (showBm && wasHiddenB && window.ViewerUI && ViewerUI.refreshSlider) {
-          requestAnimationFrame(() => ViewerUI.refreshSlider("blockMinSlider"));
+          requestAnimationFrame(() => ViewerUI.refreshSlider("amipDepthSlider"));
         }
       }
       if (cueRow) {
@@ -945,7 +940,7 @@
         const wasHiddenS = slRow.hidden;
         slRow.hidden = !showSl;
         if (showSl && wasHiddenS && window.ViewerUI && ViewerUI.refreshSlider) {
-          requestAnimationFrame(() => ViewerUI.refreshSlider("blockSoftSlider"));
+          requestAnimationFrame(() => ViewerUI.refreshSlider("amipBlockSlider"));
         }
       }
       if (vwRow) vwRow.hidden = !(mode === "3d" && (curProj === 0 || curProj === 3));
@@ -963,10 +958,8 @@
       const wasHidden = densRow.hidden;
       densRow.hidden = !show;
       const densLabel = document.getElementById("eaDensityLabel");
-      if (densLabel) densLabel.textContent = curProj === 4 ? "occlusion" : curProj === 3 ? "opacity" : "density";
-      densRow.title = curProj === 4
-        ? "Occlusion: a voxel blocks the light from behind it if it is at least (1 - occlusion) as bright as that light: 0 = MIP (nothing blocks), 0.5 = at least half as bright, 1 = anything blocks. Dimmer voxels are transparent and never block brighter light"
-        : curClassify
+      if (densLabel) densLabel.textContent = curProj === 3 ? "opacity" : "density";
+      densRow.title = curClassify
         ? "Density: how solid each voxel inside the window is (0 shows nothing, 1 is solid); the voxel in front hides what is behind it"
         : curProj === 3
         ? "Opacity: how strongly each voxel covers what is behind it (0 shows nothing); a brighter voxel further back still shows through"
