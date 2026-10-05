@@ -18,8 +18,9 @@ def test_page_has_volume_canvas_toggle_and_slider():
     assert 'data-view="3d"' in html
     assert 'id="sliceBar"' in html           # slice scrubber overlaid on the FOV
     assert 'id="sliceSlider"' in html
-    assert 'id="projModeRow"' in html        # projection (MIP/Mean/Additive)
-    assert 'data-proj="1"' in html
+    assert 'id="projModeRow"' in html        # projection dropdown (EA / MIP / Mean / MIDA / AMIP)
+    assert 'id="projModeSelect"' in html
+    assert '<option value="1"' in html       # MIP
     assert 'id="loadMasksButton"' in html     # manual mask selector
     assert 'id="sliceAxisRow"' in html       # orthogonal axis toggle (Z/Y/X)
     assert 'data-axis="2"' in html
