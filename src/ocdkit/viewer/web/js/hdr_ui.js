@@ -168,6 +168,8 @@
       'calc(var(--accent-lb, 1) * var(--hdr-gain))); }\n' +
       '#hdrToggleRow { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }\n' +
       ':root.hdr-available #hdrToggleRow { display: flex; }\n' +
+      '#hdrToggleChip { display: none; }\n' +
+      ':root.hdr-available #hdrToggleChip { display: flex; }\n' +
 
       '#hdrHeadroomVal { font-size: 10px; opacity: .75; letter-spacing: .02em; }\n';
     const s = document.createElement('style'); s.id = 'hdrUiStyle'; s.textContent = css;
@@ -206,7 +208,15 @@
       ViewerUI.attachNumberInputStepper(gainNumEl, function (d) { api.setGain(api.gain + d); });
     }
     const hr = document.createElement('div'); hr.id = 'hdrHeadroomVal';
-    row.appendChild(btn); row.appendChild(gainRow); row.appendChild(hr); panel.appendChild(row);
+    // the HDR switch sits beside alpha and invert when the panel has a chip for it
+    const chip = document.getElementById('hdrToggleChip');
+    if (chip) {
+      chip.append(...btn.childNodes);
+      chip.classList.add('hdr-chip');
+    } else {
+      row.appendChild(btn);
+    }
+    row.appendChild(gainRow); row.appendChild(hr); panel.appendChild(row);
     const sroot = gainRow.querySelector('#hdrGainSliderRoot');
     if (window.ViewerUI && ViewerUI.registerSlider) {
       sroot.dataset.sliderId = 'hdrGainSlider';

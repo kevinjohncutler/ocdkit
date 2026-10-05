@@ -428,6 +428,10 @@
       console.warn('slider ' + id + ' configured as dual but only one range input found');
       return;
     }
+    // Value pills: a dual slider whose root also holds two number inputs
+    // (class slider-thumb-input) draws them AS its thumbs: each thumb is a pill
+    // showing its value; drag it to slide, click it to type.
+    var pillInputs = Array.from(root.querySelectorAll('input.slider-thumb-input'));
     if (isIOSDevice && isSafariWebKit) {
       root.classList.add('slider-native');
       if (!root.querySelector('.slider-native-track')) {
@@ -446,6 +450,12 @@
         input.addEventListener('input', function () { updateNativeRangeFill(input); });
         input.addEventListener('change', function () { updateNativeRangeFill(input); });
       });
+      if (pillInputs.length) {          // native sliders: the value fields go below instead
+        var below = document.createElement('div');
+        below.className = 'clip-values';
+        pillInputs.forEach(function (p) { below.appendChild(p); });
+        root.insertAdjacentElement('afterend', below);
+      }
       return;
     }
 
@@ -465,9 +475,16 @@
         || Math.round(e.track.clientHeight / 2);
     };
 
+    var pills = type === 'dual' && pillInputs.length === 2;
+    if (pills) {
+      root.classList.add('slider--pills');
+      thumbs.forEach(function (t, i) { t.classList.add('slider-thumb--pill'); t.appendChild(pillInputs[i]); });
+    }
+
     var entry = {
       id: id,
       type: type === 'dual' ? 'dual' : 'single',
+      pills: pills,
       root: root,
       inputs: inputs,
       track: track,
@@ -480,7 +497,30 @@
       entry.root.tabIndex = 0;
     }
 
+    // Pill geometry: pill width w, gap g between a pill and the track edge. The low
+    // pill's left edge and the high pill's left edge minus w both travel over the
+    // same usable length, so the pills meet (never overlap) when lo == hi, and the
+    // fill spans both pills like one longer pill.
+    var pillGeom = function () {
+      var w = entry.thumbs[0].offsetWidth || 40;
+      var g = Math.max(0, (entry.track.clientHeight - entry.thumbs[0].offsetHeight) / 2);
+      return { w: w, g: g, usable: Math.max(0, entry.track.clientWidth - 2 * w - 2 * g) };
+    };
+
     var apply = function () {
+      if (entry.pills) {
+        var lo = entry.inputs[0], hi = entry.inputs[1];
+        if (Number(lo.value) > Number(hi.value)) { var t0 = lo.value; lo.value = hi.value; hi.value = t0; }
+        var pg = pillGeom();
+        var p0 = Math.round(pg.usable * valueToPercent(lo)), p1 = Math.round(pg.usable * valueToPercent(hi));
+        var r = trackRadiusOf(entry);
+        entry.track.style.setProperty('--slider-track-radius', r + 'px');
+        entry.track.style.setProperty('--slider-fill-left', p0 + 'px');
+        entry.track.style.setProperty('--slider-fill-px', (p1 - p0 + 2 * pg.w + 2 * pg.g - 2 * r) + 'px');
+        entry.thumbs[0].style.left = (pg.g + p0) + 'px';
+        entry.thumbs[1].style.left = (pg.g + pg.w + p1) + 'px';
+        return;
+      }
       if (entry.type === 'dual') {
         var minInput = entry.inputs[0];
         var maxInput = entry.inputs[1];
@@ -577,6 +617,53 @@
       return bestIndex;
     };
 
+    // pills: the pointer's x -> the dragged pill's value, keeping the grab point
+    var pillPercent = function (evt, index, grab) {
+      var pg = pillGeom(), rect = entry.root.getBoundingClientRect();
+      var left = evt.clientX - rect.left - grab - pg.g - (index === 1 ? pg.w : 0);
+      return pg.usable > 0 ? clamp(left / pg.usable, 0, 1) : 0;
+    };
+    var onPillDown = function (evt) {
+      var hit = entry.thumbs.findIndex(function (t) { return t.contains(evt.target); });
+      var editing = hit >= 0 && document.activeElement === pillInputs[hit];
+      if (editing) { return; }                     // typing in a pill: leave the caret alone
+      evt.preventDefault();
+      var index = hit, grab;
+      if (index < 0) {                             // on the track: the nearer pill, centered on the pointer
+        var cx = entry.thumbs.map(function (t) { var b = t.getBoundingClientRect(); return Math.abs(evt.clientX - (b.left + b.width / 2)); });
+        index = cx[0] <= cx[1] ? 0 : 1;
+        grab = entry.thumbs[index].offsetWidth / 2;
+      } else {
+        grab = evt.clientX - entry.thumbs[index].getBoundingClientRect().left;
+      }
+      entry.activePointer = evt.pointerId;
+      entry.activeThumb = index;
+      entry.pillGrab = grab;
+      entry.pillDownX = evt.clientX;
+      entry.pillMoved = hit < 0;                   // a press on a pill is a click until it moves
+      entry.root.setPointerCapture(entry.activePointer);
+      entry.root.dataset.active = 'true';
+      if (hit < 0) { setValueFromPercent(index, pillPercent(evt, index, grab)); }
+    };
+    var onPillMove = function (evt) {
+      if (entry.activePointer === null || evt.pointerId !== entry.activePointer) { return; }
+      if (!entry.pillMoved && Math.abs(evt.clientX - entry.pillDownX) < 3) { return; }
+      entry.pillMoved = true;
+      setValueFromPercent(entry.activeThumb, pillPercent(evt, entry.activeThumb, entry.pillGrab));
+    };
+    var onPillUp = function (evt) {
+      if (entry.activePointer === null || evt.pointerId !== entry.activePointer) { return; }
+      try { entry.root.releasePointerCapture(entry.activePointer); } catch (_) { /* ignore */ }
+      var index = entry.activeThumb, clicked = !entry.pillMoved;
+      entry.activePointer = null;
+      entry.activeThumb = null;
+      entry.root.dataset.active = 'false';
+      if (clicked && pillInputs[index]) {          // a click on a pill: type a value
+        pillInputs[index].focus({ preventScroll: true });
+        pillInputs[index].select();
+      }
+    };
+
     var onPointerDown = function (evt) {
       evt.preventDefault();
       var percent = pointerPercent(evt, entry.root, trackRadiusOf(entry));
@@ -604,6 +691,10 @@
     };
 
     entry.root.addEventListener('keydown', function (evt) {
+      if (evt.target && evt.target.classList && evt.target.classList.contains('slider-thumb-input')) {
+        if (evt.key === 'Enter' || evt.key === 'Escape') { evt.target.blur(); }
+        return;                                    // a pill being typed in handles its own keys
+      }
       if (evt.key === 'ArrowLeft' || evt.key === 'ArrowDown') {
         evt.preventDefault();
         var index = entry.type === 'dual' ? (entry.activeThumb != null ? entry.activeThumb : 0) : 0;
@@ -655,10 +746,10 @@
       entry.root.dataset.active = 'false';
     };
 
-    entry.root.addEventListener('pointerdown', onPointerDown);
-    entry.root.addEventListener('pointermove', onPointerMove);
-    entry.root.addEventListener('pointerup', onPointerRelease);
-    entry.root.addEventListener('pointercancel', onPointerRelease);
+    entry.root.addEventListener('pointerdown', pills ? onPillDown : onPointerDown);
+    entry.root.addEventListener('pointermove', pills ? onPillMove : onPointerMove);
+    entry.root.addEventListener('pointerup', pills ? onPillUp : onPointerRelease);
+    entry.root.addEventListener('pointercancel', pills ? onPillUp : onPointerRelease);
 
     inputs.forEach(function (input) {
       input.addEventListener('focus', function () {

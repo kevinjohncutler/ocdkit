@@ -217,9 +217,55 @@
 .spin-controls[hidden] { display: none; }
 .control-heading.spin-axis-button:hover { background: var(--control-surface, rgba(128, 128, 128, 0.2)); }
 
-/* clip row: the dual slider full width, its two percentiles under its ends */
-.clip-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* Value pills: a dual slider whose thumbs are pills showing (and editing) their
+   values (ui-utils.js registerSlider). The low pill sits left of its value and the
+   high pill right of it, so they meet but never overlap. */
+:root {
+  --slider-pill-height: 20px;
+  --slider-pill-width: 32px;
+}
+.slider--pills .slider-thumb.slider-thumb--pill {
+  width: var(--slider-pill-width);
+  height: var(--slider-pill-height);
+  border-radius: calc(var(--slider-pill-height) / 2);
+  transform: translate3d(0, -50%, 0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #171717;
+  cursor: grab;
+}
+.slider--pills[data-active='true'] .slider-thumb.slider-thumb--pill,
+.slider--pills[data-focused='true'] .slider-thumb.slider-thumb--pill {
+  transform: translate3d(0, -50%, 0);
+}
+.slider--pills[data-active='true'] .slider-thumb.slider-thumb--pill { cursor: grabbing; }
+.slider-thumb--pill input.slider-thumb-input {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: 600 0.72rem/1 inherit;
+  font-family: inherit;
+  text-align: center;
+  cursor: inherit;
+  -moz-appearance: textfield;
+}
+.slider-thumb--pill input.slider-thumb-input::-webkit-outer-spin-button,
+.slider-thumb--pill input.slider-thumb-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.slider-thumb--pill:focus-within { box-shadow: 0 0 0 1.5px rgba(23, 23, 23, 0.65); }
+.slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
+/* (native iOS sliders keep the value fields below the track) */
+.clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+
+/* Toggle chips: several small icon + switch pairs side by side in one row */
+.toggle-chips { --toggle-width: 36px; flex-direction: row; align-items: center; justify-content: space-between; gap: 4px; width: 100%; }
+.toggle-chip { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.toggle-chip:empty { display: none; }
+.toggle-chip .control-heading--lower { margin: 0; min-width: 0; }
 .slider:focus { outline: none; }   /* the pressed thumb already shows focus */
 
 
