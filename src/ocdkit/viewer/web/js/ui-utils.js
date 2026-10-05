@@ -409,43 +409,20 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Smooth pills (value-pill sliders): one end-cap curve, and exact offsets of it
+  // Value-pill slider art: concentric pills
   // ---------------------------------------------------------------------------
 
-  // Right end cap of a pill of half-height b: x = c (1 - (y/b)^2)^(1/3), from the
-  // top (y = b) to the bottom (y = -b), offset outward by d. Its curvature rises
-  // from zero where it leaves the flat edge (a semicircle jumps there) and stays
-  // finite at the tip; offsets of a smooth curve stay smooth, so a handle, the
-  // fill around it and the track keep a constant gap everywhere (with a knob-sized
-  // handle: fill 3 px out, track 4 px out, the gaps of a plain slider's knob).
-  // Points are relative to where the flat edge ends (x = 0) and the pill's center.
-  var capCache = {};
-  function pillCap(b, c, d) {
-    var key = b + '|' + c + '|' + d;
-    if (capCache[key]) { return capCache[key]; }
-    var pts = [], n = 24;
-    for (var i = 0; i <= n; i += 1) {
-      var phi = Math.PI / 2 - Math.PI * i / n;            // dense near the joins
-      var y = b * Math.sin(phi), u = Math.min(1, (y / b) * (y / b));
-      var x = c * Math.pow(Math.max(0, 1 - u), 1 / 3);
-      var nx, ny;
-      if (u >= 1) { nx = 0; ny = y > 0 ? 1 : -1; }
-      else {
-        var dxdy = c * (1 / 3) * Math.pow(1 - u, -2 / 3) * (-2 * y / (b * b));
-        var len = Math.sqrt(1 + dxdy * dxdy);
-        nx = 1 / len; ny = -dxdy / len;
-      }
-      pts.push([x + d * nx, y + d * ny]);
-    }
-    return (capCache[key] = pts);
-  }
-  // SVG path of a pill whose flat edges run from xa to xb, centered on cy
-  function pillPath(xa, xb, cy, b, c, d) {
-    var cap = pillCap(b, c, d), h = b + d, s = 'M' + xa.toFixed(2) + ' ' + (cy - h).toFixed(2) + 'L' + xb.toFixed(2) + ' ' + (cy - h).toFixed(2);
-    for (var i = 0; i < cap.length; i += 1) { s += 'L' + (xb + cap[i][0]).toFixed(2) + ' ' + (cy - cap[i][1]).toFixed(2); }
-    s += 'L' + xa.toFixed(2) + ' ' + (cy + h).toFixed(2);
-    for (var j = cap.length - 1; j >= 0; j -= 1) { s += 'L' + (xa - cap[j][0]).toFixed(2) + ' ' + (cy - cap[j][1]).toFixed(2); }
-    return s + 'Z';
+  // SVG path of a pill (a stadium: flat top and bottom, semicircular ends, the
+  // same shape as every other pill in the panel) whose flat edges run from xa to
+  // xb, centered on cy, with end radius r. A handle (r = b), the fill around it
+  // (r = b + 3) and the track (r = b + 4) share their end centers, so the gaps
+  // between them are exactly constant, straight and round alike.
+  function pillPath(xa, xb, cy, r) {
+    var f = function (v) { return v.toFixed(2); };
+    return 'M' + f(xa) + ' ' + f(cy - r) + 'L' + f(xb) + ' ' + f(cy - r) +
+      'A' + f(r) + ' ' + f(r) + ' 0 0 1 ' + f(xb) + ' ' + f(cy + r) +
+      'L' + f(xa) + ' ' + f(cy + r) +
+      'A' + f(r) + ' ' + f(r) + ' 0 0 1 ' + f(xa) + ' ' + f(cy - r) + 'Z';
   }
 
   // ---------------------------------------------------------------------------
@@ -571,17 +548,34 @@
     // pill's left edge and the high pill's left edge minus w both travel over the
     // same usable length, so the pills meet (never overlap) when lo == hi, and the
     // fill spans both pills like one longer pill.
-    // Each pill is as wide as its value needs (at least --slider-pill-width).
-    var measureCtx = null;
-    var pillWidth = function (i) {
-      var inp = pillInputs[i], cs = getComputedStyle(inp);
-      var minW = parseFloat(getComputedStyle(entry.root).getPropertyValue('--slider-pill-width')) || 32;
+    // One width per slider, wide enough for its widest value (its min and max at
+    // its step's decimals, or any wider value it has shown), so a pill never
+    // changes width, and jumps, while it is dragged. At least --slider-pill-width.
+    var measureCtx = null, pillW = 0;
+    var textWidth = function (inp, text) {
+      var cs = getComputedStyle(inp);
       if (!measureCtx) { measureCtx = document.createElement('canvas').getContext('2d'); }
       measureCtx.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
-      return Math.max(minW, Math.ceil(measureCtx.measureText(String(inp.value)).width + 14));
+      return measureCtx.measureText(text).width;
+    };
+    var pillWidth = function () {
+      if (!pillW) {
+        pillInputs.forEach(function (inp) {
+          var st = String(inp.step || '1'), dec = st.indexOf('.') >= 0 ? st.split('.')[1].length : 0;
+          [inp.min, inp.max].forEach(function (v) {
+            if (v !== '' && Number.isFinite(Number(v))) { pillW = Math.max(pillW, textWidth(inp, Number(v).toFixed(dec))); }
+          });
+        });
+      }
+      if (entry.activePointer === null) {          // (frozen while dragging)
+        pillInputs.forEach(function (inp) { pillW = Math.max(pillW, textWidth(inp, String(inp.value))); });
+      }
+      var minW = parseFloat(getComputedStyle(entry.root).getPropertyValue('--slider-pill-width')) || 32;
+      return Math.max(minW, Math.ceil(pillW + 12));
     };
     var pillGeom = function () {
-      var ws = entry.thumbs.map(function (t, i) { var w = pillWidth(i); t.style.width = w + 'px'; return w; });
+      var w0 = pillWidth();
+      var ws = entry.thumbs.map(function (t) { t.style.width = w0 + 'px'; return w0; });
       var g = Math.max(0, (entry.track.clientHeight - entry.thumbs[0].offsetHeight) / 2);
       var sum = ws.reduce(function (a, b) { return a + b; }, 0);
       return { ws: ws, w: ws[0], g: g, usable: Math.max(0, entry.track.clientWidth - sum - 2 * g) };
@@ -600,18 +594,17 @@
           return pg.g + (i === 1 ? pg.ws[0] : 0) + Math.round(pg.usable * valueToPercent(inp));
         });
         entry.thumbs.forEach(function (t, i) { t.style.left = lefts[i] + 'px'; });
-        if (art) {
-          var W = entry.track.clientWidth, Hh = entry.track.clientHeight, cy = Hh / 2, gap = pg.g;
-          var hb = entry.thumbs[0].offsetHeight / 2;
-          var cc = Math.min(1.1 * hb, Math.min.apply(null, pg.ws) / 2 - 1);
+        var W = entry.track.clientWidth, Hh = entry.track.clientHeight;
+        var hb = entry.thumbs[0].offsetHeight / 2;
+        if (art && W > 0 && hb > 0) {               // (hidden sliders measure 0: drawn once shown)
+          var cy = Hh / 2, gap = pg.g, last = lefts.length - 1;
           var inset = parseFloat(getComputedStyle(entry.root).getPropertyValue('--control-inset')) || 1;   // fill inside the track, as on plain sliders
-          var last = lefts.length - 1;
           art.svg.setAttribute('viewBox', '0 0 ' + W + ' ' + Hh);
           art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
-          art.track.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap));
-          art.outline.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap - 0.5));
-          art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + cc, lefts[last] + pg.ws[last] - cc, cy, hb, cc, gap - inset));
-          lefts.forEach(function (L, i) { art['h' + i].setAttribute('d', pillPath(L + cc, L + pg.ws[i] - cc, cy, hb, cc, 0)); });
+          art.track.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap));
+          art.outline.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap - 0.5));
+          art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + hb, lefts[last] + pg.ws[last] - hb, cy, hb + gap - inset));
+          lefts.forEach(function (L, i) { art['h' + i].setAttribute('d', pillPath(L + hb, L + pg.ws[i] - hb, cy, hb)); });
         }
         return;
       }
