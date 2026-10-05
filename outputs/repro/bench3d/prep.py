@@ -28,6 +28,9 @@ def narrow(a):
 
 
 def load(name):
+    if name == "sample3d":                                        # the viewer's built-in synthetic sample
+        d = Path.home() / ".ocdkit" / "samples"
+        return tifffile.imread(d / "sample3d_v1.tif"), tifffile.imread(d / "sample3d_v1_masks.tif")
     if name == "cells3d":
         from scipy import ndimage
         from skimage import data, filters
@@ -44,7 +47,7 @@ def load(name):
 def main(out):
     out = Path(out)
     import ncolor
-    for name in ["dnaA_xy1", "5I", "ftsN_xy1", "cells3d"]:
+    for name in ["dnaA_xy1", "5I", "ftsN_xy1", "cells3d", "sample3d"]:
         d = out / name
         d.mkdir(parents=True, exist_ok=True)
         if (d / "meta.json").exists():

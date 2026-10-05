@@ -79,3 +79,32 @@ The transport suite encoded the stacks' float64 source, but the viewer session
 stores every volume as uint8 (`_apply_image`), so the old JSON route never
 shipped float64 in practice. The 20-28x figure is for float64 sources; in the
 real app the measured gain is ~7x (5I: 203 ms -> 29 ms, `volume_port_e2e`).
+
+## Per-mode cost (modes.html, 2026-10-05)
+
+`bench_modes.js` times the CURRENT shader per projection mode, image only, in real
+Chrome on the M5 Max, 2048x1280, GPU time median of 3 rounds x 20 frames
+(`results/modes_pass1.jsonl`; rows there use the mode's old name, "Scatter").
+Window "full" = the data's whole range, "clipped" = low end at the volume median.
+AMIP at block 0.25, depth 25. Zoomed view (the volume fills the frame), ms:
+
+| Dataset | Window | EA density 0 | EA density 1 | MIP | Mean | MIDA | AMIP |
+|---|---|---|---|---|---|---|---|
+| dnaA_xy1 | full | 7.77 | 1.07 | 5.69 | 5.79 | 8.13 | 9.46 |
+| dnaA_xy1 | clipped | 7.76 | 1.07 | 5.55 | 5.79 | 8.13 | 7.38 |
+| 5I | full | 8.27 | 0.96 | 7.01 | 6.18 | 9.42 | 9.02 |
+| 5I | clipped | 8.82 | 1.04 | 7.33 | 6.42 | 9.90 | 4.79 |
+| ftsN_xy1 | full | 9.90 | 1.00 | 5.19 | 7.22 | 10.37 | 9.94 |
+| ftsN_xy1 | clipped | 9.77 | 0.98 | 5.13 | 7.12 | 10.27 | 5.09 |
+
+Cost = voxels each ray visits x work per voxel. Every mode runs the same DDA.
+- Early exit dominates: EA with density stops at 99.5% opacity (6 to 10x faster
+  than density 0, the viewer default); AMIP stops once nothing behind can beat the
+  brightest so far (depth 2: 2 to 3 ms; depth 1e6, i.e. MIP: slower than MIP).
+- Brick skipping: MIP skips bricks that cannot raise the running max; AMIP only
+  skips bricks below the window's low end, so a clipped window halves its cost.
+  EA, mean and MIDA never skip image bricks.
+- Per voxel: mean (add) < MIP (max) < EA (exp) < AMIP (pow + exp) ~ MIDA.
+- Rejected AMIP shader variants (exact, `vars=fastT,lim`): carrying transmittance
+  with a branch on empty voxels, +12%; comparing optical depth with -log(best)
+  instead of an exp per voxel, +6%. Branch-free code wins on Apple GPUs.
