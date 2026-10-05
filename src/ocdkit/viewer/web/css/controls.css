@@ -2622,3 +2622,14 @@ button:not(:disabled):hover {
   mask-composite: exclude;
 }
 :root.accent-light .dropdown-toggle .moon-bar { background: transparent; }
+/* A value pill's own box is never painted: the slider's SVG draws the pill. The
+   plain knob's focused / active rules (white, scaled, round) match the pill thumb
+   with the same specificity and would paint a white oval over it. */
+.slider.slider--pills .slider-thumb.slider-thumb--pill,
+.slider.slider--pills[data-focused='true'] .slider-thumb.slider-thumb--pill,
+.slider.slider--pills[data-active='true'] .slider-thumb.slider-thumb--pill {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  transform: translate3d(0, -50%, 0);
+}
