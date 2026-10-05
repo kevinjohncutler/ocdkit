@@ -169,9 +169,12 @@
     const depthFromPos = (p) => 0.5 * Math.pow(20000, Math.max(0, Math.min(1, p)));
     const posFromDepth = (d) => Math.log(Math.max(0.5, Math.min(10000, d)) / 0.5) / Math.log(20000);
     // Level frames (every 3D mode): divide each z slice by its median background
-    let curLevel = _vs.levelFrames === true;
+    // level frames and fade z ends are hidden for now (code kept); while hidden they
+    // stay off, so a saved "on" cannot change the render with no control showing it
+    const SHOW_LEVEL_FADE = false;
+    let curLevel = SHOW_LEVEL_FADE && _vs.levelFrames === true;
     // Fade z ends (every 3D mode): the outermost z slices blend toward the background
-    let curFadeZ = _vs.fadeZEnds === true;
+    let curFadeZ = SHOW_LEVEL_FADE && _vs.fadeZEnds === true;
     // Depth cue (every 3D mode): 0 = off
     let curDepthCue = typeof _vs.depthCue === "number" ? Math.min(0.95, Math.max(0, _vs.depthCue)) : 0;
     const densityMode = () => curProj === 0 || curProj === 3;   // modes with a density slider (Block has its own)
@@ -918,8 +921,8 @@
 
     function syncDensityRow() {
       syncSpinRow();
-      if (lvRow) lvRow.hidden = mode !== "3d";
-      if (fzRow) fzRow.hidden = mode !== "3d";
+      if (lvRow) lvRow.hidden = !SHOW_LEVEL_FADE || mode !== "3d";
+      if (fzRow) fzRow.hidden = !SHOW_LEVEL_FADE || mode !== "3d";
       if (ssRow) ssRow.hidden = !(mode === "3d" && curProj === 4);
       if (bmRow) {
         const showBm = mode === "3d" && curProj === 4;
