@@ -70,10 +70,13 @@
                   <select id="imageCmapSelect"></select>
                 </div>
               </div>
-              <div class="control icon-toggles" id="imageTogglesRow">
+              <div class="control slider-inline icon-toggles" id="imageTogglesRow">
+                <span class="control-heading control-heading--lower" aria-hidden="true"></span>
+                <div class="icon-toggle-group">
                 <label class="icon-toggle" id="cmapTransparentRow" title="Alpha: make the colormap's dark end transparent (opacity follows lightness), in 2D and 3D"><input type="checkbox" id="cmapTransparentToggle" aria-label="Transparent low end" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.08,17.8C17.62,17.93 17.21,18 16.85,18C15.65,18 14.84,17.12 14.43,15.35H14.38C13.39,17.26 12,18.21 10.25,18.21C8.94,18.21 7.89,17.72 7.1,16.73C6.31,15.74 5.92,14.5 5.92,13C5.92,11.25 6.37,9.85 7.26,8.76C8.15,7.67 9.36,7.12 10.89,7.12C11.71,7.12 12.45,7.35 13.09,7.8C13.73,8.26 14.22,8.9 14.56,9.73H14.6L15.31,7.33H17.87L15.73,12.65C15.97,13.89 16.22,14.74 16.5,15.19C16.74,15.64 17.08,15.87 17.5,15.87C17.74,15.87 17.93,15.83 18.1,15.76L18.08,17.8M13.82,12.56C13.61,11.43 13.27,10.55 12.81,9.95C12.36,9.34 11.81,9.04 11.18,9.04C10.36,9.04 9.7,9.41 9.21,10.14C8.72,10.88 8.5,11.79 8.5,12.86C8.5,13.84 8.69,14.65 9.12,15.31C9.54,15.97 10.11,16.29 10.82,16.29C11.42,16.29 11.97,16 12.46,15.45C12.96,14.88 13.37,14.05 13.7,12.96L13.82,12.56Z"/></svg></label>
                 <label class="icon-toggle" id="imageInvertRow" title="Invert: show dark objects as bright (phase contrast, brightfield), in 2D and 3D. Display only; segmentation still uses the original image. Remembered per image."><input type="checkbox" id="imageInvertToggle" aria-label="Invert" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,19.58V19.58C10.4,19.58 8.89,18.96 7.76,17.83C6.62,16.69 6,15.19 6,13.58C6,12 6.62,10.47 7.76,9.34L12,5.1M17.66,7.93L12,2.27V2.27L6.34,7.93C3.22,11.05 3.22,16.12 6.34,19.24C7.9,20.8 9.95,21.58 12,21.58C14.05,21.58 16.1,20.8 17.66,19.24C20.78,16.12 20.78,11.05 17.66,7.93Z"/></svg></label>
                 <label class="icon-toggle" id="hdrToggleChip"></label>
+                </div>
               </div>
             </div>
           </div>
@@ -114,7 +117,7 @@
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
                title="Depth cue (every 3D mode): fade what lies behind the front of the visible data, with an inverse-square falloff. 0 = off; 0.5 = one volume diagonal behind the front reads 1/4 as bright">
-            <span class="control-heading control-heading--lower">depth cue</span>
+            <span class="control-heading control-heading--lower control-heading--icon" title="Depth cue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6.5 9 4v16l-6-2.5Z" fill="currentColor"/><path d="M11 7.2 15.5 5.5v13L11 16.8Z" fill="currentColor" fill-opacity="0.5" stroke-opacity="0.6"/><path d="M17.5 8 21 6.8v10.4L17.5 16Z" fill="currentColor" fill-opacity="0.2" stroke-opacity="0.3"/></svg></span>
             <div class="slider-row">
               <div class="slider" id="depthCueSliderRoot" data-slider-type="single">
                 <input type="range" id="depthCueSlider" min="0" max="0.95" step="0.01" value="0" />
@@ -164,7 +167,7 @@
           </div>
           <div class="control slider-inline" id="amipBlockRow" hidden
                title="Block (0 to 1): how much of the display window dims the light. Material at brightness 1 - block on the window dims half as much as the window's top: 0 = nothing dims (MIP), 0.25 = mostly the brightest material (halo and background stay clear), 1 = everything above the window's low end alike. (Brightness b dims in proportion to b^q, q = ln 0.5 / ln(1 - block).)">
-            <span class="control-heading control-heading--lower">block</span>
+            <span class="control-heading control-heading--lower control-heading--icon" title="Block"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="15" cy="10" r="6" fill-opacity="0.35"/><circle cx="9" cy="14" r="6"/></svg></span>
             <div class="slider-row">
               <div class="slider" id="amipBlockSliderRoot" data-slider-type="single">
                 <input type="range" id="amipBlockSlider" min="0" max="1" step="0.005" value="0.25" />
@@ -176,7 +179,7 @@
           </div>
           <div class="control slider-inline" id="amipDepthRow" hidden
                title="Attenuation depth (voxels; slider 0.5 to 10000, type up to 1000000): how many voxels of material at the window's top dim the light passing through them by 95%. Smaller: nearer objects hide what is behind them sooner. Larger: closer to MIP (an object t voxels thick dims what is behind it by about 3t/depth)">
-            <span class="control-heading control-heading--lower">attenuation</span>
+            <span class="control-heading control-heading--lower control-heading--icon" title="Attenuation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h5M6 9.5 8.5 12 6 14.5"/><path d="M10 12h4M12.5 9.5 15 12l-2.5 2.5" stroke-opacity="0.55"/><path d="M17 12h3.5M19 10l2 2-2 2" stroke-opacity="0.25"/></svg></span>
             <div class="slider-row">
               <div class="slider" id="amipDepthSliderRoot" data-slider-type="single">
                 <input type="range" id="amipDepthSlider" min="0" max="1" step="0.001" value="0.3950" />
@@ -256,7 +259,7 @@
                 <label class="icon-toggle" id="brushSnapRow" title="Snap: the exact kernel on the pixel grid (on), or a circle interpolated onto the local grid (off, default)"><input type="checkbox" id="brushKernelToggle" aria-label="Snap to pixel grid" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 8h4.5v3.5a2.5 2.5 0 0 0 5 0V8H19v3.5a7 7 0 0 1-14 0Z"/><rect x="5" y="3.5" width="4.5" height="3.2" rx="0.6"/><rect x="14.5" y="3.5" width="4.5" height="3.2" rx="0.6"/></svg></label>
               </div>
               <div class="brush-slider slider-inline">
-                <span class="control-heading control-heading--lower">size</span>
+                <span class="control-heading control-heading--lower control-heading--icon" title="Brush size"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="4.5" cy="12" r="1.5"/><circle cx="10" cy="12" r="2.5"/><circle cx="17.5" cy="12" r="4"/></svg></span>
                 <div class="slider-row">
                   <div class="slider" data-slider-id="brushSizeSlider" data-slider-type="single">
                     <input type="range" id="brushSizeSlider" min="1" max="25" step="1" value="3" />

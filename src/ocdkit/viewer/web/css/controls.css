@@ -2523,3 +2523,8 @@ button:not(:disabled):hover {
 .slider-inline > .control-heading--lower, .label-style-row > .control-heading--lower { flex-shrink: 0; }
 /* the projection dropdown has no label: it spans the row */
 #projModeRow > .dropdown { flex: 1; width: 100%; max-width: none; min-width: 0; }
+/* the alpha / invert / HDR row sits under the colormap dropdown (an empty label
+   column first): alpha and invert icon-sized, HDR takes the rest */
+.icon-toggle-group { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.icon-toggle-group .icon-toggle { flex: 0 0 36px; min-width: 0; }
+.icon-toggle-group #hdrToggleChip { flex: 1 1 auto; }

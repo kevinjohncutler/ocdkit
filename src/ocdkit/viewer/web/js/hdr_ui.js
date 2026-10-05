@@ -214,7 +214,7 @@
     gainRow.id = 'hdrGainRow'; gainRow.className = 'control slider-inline';
     gainRow.title = 'Multiple of the display headroom: 1 = brightest color exactly at the display limit, above 1 clips';
     gainRow.innerHTML =
-      '<span class="control-heading control-heading--lower">gain</span>' +
+      '<span class="control-heading control-heading--lower control-heading--icon" title="HDR gain"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg></span>' +
       '<div class="slider-row">' +
       '<div class="slider" id="hdrGainSliderRoot" data-slider-type="single">' +
       '<input type="range" id="hdrGainSlider" min="0.25" max="4" step="0.05" /></div>' +

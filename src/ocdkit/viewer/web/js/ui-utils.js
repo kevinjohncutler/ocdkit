@@ -864,8 +864,11 @@
   // at the same x. Re-run when rows are shown or hidden.
   function normalizeLabelWidths() {
     document.querySelectorAll('.panel-section').forEach(function (sec) {
+      // rows that hold a slider or a dropdown (or are explicitly aligned, like the
+      // toggle row under the colormap); switch rows keep their own label width
       var heads = Array.from(sec.querySelectorAll(
-        '.slider-inline > .control-heading--lower, .label-style-row > .control-heading--lower'));
+        '.slider-inline > .control-heading--lower, .label-style-row > .control-heading--lower'))
+        .filter(function (h) { var row = h.parentElement; return !!row.querySelector('.slider, .dropdown, .icon-toggle-group'); });
       heads.forEach(function (h) { h.style.minWidth = ''; });
       var vis = heads.filter(function (h) { return h.offsetParent !== null && h.getBoundingClientRect().width > 0; });
       var w = 0;
