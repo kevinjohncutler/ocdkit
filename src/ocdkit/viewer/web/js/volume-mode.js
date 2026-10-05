@@ -157,13 +157,13 @@
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
     // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
-    let curBlockSoft = typeof _vs.scatterBlock === "number" ? Math.min(1, Math.max(0, _vs.scatterBlock)) : 0.5;   // scatter: block (0..1)
+    let curBlockSoft = typeof _vs.scatterBlock === "number" ? Math.min(1, Math.max(0, _vs.scatterBlock)) : 0.25;   // scatter: block (0..1)
     let curScatterSelf = _vs.scatterSelfDim !== false;   // scatter: a voxel dims its own light (the gradient across each cube)
     // block b: the top b of the display window scatters at least half as much as its top,
     // i.e. brightness 1 - b scatters half: the haze power q = ln 0.5 / ln(1 - b)
     // (b = 0: nothing scatters, b = 1: everything above the low end alike)
     const qFromBlock = (b) => (b <= 0 ? Infinity : b >= 1 ? 0 : Math.log(0.5) / Math.log(1 - b));
-    let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(1e6, Math.max(0.5, _vs.scatterDepth)) : 100;   // scatter depth (voxels)
+    let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(1e6, Math.max(0.5, _vs.scatterDepth)) : 25;   // scatter depth (voxels)
     // the scatter depth slider is logarithmic: position p in 0..1 -> 0.5 x 20000^p voxels (0.5..10000);
     // the number field takes larger values (up to 1e6, where Scatter is MIP to within rounding)
     const depthFromPos = (p) => 0.5 * Math.pow(20000, Math.max(0, Math.min(1, p)));
@@ -788,7 +788,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.5));
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.25));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
@@ -853,7 +853,7 @@
     const bmNum = document.getElementById("blockMinInput");
     function setBlockDepthUI(v, from) {
       if (from === "range") v = depthFromPos(Number(v));
-      v = Math.max(0.5, Math.min(1e6, Number.isFinite(Number(v)) ? Number(v) : 100));
+      v = Math.max(0.5, Math.min(1e6, Number.isFinite(Number(v)) ? Number(v) : 25));
       curBlockDepth = v;
       if (bmRange && from !== "range") {
         bmRange.value = String(posFromDepth(v));

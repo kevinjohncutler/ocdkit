@@ -310,9 +310,9 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockPower = opts.blockPower != null && !Number.isNaN(+opts.blockPower) ? Math.max(0, +opts.blockPower) : 1;   // scatter: haze power q (Infinity: nothing scatters)
+      this._blockPower = opts.blockPower != null && !Number.isNaN(+opts.blockPower) ? Math.max(0, +opts.blockPower) : Math.log(0.5) / Math.log(0.75);   // scatter: haze power q (Infinity: nothing scatters)
       this._scatterSelf = opts.scatterSelfDim !== false;   // scatter: a voxel dims its own light (half its own path)
-      this._blockDepth = opts.blockDepth > 0 ? Math.min(1e6, Math.max(0.5, +opts.blockDepth)) : 100;   // scatter: scatter depth (voxels)
+      this._blockDepth = opts.blockDepth > 0 ? Math.min(1e6, Math.max(0.5, +opts.blockDepth)) : 25;   // scatter: scatter depth (voxels)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -1293,7 +1293,7 @@
     /** Scatter projection (mode 4) scatter depth, voxels (0.5..100): how many voxels
      *  of full-brightness material scatter away 95% of the light passing through. */
     setBlockDepth(v) {
-      this._blockDepth = Math.min(1e6, Math.max(0.5, Number.isFinite(+v) ? +v : 100));
+      this._blockDepth = Math.min(1e6, Math.max(0.5, Number.isFinite(+v) ? +v : 25));
       this._requestRender();
     }
     /** Scatter projection (mode 4) haze power q (0..Infinity): a voxel scatters in proportion
