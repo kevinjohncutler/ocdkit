@@ -134,6 +134,7 @@
       const el = document.getElementById(id);
       if (el) el.style.display = api.enabled ? '' : 'none';
     }
+    if (window.ViewerUI && ViewerUI.normalizeLabelWidths) ViewerUI.normalizeLabelWidths();
     // re-measure the gain slider once visible (measured while hidden it is 0 wide)
     if (api.enabled && window.ViewerUI && ViewerUI.refreshSlider) {
       requestAnimationFrame(function () { ViewerUI.refreshSlider('hdrGainSlider'); });
@@ -186,7 +187,7 @@
       'calc(var(--accent-lr, 1) * var(--hdr-gain)) ' +
       'calc(var(--accent-lg, 1) * var(--hdr-gain)) ' +
       'calc(var(--accent-lb, 1) * var(--hdr-gain))); }\n' +
-      '#hdrToggleRow { display: none; flex-direction: column; gap: 6px; margin-top: 8px; }\n' +
+      '#hdrToggleRow { display: none; flex-direction: column; gap: 6px; margin-top: 0; }\n' +
       ':root.hdr-available #hdrToggleRow { display: flex; }\n' +
       '#hdrToggleChip { display: none; }\n' +
       ':root.hdr-available #hdrToggleChip { display: flex; }\n' +

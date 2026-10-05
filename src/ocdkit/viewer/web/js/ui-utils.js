@@ -852,6 +852,41 @@
     entry.apply = apply;
     apply();
     sliderRegistry.set(id, entry);
+    // value pills are drawn to the track's size: redraw when it changes (a label
+    // width change, a panel shown, a window resize)
+    if (pills && typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(function () { apply(); }).observe(entry.track);
+    }
+  }
+
+  // Within each panel section, every row label gets the width of the section's
+  // widest visible label, so the sliders and dropdowns after them start (and end)
+  // at the same x. Re-run when rows are shown or hidden.
+  function normalizeLabelWidths() {
+    document.querySelectorAll('.panel-section').forEach(function (sec) {
+      var heads = Array.from(sec.querySelectorAll(
+        '.slider-inline > .control-heading--lower, .label-style-row > .control-heading--lower'));
+      heads.forEach(function (h) { h.style.minWidth = ''; });
+      var vis = heads.filter(function (h) { return h.offsetParent !== null && h.getBoundingClientRect().width > 0; });
+      var w = 0;
+      vis.forEach(function (h) { w = Math.max(w, Math.ceil(h.getBoundingClientRect().width)); });
+      if (w > 0) { heads.forEach(function (h) { h.style.minWidth = w + 'px'; }); }
+    });
+  }
+  var normalizePending = false;
+  function scheduleNormalizeLabelWidths() {
+    if (normalizePending) { return; }
+    normalizePending = true;
+    requestAnimationFrame(function () { normalizePending = false; normalizeLabelWidths(); });
+  }
+  if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
+    var startNormalize = function () {
+      scheduleNormalizeLabelWidths();
+      new MutationObserver(scheduleNormalizeLabelWidths).observe(document.body,
+        { subtree: true, childList: true, attributes: true, attributeFilter: ['hidden'] });
+    };
+    if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', startNormalize); }
+    else { startNormalize(); }
   }
 
   function refreshSlider(id) {
@@ -1603,6 +1638,7 @@
     // Dropdown system
     registerDropdown: registerDropdown,
     refreshDropdown: refreshDropdown,
+    normalizeLabelWidths: scheduleNormalizeLabelWidths,
     openDropdown: openDropdown,
     closeDropdown: closeDropdown,
     toggleDropdown: toggleDropdown,

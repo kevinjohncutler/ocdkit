@@ -970,12 +970,13 @@
         requestAnimationFrame(() => ViewerUI.refreshSlider("eaDensitySlider"));
       }
     }
-    // segmented control (same component as the segmentation / label-style modes)
+    // the projection dropdown
     function syncProjButtons() {
-      if (projRow) projRow.querySelectorAll("[data-proj]").forEach((x) => {
-        if (parseInt(x.getAttribute("data-proj"), 10) === curProj) x.setAttribute("data-active", "true");
-        else x.removeAttribute("data-active");
-      });
+      const sel = document.getElementById("projModeSelect");
+      if (sel && String(sel.value) !== String(curProj)) {
+        sel.value = String(curProj);
+        if (window.ViewerUI && ViewerUI.refreshDropdown) ViewerUI.refreshDropdown("projModeSelect");
+      }
     }
     syncProjButtons();
     if (densRange) {
@@ -994,9 +995,9 @@
         ViewerUI.attachNumberInputStepper(densNum, (d) => setDensity(activeDensity() + d));
       }
     }
-    if (projRow) {
-      projRow.querySelectorAll("[data-proj]").forEach((b) =>
-        b.addEventListener("click", () => setProj(parseInt(b.getAttribute("data-proj"), 10))));
+    {
+      const sel = document.getElementById("projModeSelect");
+      if (sel) sel.addEventListener("change", () => setProj(parseInt(sel.value, 10)));
     }
 
     async function loadMasks() {

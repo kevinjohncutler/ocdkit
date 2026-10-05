@@ -92,8 +92,8 @@
           </div>
           <div class="control">
             <div id="viewDimToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="View">
-              <button type="button" class="kernel-option" data-view="2d" data-active="true" title="2D slices along one axis, with the slice slider"><span>2D slices</span></button>
-              <button type="button" class="kernel-option" data-view="3d" title="3D volume rendering (drag to rotate)"><span>3D volume</span></button>
+              <button type="button" class="kernel-option" data-view="2d" data-active="true" title="2D slices along one axis, with the slice slider" aria-label="2D slices"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3 15.5 12 19.5 21 15.5"/><path d="M3 11.5 12 15.5 21 11.5"/><path d="M12 3.5 21 7.5 12 11.5 3 7.5Z"/></svg></button>
+              <button type="button" class="kernel-option" data-view="3d" title="3D volume rendering (drag to rotate)" aria-label="3D volume"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8.5H14.5V19.5H3.5Z"/><path d="M8.5 4.5H19.5V15.5H8.5" stroke-opacity="0.45" stroke-dasharray="1.6 1.6"/><path d="M3.5 8.5 8.5 4.5M14.5 8.5 19.5 4.5M14.5 19.5 19.5 15.5"/><path d="M8.5 4.5V15.5M3.5 19.5 8.5 15.5" stroke-opacity="0.45" stroke-dasharray="1.6 1.6"/><path d="M19.5 4.5V15.5"/></svg></button>
             </div>
           </div>
           <div class="view-mode-row" id="sliceAxisRow">
@@ -101,13 +101,15 @@
             <button type="button" class="view-mode-btn" data-axis="1">Y</button>
             <button type="button" class="view-mode-btn" data-axis="2">X</button>
           </div>
-          <div class="control" id="projModeRow" hidden>
-            <div id="projModeToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="3D projection">
-              <button type="button" class="kernel-option" data-proj="0" data-active="true" title="Emission-absorption: a translucent volume that glows with intensity; density sets how much nearer structures hide what is behind them"><span>EA</span></button>
-              <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
-              <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
-              <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Attenuated MIP (as in napari): each voxel's light is dimmed by the material between it and the camera, and each pixel shows the brightest light that still arrives. So nearer objects hide what is behind them, and only a clearly brighter object shows through. Values below the display window's low end are empty"><span>AMIP</span></button>
+          <div class="control slider-inline" id="projModeRow" hidden title="3D projection: how the volume is rendered">
+            <div class="dropdown dropdown--compact" data-dropdown-id="projModeSelect">
+              <select id="projModeSelect" aria-label="3D projection">
+                <option value="0" title="Emission-absorption: a translucent volume that glows with intensity; density sets how much nearer structures hide what is behind them">EA: emission-absorption</option>
+                <option value="1" title="Maximum intensity projection: the brightest voxel along each ray">MIP: maximum intensity</option>
+                <option value="2" title="Mean intensity along each ray">Mean intensity</option>
+                <option value="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP">MIDA</option>
+                <option value="4" title="Attenuated MIP (as in napari): each voxel's light is dimmed by the material between it and the camera, and each pixel shows the brightest light that still arrives. So nearer objects hide what is behind them, and only a clearly brighter object shows through. Values below the display window's low end are empty">AMIP: attenuated MIP</option>
+              </select>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
@@ -246,11 +248,12 @@
           </div>
           <div class="panel-body">
             <div class="tool-options tool-options--brush" data-tool="draw,erase">
-              <div class="control" id="brushDimRow" hidden>
-                <div class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="Brush dimension">
-                  <button type="button" class="kernel-option" data-brush="2" data-active="true" title="Paint in the current slice only"><span>2D brush</span></button>
-                  <button type="button" class="kernel-option" data-brush="3" title="Paint a ball through neighboring slices (3D data)"><span>3D brush</span></button>
+              <div class="control brush-options-row">
+                <div class="kernel-toggle segmented-toggle brush-dim-toggle" id="brushDimRow" role="group" aria-label="Brush dimension" hidden>
+                  <button type="button" class="kernel-option" data-brush="2" data-active="true" title="2D brush: paint in the current slice only" aria-label="2D brush"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg></button>
+                  <button type="button" class="kernel-option" data-brush="3" title="3D brush: paint a ball through neighboring slices (3D data)" aria-label="3D brush"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><ellipse cx="12" cy="12" rx="8" ry="3" stroke-opacity="0.75"/><ellipse cx="12" cy="12" rx="3" ry="8" stroke-opacity="0.75"/></svg></button>
                 </div>
+                <label class="icon-toggle" id="brushSnapRow" title="Snap: the exact kernel on the pixel grid (on), or a circle interpolated onto the local grid (off, default)"><input type="checkbox" id="brushKernelToggle" aria-label="Snap to pixel grid" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 8h4.5v3.5a2.5 2.5 0 0 0 5 0V8H19v3.5a7 7 0 0 1-14 0Z"/><rect x="5" y="3.5" width="4.5" height="3.2" rx="0.6"/><rect x="14.5" y="3.5" width="4.5" height="3.2" rx="0.6"/></svg></label>
               </div>
               <div class="brush-slider slider-inline">
                 <span class="control-heading control-heading--lower">size</span>
@@ -262,13 +265,6 @@
                     <input type="number" id="brushSizeInput" min="1" max="25" step="1" value="3" />
                   </div>
                 </div>
-              </div>
-              <div class="control label-style-row">
-                <span class="control-heading control-heading--lower">snap</span>
-                <label class="toggle toggle-left" title="Snap exact kernel to pixel grid (on) or interpolate circle onto local grid (off, default)">
-                  <input type="checkbox" id="brushKernelToggle" />
-                  <span class="toggle-switch"></span>
-                </label>
               </div>
             </div>
             <div class="tool-options tool-options--empty" data-tool="fill"></div>
