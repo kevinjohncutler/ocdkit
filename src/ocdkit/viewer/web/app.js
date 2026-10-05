@@ -11147,7 +11147,23 @@ function getLuminance(r, g, b) {
  * Update the image colormap panel UI (gradient preview on dropdown).
  */
 function updateImageCmapPanelUI() {
-  const hasGradient = imageColormap !== 'gray' && imageColormap !== 'gray-clip';
+  // The colormap shows in the row's icon (a pill filled with it); the dropdown is a
+  // plain pill with the colormap's name.
+  const hasGradient = false;
+  const iconGrad = document.getElementById('imageCmapIconGradient');
+  if (iconGrad && ViewerColormap.getColormapColorAtT) {
+    const n = 16;
+    let html = '';
+    for (let i = 0; i < n; i += 1) {
+      const t = i / (n - 1);
+      const c = ViewerColormap.getColormapColorAtT(t, imageColormap) || [t * 255, t * 255, t * 255];
+      html += `<stop offset="${t.toFixed(3)}" stop-color="rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})"/>`;
+    }
+    iconGrad.innerHTML = html;
+    const icon = document.getElementById('imageCmapIcon');
+    const entry = IMAGE_COLORMAPS.find((c) => c.value === imageColormap);
+    if (icon) icon.title = 'Colormap: ' + (entry ? entry.label : imageColormap);
+  }
   const dropdownWrapper = imageCmapSelect ? imageCmapSelect.closest('.dropdown--gradient-preview') : null;
   const toggle = dropdownWrapper ? dropdownWrapper.querySelector('.dropdown-toggle') : null;
 

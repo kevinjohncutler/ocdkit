@@ -69,7 +69,12 @@
     }
     if (pCanvas.parentElement !== toggle) toggle.appendChild(pCanvas);   // (re)attach after a dropdown re-render
   }
-  function cmapName() { const s = document.getElementById('imageCmapSelect'); const n = (s && s.value) || 'viridis'; return (n === 'gray' || n === 'gray-clip') ? null : n; }
+  function cmapName() {
+    const s = document.getElementById('imageCmapSelect'); const n = (s && s.value) || 'viridis';
+    const wrap = s && s.closest('.dropdown--gradient-preview');
+    if (!wrap || !wrap.classList.contains('has-gradient')) return null;   // (the dropdown is plain now: the icon shows the colormap)
+    return (n === 'gray' || n === 'gray-clip') ? null : n;
+  }
   function updatePreview() {
     ensurePreview();
     const n = cmapName();
@@ -208,11 +213,14 @@
       ViewerUI.attachNumberInputStepper(gainNumEl, function (d) { api.setGain(api.gain + d); });
     }
     const hr = document.createElement('div'); hr.id = 'hdrHeadroomVal';
-    // the HDR switch sits beside alpha and invert when the panel has a chip for it
+    // HDR is an icon toggle beside alpha and invert when the panel has a slot for it
     const chip = document.getElementById('hdrToggleChip');
     if (chip) {
-      chip.append(...btn.childNodes);
-      chip.classList.add('hdr-chip');
+      const input = btn.querySelector('#hdrToggle');
+      chip.title = 'HDR: render the image in HDR, up to the display\'s measured headroom';
+      chip.append(input);
+      const t = document.createElement('span'); t.className = 'icon-toggle-text'; t.textContent = 'HDR';
+      chip.append(t);
     } else {
       row.appendChild(btn);
     }

@@ -227,7 +227,12 @@
 .slider--pills .slider-thumb.slider-thumb--pill {
   width: var(--slider-pill-width);
   height: var(--slider-pill-height);
-  border-radius: calc(var(--slider-pill-height) / 2);
+  /* a superellipse (|x/a|^2.5 + |y/b|^2.5 = 1), not a stadium: its curvature
+     changes continuously into the top and bottom instead of jumping where
+     semicircular ends meet straight edges */
+  border-radius: 0;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 20' preserveAspectRatio='none'%3E%3Cpath d='M32.00 10.00L31.95 11.42L31.81 12.46L31.56 13.39L31.22 14.24L30.79 15.02L30.26 15.74L29.64 16.41L28.93 17.02L28.13 17.58L27.24 18.08L26.26 18.52L25.19 18.91L24.03 19.24L22.78 19.51L21.43 19.73L19.94 19.88L18.27 19.97L16.00 20.00L13.73 19.97L12.06 19.88L10.57 19.73L9.22 19.51L7.97 19.24L6.81 18.91L5.74 18.52L4.76 18.08L3.87 17.58L3.07 17.02L2.36 16.41L1.74 15.74L1.21 15.02L0.78 14.24L0.44 13.39L0.19 12.46L0.05 11.42L0.00 10.00L0.05 8.58L0.19 7.54L0.44 6.61L0.78 5.76L1.21 4.98L1.74 4.26L2.36 3.59L3.07 2.98L3.87 2.42L4.76 1.92L5.74 1.48L6.81 1.09L7.97 0.76L9.22 0.49L10.57 0.27L12.06 0.12L13.73 0.03L16.00 0.00L18.27 0.03L19.94 0.12L21.43 0.27L22.78 0.49L24.03 0.76L25.19 1.09L26.26 1.48L27.24 1.92L28.13 2.42L28.93 2.98L29.64 3.59L30.26 4.26L30.79 4.98L31.22 5.76L31.56 6.61L31.81 7.54L31.95 8.58Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 20' preserveAspectRatio='none'%3E%3Cpath d='M32.00 10.00L31.95 11.42L31.81 12.46L31.56 13.39L31.22 14.24L30.79 15.02L30.26 15.74L29.64 16.41L28.93 17.02L28.13 17.58L27.24 18.08L26.26 18.52L25.19 18.91L24.03 19.24L22.78 19.51L21.43 19.73L19.94 19.88L18.27 19.97L16.00 20.00L13.73 19.97L12.06 19.88L10.57 19.73L9.22 19.51L7.97 19.24L6.81 18.91L5.74 18.52L4.76 18.08L3.87 17.58L3.07 17.02L2.36 16.41L1.74 15.74L1.21 15.02L0.78 14.24L0.44 13.39L0.19 12.46L0.05 11.42L0.00 10.00L0.05 8.58L0.19 7.54L0.44 6.61L0.78 5.76L1.21 4.98L1.74 4.26L2.36 3.59L3.07 2.98L3.87 2.42L4.76 1.92L5.74 1.48L6.81 1.09L7.97 0.76L9.22 0.49L10.57 0.27L12.06 0.12L13.73 0.03L16.00 0.00L18.27 0.03L19.94 0.12L21.43 0.27L22.78 0.49L24.03 0.76L25.19 1.09L26.26 1.48L27.24 1.92L28.13 2.42L28.93 2.98L29.64 3.59L30.26 4.26L30.79 4.98L31.22 5.76L31.56 6.61L31.81 7.54L31.95 8.58Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
   transform: translate3d(0, -50%, 0);
   display: flex;
   align-items: center;
@@ -256,16 +261,51 @@
 }
 .slider-thumb--pill input.slider-thumb-input::-webkit-outer-spin-button,
 .slider-thumb--pill input.slider-thumb-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.slider-thumb--pill:focus-within { box-shadow: 0 0 0 1.5px rgba(23, 23, 23, 0.65); }
+.slider-thumb--pill:focus-within { background: #ffffff; }   /* (a ring would be masked away) */
 .slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
 /* (native iOS sliders keep the value fields below the track) */
 .clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
 
-/* Toggle chips: several small icon + switch pairs side by side in one row */
-.toggle-chips { --toggle-width: 36px; flex-direction: row; align-items: center; justify-content: space-between; gap: 4px; width: 100%; }
-.toggle-chip { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.toggle-chip:empty { display: none; }
-.toggle-chip .control-heading--lower { margin: 0; min-width: 0; }
+/* Icon toggles: a row of on/off buttons whose icon IS the switch (a visually
+   hidden checkbox inside each label keeps the existing change handlers). On =
+   the accent fill with dark ink, like a segmented control's active option;
+   off = the plain gray icon. */
+.icon-toggles { flex-direction: row; align-items: center; gap: 6px; width: 100%; }
+.icon-toggle {
+  position: relative;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--slider-track-height);
+  border-radius: var(--slider-track-radius);
+  background: var(--slider-track-bg);
+  box-shadow: inset 0 0 0 1px var(--slider-track-border);
+  color: var(--panel-text-color);
+  cursor: pointer;
+  user-select: none;
+}
+.icon-toggle:empty { display: none; }
+.icon-toggle::before {
+  content: '';
+  position: absolute;
+  inset: var(--control-inset);
+  border-radius: var(--control-inset-radius);
+  background: transparent;
+  transition: background var(--accent-transition-duration, 0.15s) ease;
+}
+.icon-toggle:hover::before { background: var(--accent-hover); }
+.icon-toggle:has(input:checked)::before { background: var(--accent-color); }
+.icon-toggle:has(input:checked) { color: var(--accent-ink, #161616); }
+.icon-toggle:has(input:focus-visible) { outline: 2px solid var(--accent-color); outline-offset: 1px; }
+.icon-toggle > svg, .icon-toggle > .icon-toggle-text { position: relative; z-index: 1; }
+.icon-toggle > svg { width: 18px; height: 18px; display: block; opacity: 0.75; }
+.icon-toggle:has(input:checked) > svg { opacity: 1; }
+.icon-toggle-text { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; opacity: 0.75; }
+.icon-toggle:has(input:checked) > .icon-toggle-text { opacity: 1; }
+.icon-toggle > input[type='checkbox'] { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+/* colormap icon: a pill filled with the selected colormap (stops set by app.js) */
+.cmap-icon svg { width: 24px; height: 24px; }
 .slider:focus { outline: none; }   /* the pressed thumb already shows focus */
 
 

@@ -65,27 +65,15 @@
             <!-- Image colormap section -->
             <div class="image-cmap-section" id="imageCmapPanel">
               <div class="control slider-inline">
-                <span class="control-heading control-heading--lower">cmap</span>
+                <span class="control-heading control-heading--lower control-heading--icon cmap-icon" id="imageCmapIcon" title="Colormap"><svg viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="imageCmapIconGradient"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient></defs><rect x="1.5" y="6" width="21" height="12" rx="6" fill="url(#imageCmapIconGradient)" stroke="currentColor" stroke-opacity="0.45" stroke-width="1"/></svg></span>
                 <div class="dropdown dropdown--compact dropdown--gradient-preview" data-dropdown-id="imageCmapSelect" data-loop="true">
                   <select id="imageCmapSelect"></select>
                 </div>
               </div>
-              <div class="control toggle-chips" id="imageTogglesRow">
-                <div class="toggle-chip" id="cmapTransparentRow">
-                <span class="control-heading control-heading--lower control-heading--icon" title="Alpha: make the colormap's dark end transparent (opacity follows lightness), in 2D and 3D"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.08,17.8C17.62,17.93 17.21,18 16.85,18C15.65,18 14.84,17.12 14.43,15.35H14.38C13.39,17.26 12,18.21 10.25,18.21C8.94,18.21 7.89,17.72 7.1,16.73C6.31,15.74 5.92,14.5 5.92,13C5.92,11.25 6.37,9.85 7.26,8.76C8.15,7.67 9.36,7.12 10.89,7.12C11.71,7.12 12.45,7.35 13.09,7.8C13.73,8.26 14.22,8.9 14.56,9.73H14.6L15.31,7.33H17.87L15.73,12.65C15.97,13.89 16.22,14.74 16.5,15.19C16.74,15.64 17.08,15.87 17.5,15.87C17.74,15.87 17.93,15.83 18.1,15.76L18.08,17.8M13.82,12.56C13.61,11.43 13.27,10.55 12.81,9.95C12.36,9.34 11.81,9.04 11.18,9.04C10.36,9.04 9.7,9.41 9.21,10.14C8.72,10.88 8.5,11.79 8.5,12.86C8.5,13.84 8.69,14.65 9.12,15.31C9.54,15.97 10.11,16.29 10.82,16.29C11.42,16.29 11.97,16 12.46,15.45C12.96,14.88 13.37,14.05 13.7,12.96L13.82,12.56Z"/></svg></span>
-                <label class="toggle toggle-left" title="Transparent low end: the colormap's opacity follows its lightness, so dark values fade out instead of drawing as black (2D and 3D, works with HDR). In 3D EA, dark voxels then stop dimming what is behind them.">
-                  <input type="checkbox" id="cmapTransparentToggle" />
-                  <span class="toggle-switch"></span>
-                </label>
-              </div>
-                <div class="toggle-chip" id="imageInvertRow">
-                <span class="control-heading control-heading--lower control-heading--icon" title="Invert: show dark objects as bright (phase contrast, brightfield), in 2D and 3D. Display only; segmentation still uses the original image. Remembered per image."><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,19.58V19.58C10.4,19.58 8.89,18.96 7.76,17.83C6.62,16.69 6,15.19 6,13.58C6,12 6.62,10.47 7.76,9.34L12,5.1M17.66,7.93L12,2.27V2.27L6.34,7.93C3.22,11.05 3.22,16.12 6.34,19.24C7.9,20.8 9.95,21.58 12,21.58C14.05,21.58 16.1,20.8 17.66,19.24C20.78,16.12 20.78,11.05 17.66,7.93Z"/></svg></span>
-                <label class="toggle toggle-left" title="Invert the image display (remembered per image)">
-                  <input type="checkbox" id="imageInvertToggle" />
-                  <span class="toggle-switch"></span>
-                </label>
-              </div>
-                <div class="toggle-chip" id="hdrToggleChip"></div>
+              <div class="control icon-toggles" id="imageTogglesRow">
+                <label class="icon-toggle" id="cmapTransparentRow" title="Alpha: make the colormap's dark end transparent (opacity follows lightness), in 2D and 3D"><input type="checkbox" id="cmapTransparentToggle" aria-label="Transparent low end" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.08,17.8C17.62,17.93 17.21,18 16.85,18C15.65,18 14.84,17.12 14.43,15.35H14.38C13.39,17.26 12,18.21 10.25,18.21C8.94,18.21 7.89,17.72 7.1,16.73C6.31,15.74 5.92,14.5 5.92,13C5.92,11.25 6.37,9.85 7.26,8.76C8.15,7.67 9.36,7.12 10.89,7.12C11.71,7.12 12.45,7.35 13.09,7.8C13.73,8.26 14.22,8.9 14.56,9.73H14.6L15.31,7.33H17.87L15.73,12.65C15.97,13.89 16.22,14.74 16.5,15.19C16.74,15.64 17.08,15.87 17.5,15.87C17.74,15.87 17.93,15.83 18.1,15.76L18.08,17.8M13.82,12.56C13.61,11.43 13.27,10.55 12.81,9.95C12.36,9.34 11.81,9.04 11.18,9.04C10.36,9.04 9.7,9.41 9.21,10.14C8.72,10.88 8.5,11.79 8.5,12.86C8.5,13.84 8.69,14.65 9.12,15.31C9.54,15.97 10.11,16.29 10.82,16.29C11.42,16.29 11.97,16 12.46,15.45C12.96,14.88 13.37,14.05 13.7,12.96L13.82,12.56Z"/></svg></label>
+                <label class="icon-toggle" id="imageInvertRow" title="Invert: show dark objects as bright (phase contrast, brightfield), in 2D and 3D. Display only; segmentation still uses the original image. Remembered per image."><input type="checkbox" id="imageInvertToggle" aria-label="Invert" /><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12,19.58V19.58C10.4,19.58 8.89,18.96 7.76,17.83C6.62,16.69 6,15.19 6,13.58C6,12 6.62,10.47 7.76,9.34L12,5.1M17.66,7.93L12,2.27V2.27L6.34,7.93C3.22,11.05 3.22,16.12 6.34,19.24C7.9,20.8 9.95,21.58 12,21.58C14.05,21.58 16.1,20.8 17.66,19.24C20.78,16.12 20.78,11.05 17.66,7.93Z"/></svg></label>
+                <label class="icon-toggle" id="hdrToggleChip"></label>
               </div>
             </div>
           </div>
