@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, scatterHaze: curBlockSoft, scatterDepth: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, scatterBlock: curBlockSoft, scatterDepth: curBlockDepth, scatterSelfDim: curScatterSelf, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -157,7 +157,12 @@
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
     // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
-    let curBlockSoft = typeof _vs.scatterHaze === "number" ? Math.min(64, Math.max(0, _vs.scatterHaze)) : 1;   // scatter: haze power
+    let curBlockSoft = typeof _vs.scatterBlock === "number" ? Math.min(1, Math.max(0, _vs.scatterBlock)) : 0.5;   // scatter: block (0..1)
+    let curScatterSelf = _vs.scatterSelfDim !== false;   // scatter: a voxel dims its own light (the gradient across each cube)
+    // block b: the top b of the display window scatters at least half as much as its top,
+    // i.e. brightness 1 - b scatters half: the haze power q = ln 0.5 / ln(1 - b)
+    // (b = 0: nothing scatters, b = 1: everything above the low end alike)
+    const qFromBlock = (b) => (b <= 0 ? Infinity : b >= 1 ? 0 : Math.log(0.5) / Math.log(1 - b));
     let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(1e6, Math.max(0.5, _vs.scatterDepth)) : 100;   // scatter depth (voxels)
     // the scatter depth slider is logarithmic: position p in 0..1 -> 0.5 x 20000^p voxels (0.5..10000);
     // the number field takes larger values (up to 1e6, where Scatter is MIP to within rounding)
@@ -545,7 +550,8 @@
           invert: !!(window.__viewerGetInvert && window.__viewerGetInvert()),
           facesMix: curFacesMix,
           classify: curClassify,
-          blockPower: curBlockSoft,
+          blockPower: qFromBlock(curBlockSoft),
+          scatterSelfDim: curScatterSelf,
           blockDepth: curBlockDepth,
           depthCue: curDepthCue,
           levelFrames: curLevel,
@@ -777,19 +783,19 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
-    // ── Scatter haze power slider (Scatter only) ──
+    // ── Scatter block slider (Scatter only) ──
     const slRow = document.getElementById("blockSoftRow");
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(64, Number.isFinite(Number(t)) ? Number(t) : 1));
+      t = Math.max(0, Math.min(1, Number.isFinite(Number(t)) ? Number(t) : 0.5));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
         if (window.ViewerUI && ViewerUI.refreshSlider) ViewerUI.refreshSlider("blockSoftSlider");
       }
       if (slNum) slNum.value = t.toFixed(2);
-      if (vgpu) vgpu.setBlockPower(t);
+      if (vgpu) vgpu.setBlockPower(qFromBlock(t));
       saveVolState();
     }
     if (slRange) {
@@ -886,6 +892,18 @@
       });
     }
 
+    // ── Scatter self-dimming toggle (Scatter only; temporary, to compare the looks) ──
+    const ssRow = document.getElementById("scatterSelfRow");
+    const ssToggle = document.getElementById("scatterSelfToggle");
+    if (ssToggle) {
+      ssToggle.checked = curScatterSelf;
+      ssToggle.addEventListener("change", () => {
+        curScatterSelf = ssToggle.checked;
+        if (vgpu) vgpu.setScatterSelfDim(curScatterSelf);
+        saveVolState();
+      });
+    }
+
     // ── Fade z ends toggle (3D, every mode) ──
     const fzRow = document.getElementById("fadeZRow");
     const fzToggle = document.getElementById("fadeZToggle");
@@ -902,6 +920,7 @@
       syncSpinRow();
       if (lvRow) lvRow.hidden = mode !== "3d";
       if (fzRow) fzRow.hidden = mode !== "3d";
+      if (ssRow) ssRow.hidden = !(mode === "3d" && curProj === 4);
       if (bmRow) {
         const showBm = mode === "3d" && curProj === 4;
         const wasHiddenB = bmRow.hidden;

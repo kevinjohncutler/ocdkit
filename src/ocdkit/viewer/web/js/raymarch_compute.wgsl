@@ -52,7 +52,7 @@ struct U {
   light       : vec4<f32>,   // ambient, specular, shininess, headlight
   win         : vec4<f32>,   // display window lo, 1/(hi-lo) (the 2D histogram bounds); EA exposure; voxel shading t
   cueLo       : vec4<f32>,   // depth cue: the visible data's bounding box min (world), strength s
-  cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world), unused
+  cueHi       : vec4<f32>,   // depth cue: the visible data's bounding box max (world); w: 1 = scatter without self-dimming
 };
 @group(0) @binding(0) var<uniform> u : U;
 @group(0) @binding(1) var volTex : texture_3d<f32>;
@@ -99,7 +99,8 @@ override CUE : bool = false;
 // of the beam by the material between it and the camera, and the pixel shows the
 // brightest light that still arrives:
 //   pixel = max over voxels of  v e^(-tau),  tau = sum over the material in front
-//           of k v'^q L  (half of the voxel's own path counts too)
+//           of k v'^q L  (half of the voxel's own path counts too, unless self
+//           dimming is off, u.cueHi.w = 1: then a voxel shows as at its front face)
 // v = the windowed value, L = path length (voxels), k = 3 / D with D = u.win.z
 // the scatter depth (voxels of full-brightness material that scatter away 95%),
 // q = u.win.w the haze power (how much less faint material scatters: 0 = all
@@ -347,7 +348,8 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var midaMax = 0.0;
     // scatter: the haze power q, the rate per voxel (scatter depth D: 3 / D),
     // voxels per unit of the ray parameter
-    let scatQ = clamp(u.win.w, 0.0, 64.0);
+    let scatQ = clamp(u.win.w, 0.0, 1e4);
+    let selfDim = select(0.5, 0.0, u.cueHi.w > 0.5);   // the share of a voxel's own path that dims its own light
     let scatK = 3.0 / max(u.win.z, 0.05);
     let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);
@@ -417,7 +419,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
         // imgAcc.x = brightest transmitted value so far, imgAcc.y = optical depth in front
         let sw = clamp((s - u.win.x) * u.win.y, 0.0, 1.0) * wq;
         let dTau = select(0.0, scatK * pow(sw, scatQ) * max(tExit - tPrev, 0.0) * dvLenB, sw > 0.0);   // (pow(0, 0) = 1: empty never scatters)
-        imgAcc.x = max(imgAcc.x, sw * exp(-(imgAcc.y + 0.5 * dTau)));
+        imgAcc.x = max(imgAcc.x, sw * exp(-(imgAcc.y + selfDim * dTau)));
         imgAcc.y = imgAcc.y + dTau;
         if (exp(-imgAcc.y) <= imgAcc.x) { break; }     // nothing further back can beat it
       } else if (MODE == 1) {

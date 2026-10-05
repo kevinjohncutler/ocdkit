@@ -310,7 +310,8 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockPower = opts.blockPower != null ? Math.min(64, Math.max(0, +opts.blockPower)) : 1;   // scatter: haze power q
+      this._blockPower = opts.blockPower != null && !Number.isNaN(+opts.blockPower) ? Math.max(0, +opts.blockPower) : 1;   // scatter: haze power q (Infinity: nothing scatters)
+      this._scatterSelf = opts.scatterSelfDim !== false;   // scatter: a voxel dims its own light (half its own path)
       this._blockDepth = opts.blockDepth > 0 ? Math.min(1e6, Math.max(0.5, +opts.blockDepth)) : 100;   // scatter: scatter depth (voxels)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
@@ -980,10 +981,11 @@
       u.set([this.ambient, this.specular, this.shininess, this.headlight], 40);  // light
       // window, EA exposure, voxel shading (block: its block depth and softness instead)
       const blk = this.mode === 4;
-      u.set([this._win[0], this._win[1], blk ? this._blockDepth : this._eaExposure, blk ? this._blockPower : (this._facesMix || 0)], 44);
+      const q = this._blockPower, none = !Number.isFinite(q);         // (q = Infinity: nothing scatters)
+      u.set([this._win[0], this._win[1], blk ? (none ? 1e30 : this._blockDepth) : this._eaExposure, blk ? (none ? 1 : q) : (this._facesMix || 0)], 44);
       const cb = this._cueBox || box;                                   // depth cue: visible data's box, strength
       u.set([cb.min[0], cb.min[1], cb.min[2], this._depthCue || 0], 48);
-      u.set([cb.max[0], cb.max[1], cb.max[2], 0], 52);
+      u.set([cb.max[0], cb.max[1], cb.max[2], blk && !this._scatterSelf ? 1 : 0], 52);   // w: scatter without self-dimming
       this.device.queue.writeBuffer(this.uniform, 0, u);
     }
 
@@ -1294,12 +1296,16 @@
       this._blockDepth = Math.min(1e6, Math.max(0.5, Number.isFinite(+v) ? +v : 100));
       this._requestRender();
     }
-    /** Scatter projection (mode 4) haze power q (1..4): a voxel scatters in proportion
-     *  to its windowed brightness^q, so higher q = faint material (haze, noise) scatters less. */
+    /** Scatter projection (mode 4) haze power q (0..Infinity): a voxel scatters in proportion
+     *  to its windowed brightness^q, so higher q = faint material (haze, noise) scatters less;
+     *  0 = everything above the window's low end alike, Infinity = nothing scatters. */
     setBlockPower(p) {
-      this._blockPower = Math.min(64, Math.max(0, Number.isFinite(+p) ? +p : 1));
+      this._blockPower = Number.isNaN(+p) ? 1 : Math.max(0, +p);
       this._requestRender();
     }
+    /** Scatter: whether a voxel dims its own light by half its own path (true, the
+     *  gradient across each voxel cube) or shows it at its front face (false). */
+    setScatterSelfDim(on) { this._scatterSelf = !!on; this._requestRender(); }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
     setSpecular(s) { this.specular = +s; this._requestRender(); }
     setShininess(s) { this.shininess = +s; this._requestRender(); }

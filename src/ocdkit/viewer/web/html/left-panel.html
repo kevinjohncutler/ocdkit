@@ -178,14 +178,14 @@
             </div>
           </div>
           <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Haze (0 to 16, type up to 64): how much less faint material scatters. Each voxel scatters light in proportion to its brightness on the display window raised to this power. 0 = everything above the window's low end scatters alike; 1 = in proportion to brightness; q = material at brightness 0.5^(1/q) of the window scatters half as much as the top (q 2: 0.71, 4: 0.84, 8: 0.92, 16: 0.96), so high values leave only the brightest material scattering. Raise it if faint background dims what is behind it">
-            <span class="control-heading control-heading--lower">haze</span>
+               title="Block (0 to 1): how much of the display window scatters light. The top 'block' of the window scatters at least half as much as the window's top: 0 = nothing scatters (MIP), 0.5 = scattering in proportion to brightness, 1 = everything above the window's low end scatters alike. (Brightness b scatters in proportion to b^q, q = ln 0.5 / ln(1 - block).)">
+            <span class="control-heading control-heading--lower">block</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="16" step="0.1" value="1" />
+                <input type="range" id="blockSoftSlider" min="0" max="1" step="0.005" value="0.5" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="64" step="0.1" value="1.00" />
+                <input type="number" id="blockSoftInput" min="0" max="1" step="0.01" value="0.50" />
               </div>
             </div>
           </div>
@@ -200,6 +200,13 @@
                 <input type="number" id="blockMinInput" min="0.5" max="1000000" step="1" value="100" />
               </div>
             </div>
+          </div>
+          <div class="control label-style-row" id="scatterSelfRow" hidden>
+            <span class="control-heading control-heading--lower" title="Self dimming: each voxel dims its own light by the material on half of its own path, so a ray grazing a voxel's edge shows it brighter than one through its middle (the gradient across each voxel cube). Off: each voxel shows its light as at its front face; only material in front of it dims it">self dimming</span>
+            <label class="toggle toggle-left" title="Self dimming: on = gradient across each voxel cube, off = flat">
+              <input type="checkbox" id="scatterSelfToggle" checked />
+              <span class="toggle-switch"></span>
+            </label>
           </div>
           <div class="control label-style-row" id="voxelWindowRow" hidden>
             <span class="control-heading control-heading--lower" title="Window per voxel (EA and MIDA): apply the display window to each voxel before compositing, so values below its low end are empty space and the voxel in front hides what is behind it. Off: the whole range composites and the window acts on the result, so dragging it only changes brightness and color.">per voxel</span>

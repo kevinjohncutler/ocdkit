@@ -736,13 +736,14 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert on[far].mean() < 0.8 * off[far].mean()
 
 
-def _scatter_column(col, depth, q):
+def _scatter_column(col, depth, q, self_dim=0.5):
     """numpy mirror of Scatter (MODE 4) along a straight ray through windowed values
-    `col` (front first), one voxel of path each."""
+    `col` (front first), one voxel of path each; `self_dim` = the share of a voxel's
+    own path that dims its own light (0.5, or 0 with self dimming off)."""
     k, tau, best = 3.0 / depth, 0.0, 0.0
     for v in col:
         d = k * v ** q if v > 0 else 0.0
-        best = max(best, v * np.exp(-(tau + 0.5 * d)))
+        best = max(best, v * np.exp(-(tau + self_dim * d)))
         tau += d
     return best
 
@@ -765,9 +766,10 @@ def _windowed_column(vol, y, x, lo=0.6, hi=1.0):
     return np.clip((vol[:, y, x].astype(np.float32) - lo) / (hi - lo), 0, 1)
 
 
+@pytest.mark.parametrize("self_dim", [0.5, 0.0])
 @pytest.mark.parametrize("thick", [1, 4, 20])
 @pytest.mark.parametrize("depth,q", [(2.0, 1.0), (8.0, 2.0), (30.0, 2.0), (8.0, 4.0), (8.0, 0.0), (12.0, 16.0)])
-def test_scatter_matches_per_voxel_rule(dev, thick, depth, q):
+def test_scatter_matches_per_voxel_rule(dev, thick, depth, q, self_dim):
     """A dim slab in front of a bright cube, straight along z: the pixel is the
     brightest v e^(-tau) along the ray (numpy mirror on the real voxel column)."""
     sc = _slab_scene(dev, thick, gap=2)
@@ -776,9 +778,30 @@ def test_scatter_matches_per_voxel_rule(dev, thick, depth, q):
     vol[4 + thick + 2:4 + thick + 8, 21:27, 21:27] = 0.95
     inv, *_ = _ortho(0.0, 0.0, 24.0)
     u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=depth)
+    u[55] = 1.0 if self_dim == 0.0 else 0.0                              # self dimming off
     out = sc.compute(u, 4, 1, 0, 128, 128, faces=q)[60:68, 60:68, 3]
-    expect = _scatter_column(_windowed_column(vol, 24, 24), depth, q)
+    expect = _scatter_column(_windowed_column(vol, 24, 24), depth, q, self_dim)
     assert np.abs(out - expect).max() < 3e-3, (out.min(), out.max(), expect)
+
+
+def test_scatter_self_dimming_is_the_gradient_across_each_voxel(dev):
+    """A uniform bright block seen obliquely: with self dimming every ray through its
+    near faces reads the same (nothing in front of them), so the faces are flat; with
+    it, rays grazing a voxel's edge cross less of it than rays through its middle,
+    so each voxel shows a gradient."""
+    vol = np.zeros((32, 32, 32), np.float16)
+    vol[10:22, 10:22, 10:22] = 1.0
+    sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+    inv, *_ = _ortho(0.5, 0.4, 20.0)
+    out = {}
+    for off in (0.0, 1.0):
+        u = _uniform(inv, (32, 32, 32), 4, show_lab=0, window=(0.0, 1.0), exposure=4.0)
+        u[55] = off
+        out[off] = sc.compute(u, 4, 1, 0, 128, 128, faces=1.0)[..., 3]
+    hit = out[1.0] > 0.5                                                 # the block's footprint
+    assert np.abs(out[1.0][hit] - 1.0).max() < 2e-3                      # off: flat, full brightness
+    on = out[0.0][hit]
+    assert on.max() > 0.98 and on.min() < 0.8                            # on: edges bright, middles dimmed
 
 
 def test_scatter_dim_front_rod_stays_whole(dev):
