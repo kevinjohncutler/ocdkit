@@ -96,6 +96,7 @@
     if (pCanvas) pCanvas.style.display = (n && api.available && api.enabled) ? 'block' : 'none';
     if (!pR || !n) return;
     pR.setColormap(n);
+    if (pR.setTransparent) pR.setTransparent(api.transparent);
     if (pR.setHdr) pR.setHdr(api.enabled);
     if (pR.setGain) pR.setGain(api.enabled ? api.gain : 1);
     pR.requestRedraw();
@@ -168,6 +169,7 @@
     api.transparent = !!on;
     try { localStorage.setItem(TRANSP_STORE, api.transparent ? '1' : '0'); } catch (e) {}
     apply();
+    if (window.__refreshCmapIcon) window.__refreshCmapIcon();   // the colormap icon shows the transparency too
   };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
 

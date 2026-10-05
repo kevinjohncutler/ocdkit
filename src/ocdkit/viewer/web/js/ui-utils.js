@@ -416,7 +416,8 @@
   // top (y = b) to the bottom (y = -b), offset outward by d. Its curvature rises
   // from zero where it leaves the flat edge (a semicircle jumps there) and stays
   // finite at the tip; offsets of a smooth curve stay smooth, so a handle, the
-  // fill around it (d = 1) and the track (d = 2) keep a constant gap everywhere.
+  // fill around it and the track keep a constant gap everywhere (with a knob-sized
+  // handle: fill 3 px out, track 4 px out, the gaps of a plain slider's knob).
   // Points are relative to where the flat edge ends (x = 0) and the pill's center.
   var capCache = {};
   function pillCap(b, c, d) {
@@ -577,13 +578,14 @@
         entry.thumbs[1].style.left = (pg.g + pg.w + p1) + 'px';
         if (art) {
           var W = entry.track.clientWidth, Hh = entry.track.clientHeight, cy = Hh / 2;
-          var hb = entry.thumbs[0].offsetHeight / 2, cc = Math.min(11, pg.w / 2 - 1);
+          var hb = entry.thumbs[0].offsetHeight / 2, cc = Math.min(1.1 * hb, pg.w / 2 - 1);
+          var inset = parseFloat(getComputedStyle(entry.root).getPropertyValue('--control-inset')) || 1;   // fill inside the track, as on plain sliders
           var L0 = pg.g + p0, L1 = pg.g + pg.w + p1, gap = pg.g;          // handle box lefts; gap to the track edge
           art.svg.setAttribute('viewBox', '0 0 ' + W + ' ' + Hh);
           art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
           art.track.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap));
           art.outline.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap - 0.5));
-          art.fill.setAttribute('d', pillPath(L0 + cc, L1 + pg.w - cc, cy, hb, cc, gap / 2));
+          art.fill.setAttribute('d', pillPath(L0 + cc, L1 + pg.w - cc, cy, hb, cc, gap - inset));
           art.h0.setAttribute('d', pillPath(L0 + cc, L0 + pg.w - cc, cy, hb, cc, 0));
           art.h1.setAttribute('d', pillPath(L1 + cc, L1 + pg.w - cc, cy, hb, cc, 0));
         }

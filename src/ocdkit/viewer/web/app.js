@@ -11146,15 +11146,26 @@ function getLuminance(r, g, b) {
 /**
  * Update the image colormap panel UI (gradient preview on dropdown).
  */
+window.__refreshCmapIcon = () => updateImageCmapPanelUI();   // (hdr_ui.js: the alpha toggle changes the icon)
 function updateImageCmapPanelUI() {
   // The colormap shows in the row's icon (a pill filled with it); the dropdown is a
   // plain pill with the colormap's name.
   const hasGradient = false;
   const iconPill = document.getElementById('imageCmapIconPill');
-  if (iconPill && ViewerColormap.generateColormapGradient) {
-    // a disc swept by the colormap: low end at the top, clockwise to the high end
-    iconPill.style.setProperty('--cmap-icon-gradient',
-      ViewerColormap.generateColormapGradient(imageColormap, 24).replace('linear-gradient(to right,', 'conic-gradient(from 0deg,'));
+  if (iconPill && ViewerColormap.getColormapColorAtT) {
+    // a disc swept by the colormap: low end at the top, clockwise to the high end;
+    // with the transparent low end (alpha) on, its opacity follows the colormap's
+    // lightness exactly as the image's does (HdrColormap.transparentAlpha)
+    const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
+    const alpha = transparent && window.HdrColormap && HdrColormap.transparentAlpha ? HdrColormap.transparentAlpha(imageColormap) : null;
+    const n = 24, stops = [];
+    for (let i = 0; i < n; i += 1) {
+      const t = i / (n - 1);
+      const c = ViewerColormap.getColormapColorAtT(t, imageColormap) || [255 * t, 255 * t, 255 * t];
+      const a = alpha ? alpha[Math.round(t * (alpha.length - 1))] : 1;
+      stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${(t * 100).toFixed(1)}%`);
+    }
+    iconPill.style.setProperty('--cmap-icon-gradient', `conic-gradient(from 0deg, ${stops.join(', ')})`);
     const icon = document.getElementById('imageCmapIcon');
     const entry = IMAGE_COLORMAPS.find((c) => c.value === imageColormap);
     if (icon) icon.title = 'Colormap: ' + (entry ? entry.label : imageColormap);

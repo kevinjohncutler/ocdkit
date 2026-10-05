@@ -221,7 +221,7 @@
    values (ui-utils.js registerSlider). The low pill sits left of its value and the
    high pill right of it, so they meet but never overlap. */
 :root {
-  --slider-pill-height: 20px;
+  --slider-pill-height: var(--slider-knob-size);   /* the same gaps as a plain slider's knob */
   --slider-pill-width: 32px;
 }
 .slider--pills .slider-thumb.slider-thumb--pill {
@@ -316,8 +316,8 @@
 .cmap-icon-pill {
   position: relative;
   display: block;
-  width: var(--slider-track-height);
-  height: var(--slider-track-height);
+  width: var(--slider-knob-size);
+  height: var(--slider-knob-size);
   border-radius: 50%;
   overflow: hidden;
   background: var(--cmap-icon-gradient, conic-gradient(#000, #fff));
