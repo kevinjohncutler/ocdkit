@@ -646,7 +646,8 @@
           art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
           art.track.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap));
           art.outline.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap - 0.5));
-          art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + hb, lefts[last] + pg.ws[last] - hb, cy, hb + gap - inset));
+          art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + hb, lefts[last] + pg.ws[last] - hb, cy, hb + gap - inset) +
+            lefts.map(function (L, i) { return pillPath(L + hb, L + pg.ws[i] - hb, cy, hb); }).join(''));   // (holes: evenodd)
           lefts.forEach(function (L, i) { art['h' + i].setAttribute('d', pillPath(L + hb, L + pg.ws[i] - hb, cy, hb)); });
         }
         return;
@@ -683,6 +684,7 @@
         entry.track.style.setProperty('--slider-fill-px', fillPx + 'px');
         entry.track.style.setProperty('--slider-track-radius', trackRadius + 'px');
         entry.thumbs[0].style.left = (trackRadius + fillPx) + 'px';
+        entry.track.style.setProperty('--thumb-x', (trackRadius + fillPx) + 'px');   // (cutout knob mask)
       }
     };
 
@@ -1050,7 +1052,8 @@
     m.className = 'moon-indicator' + (opts && opts.className ? ' ' + opts.className : '');
     m.setAttribute('aria-hidden', 'true');
     var R = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--slider-knob-radius')) || 8;
-    var t = 0.325 * R, o = 0.6 * R, r = t / 2;           // bar thickness, bar spacing
+    // whole-pixel thickness and spacing, so all three bars render equally thick
+    var t = Math.max(1, Math.round(0.25 * R)), o = Math.round(0.625 * R), r = t / 2;
     var cap = function (off) {                            // a bar `off` from the center, ends tangent to the circle
       var a = Math.sqrt(Math.max(0, (R - r) * (R - r) - off * off));
       return { left: R - a - r, width: 2 * (a + r), top: R + off - r };
@@ -1067,6 +1070,12 @@
         ';--to:' + px(mid.top) + ';--lo:' + px(mid.left) + ';--wo:' + px(mid.width) + ';';
       m.appendChild(b);
     });
+    // the closed bars as a mask image (for cutout bars, see .accent-light in CSS)
+    var rects = [-o, 0, o].map(function (off) {
+      var c = cap(off);
+      return "<rect x='" + c.left.toFixed(3) + "' y='" + c.top.toFixed(3) + "' width='" + c.width.toFixed(3) + "' height='" + t + "' rx='" + r + "'/>";
+    }).join('');
+    m.dataset.maskUrl = 'url("data:image/svg+xml,' + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 " + 2 * R + ' ' + 2 * R + "'>" + rects + '</svg>') + '")';
     return m;
   }
 
@@ -1125,8 +1134,10 @@
     var labelSpan = document.createElement('span');
     labelSpan.className = 'dropdown-label';
     button.appendChild(labelSpan);
-    // the open / closed indicator: a half moon where a slider knob would sit
-    button.appendChild(makeMoon({ className: 'dropdown-toggle-moon' }));
+    // the open / closed indicator, where a slider knob would sit
+    var moon = makeMoon({ className: 'dropdown-toggle-moon' });
+    button.appendChild(moon);
+    button.style.setProperty('--moon-mask', moon.dataset.maskUrl);
     var menu = document.createElement('div');
     menu.className = 'dropdown-menu';
     menu.setAttribute('role', 'listbox');

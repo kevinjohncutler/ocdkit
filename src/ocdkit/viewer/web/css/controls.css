@@ -15,10 +15,6 @@
   /* Opaque border for elements with colored backgrounds (no blending) */
   --border-opaque: rgba(90, 90, 90, 1);
   --slider-knob-color: #f5f5f5;
-  /* a knob on an accent fill, and text on that knob: the accent's text contrast
-     (set by app.js from --accent-ink; these are the default accent's values) */
-  --accent-knob: #1a1a1a;
-  --accent-knob-ink: #f6f6f6;
   --number-field-width: var(--toggle-width);
   --control-label-width: 44px;
   --toggle-width: 45px;
@@ -189,7 +185,7 @@
   width: var(--slider-knob-size);
   height: var(--slider-knob-size);
   border-radius: var(--slider-knob-rounding);
-  background: var(--accent-knob);
+  background: var(--slider-knob-color);
   box-shadow: none;
   transform: translate3d(-50%, -50%, 0);
   transition: transform 0.12s ease;
@@ -239,8 +235,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent-knob-ink);
+  color: #171717;
   cursor: grab;
+  /* one text style for every value pill: the number field and the compact label inherit it */
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1;
 }
 .slider--pills[data-active='true'] .slider-thumb.slider-thumb--pill,
 .slider--pills[data-focused='true'] .slider-thumb.slider-thumb--pill {
@@ -255,8 +255,7 @@
   outline: none;
   background: transparent;
   color: inherit;
-  font: 600 0.72rem/1 inherit;
-  font-family: inherit;
+  font: inherit;
   text-align: center;
   cursor: inherit;
   -moz-appearance: textfield;
@@ -272,8 +271,9 @@
 .slider-pill-art .pill-art-track { fill: var(--slider-track-bg); }
 .slider-pill-art .pill-art-outline { fill: none; stroke: var(--slider-track-border); stroke-width: 1; }
 .slider-pill-art .pill-art-fill { fill: var(--accent-color); }
-.slider-pill-art .pill-art-handle { fill: var(--accent-knob); }
-.slider-pill-art .pill-art-handle.is-editing { fill-opacity: 0.85; }
+.slider-pill-art .pill-art-fill { fill-rule: evenodd; }   /* the handles are holes in it */
+.slider-pill-art .pill-art-handle { fill: var(--slider-knob-color); }
+.slider-pill-art .pill-art-handle.is-editing { fill: #ffffff; }
 .slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
 /* (native iOS sliders keep the value fields below the track) */
 .clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
@@ -343,7 +343,7 @@
 
 .slider[data-focused='true'] .slider-thumb {
   transform: translate(-50%, -50%) scale(1.12);
-  background: var(--accent-knob);
+  background: var(--slider-knob-color);
 }
 
 .slider[data-focused='true'] .slider-track {
@@ -707,7 +707,7 @@
 
 .toggle input:checked + .toggle-switch::after {
   transform: translate(calc(var(--toggle-width) - (2 * var(--slider-knob-inset)) - var(--slider-knob-size)), -50%);
-  background: var(--accent-knob);   /* on the accent fill */
+  background: var(--slider-knob-color);
 }
 
 .toggle-label {
@@ -2549,7 +2549,7 @@ button:not(:disabled):hover {
 .slider-thumb--compact { position: absolute; }
 .slider-thumb--compact .slider-thumb-label {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font: 600 0.72rem/1 inherit; font-family: inherit; pointer-events: none;
+  font: inherit; pointer-events: none;
 }
 .slider-thumb--compact input.slider-thumb-input:not(:focus) { color: transparent; }
 .slider-thumb--compact:focus-within .slider-thumb-label { display: none; }
@@ -2586,8 +2586,39 @@ button:not(:disabled):hover {
   right: var(--slider-knob-inset);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--accent-ink);   /* the dropdown's text color */
+  color: var(--slider-knob-color);
   pointer-events: none;
 }
-/* the hue-offset knob sits on a colormap gradient, not the accent: it stays light */
-.slider--gradient-track .slider-thumb { background: var(--slider-knob-color); }
+
+
+/* Light accent (.accent-light, set by app.js): knobs on an accent fill are cutouts
+   that show the panel through the accent, with text in the panel's text color. */
+:root.accent-light .slider-pill-art .pill-art-handle { fill: transparent; }
+:root.accent-light .slider-pill-art .pill-art-handle.is-editing { fill: var(--slider-track-bg); }
+:root.accent-light .slider-thumb--pill { color: var(--panel-text-color); }
+/* round knobs (the hue-offset slider): a hole in the fill or gradient at the knob */
+:root.accent-light .slider:not(.slider--pills) .slider-thumb { background: transparent; box-shadow: inset 0 0 0 1.5px var(--slider-track-border); }
+:root.accent-light .slider:not(.slider--pills) .slider-track::before {
+  -webkit-mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+          mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+}
+/* an on toggle: a hole in its accent fill where the knob sits */
+:root.accent-light .toggle input:checked + .toggle-switch::after { background: transparent; }
+:root.accent-light .toggle input:checked + .toggle-switch::before {
+  -webkit-mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) + var(--control-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+          mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) + var(--control-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+}
+/* the dropdown's bars: cut out of the dropdown pill */
+:root.accent-light .dropdown-toggle {
+  -webkit-mask-image: linear-gradient(#000, #000), var(--moon-mask, linear-gradient(transparent, transparent));
+  -webkit-mask-position: 0 0, calc(100% - var(--slider-knob-inset)) 50%;
+  -webkit-mask-size: 100% 100%, var(--slider-knob-size) var(--slider-knob-size);
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: xor;
+  mask-image: linear-gradient(#000, #000), var(--moon-mask, linear-gradient(transparent, transparent));
+  mask-position: 0 0, calc(100% - var(--slider-knob-inset)) 50%;
+  mask-size: 100% 100%, var(--slider-knob-size) var(--slider-knob-size);
+  mask-repeat: no-repeat;
+  mask-composite: exclude;
+}
+:root.accent-light .dropdown-toggle .moon-bar { background: transparent; }

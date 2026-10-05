@@ -365,14 +365,13 @@ function markAccentLive() {
   }, 140);
 }
 
-// Knobs that sit on an accent fill (slider handles, value pills, an on toggle's
-// knob, the dropdown indicator) take the same contrast as the accent's text, opaque:
-// dark on a light accent, light on a dark one. Text on such a knob takes the other.
+// A light accent (dark text on it) marks the root with .accent-light: knobs that
+// sit on an accent fill (value pills, round slider knobs, an on toggle's knob,
+// the dropdown indicator) are then cutouts showing the panel through the accent,
+// with text on them in the panel's text color. On a dark accent they stay white.
 function setAccentKnobColors(ink) {
-  if (!rootStyleWrite) return;
   const darkInk = !/^#f/i.test(String(ink).trim());
-  rootStyleWrite.setProperty('--accent-knob', darkInk ? '#1a1a1a' : '#f6f6f6');
-  rootStyleWrite.setProperty('--accent-knob-ink', darkInk ? '#f6f6f6' : 'rgba(20, 20, 20, 0.86)');
+  document.documentElement.classList.toggle('accent-light', darkInk);
 }
 
 function updateAccentColorsFromRgb(rgb) {

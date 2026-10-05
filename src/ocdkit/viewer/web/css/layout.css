@@ -279,6 +279,6 @@ html[data-ui="desktop"] body {
   }
 
   .toggle input:checked + .toggle-switch::after {
-    background: var(--accent-knob);
+    background: #1a1a1a;
   }
 }
