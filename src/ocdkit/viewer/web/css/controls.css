@@ -2552,10 +2552,11 @@ button:not(:disabled):hover {
 /* the view row keeps the toggle at its top while the projection dropdown's list
    opens in the flow below it (pushing the rows down) */
 .view-dim-row { align-items: flex-start; }
-/* Open / closed indicator (ViewerUI.makeMoon): a knob-sized circle shown as its
-   upper half, upright, when collapsed; open, it flips about the circle's center
-   to its lower half. In a heading it takes the heading's color; in a dropdown
-   pill it sits where a slider knob would, in the knob's color. */
+/* Open / closed indicator (ViewerUI.makeMoon): a two-tone knob. The whole
+   knob-sized circle is always there, faint; its solid half points right when
+   collapsed and swings a quarter turn about the circle's center to the bottom
+   when open. In a heading it takes the heading's color; in a dropdown pill it
+   sits where a slider knob would, in the knob's color. */
 .moon-indicator {
   position: relative;
   display: inline-block;
@@ -2564,20 +2565,29 @@ button:not(:disabled):hover {
   height: var(--slider-knob-size);
   color: inherit;
 }
+.moon-indicator::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.28;
+}
 .moon-indicator::before {
   content: '';
   position: absolute;
-  left: 0;
+  left: 50%;
   top: 0;
-  width: 100%;
-  height: 50%;
-  border-radius: var(--slider-knob-radius) var(--slider-knob-radius) 0 0;
+  width: 50%;
+  height: 100%;
+  border-radius: 0 var(--slider-knob-radius) var(--slider-knob-radius) 0;
   background: currentColor;
-  transform-origin: 50% 100%;
+  transform-origin: 0 50%;
   transition: transform 0.22s ease;
+  z-index: 1;
 }
 .moon-indicator[data-open='true']::before,
-.dropdown[data-open='true'] .moon-indicator::before { transform: rotate(180deg); }
+.dropdown[data-open='true'] .moon-indicator::before { transform: rotate(90deg); }
 .dropdown-toggle-moon {
   position: absolute;
   right: var(--slider-knob-inset);
