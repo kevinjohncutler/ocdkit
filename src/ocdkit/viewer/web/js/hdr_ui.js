@@ -46,6 +46,8 @@
   let pCanvas = null, pR = null, pHeadroom = null;
   let gainSliderEl = null, gainNumEl = null;     // HDR gain slider + number field
   function dropdownToggle() {
+    const pill = document.getElementById('imageCmapIconPill');   // the colormap icon, when the panel has one
+    if (pill) return pill;
     const sel = document.getElementById('imageCmapSelect');
     const wrap = sel && sel.closest('.dropdown--gradient-preview');
     return wrap ? wrap.querySelector('.dropdown-toggle') : null;
@@ -67,10 +69,14 @@
         updatePreview();
       });
     }
-    if (pCanvas.parentElement !== toggle) toggle.appendChild(pCanvas);   // (re)attach after a dropdown re-render
+    if (pCanvas.parentElement !== toggle) {
+      toggle.appendChild(pCanvas);   // (re)attach after a dropdown re-render
+      if (toggle.id === 'imageCmapIconPill') pCanvas.style.clipPath = 'none';   // (the icon pill clips it)
+    }
   }
   function cmapName() {
     const s = document.getElementById('imageCmapSelect'); const n = (s && s.value) || 'viridis';
+    if (document.getElementById('imageCmapIconPill')) return n;          // the icon shows every colormap, grayscale too
     const wrap = s && s.closest('.dropdown--gradient-preview');
     if (!wrap || !wrap.classList.contains('has-gradient')) return null;   // (the dropdown is plain now: the icon shows the colormap)
     return (n === 'gray' || n === 'gray-clip') ? null : n;
