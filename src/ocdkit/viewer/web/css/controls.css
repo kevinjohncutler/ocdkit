@@ -2540,3 +2540,12 @@ button:not(:disabled):hover {
 .icon-toggles[hidden] { display: none; }
 .icon-toggle-group .icon-toggle.icon-toggle--wide { flex: 1 1 auto; gap: 6px; }
 .icon-toggle--wide > .icon-toggle-text { font-weight: 600; letter-spacing: 0.02em; }
+/* compact value label (25k): shown over the number field, which takes over (full
+   value) while it is being typed in */
+.slider-thumb--compact { position: absolute; }
+.slider-thumb--compact .slider-thumb-label {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font: 600 0.72rem/1 inherit; font-family: inherit; pointer-events: none;
+}
+.slider-thumb--compact input.slider-thumb-input:not(:focus) { color: transparent; }
+.slider-thumb--compact:focus-within .slider-thumb-label { display: none; }

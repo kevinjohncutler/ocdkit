@@ -408,6 +408,28 @@
     }
   }
 
+  // Compact value labels for sliders with large ranges (max >= 10000, or
+  // data-compact="true" on the number field): at most 4 characters, with k / M
+  // suffixes (25, 250, 2.5k, 25k, 250k, 1M) instead of up to 7 digits.
+  function isCompactInput(inp) {
+    if (inp.dataset.compact === 'false') { return false; }
+    return inp.dataset.compact === 'true' || Number(inp.max) >= 10000;
+  }
+  function compactNumber(v) {
+    var x = Number(v);
+    if (!Number.isFinite(x)) { return String(v); }
+    var a = Math.abs(x), sign = x < 0 ? '-' : '';
+    var fmt = function (n, suffix) {
+      var r = n < 10 ? Math.round(n * 10) / 10 : Math.round(n);
+      return sign + String(r) + suffix;
+    };
+    if (a >= 999500) { return fmt(a / 1e6, 'M'); }
+    if (a >= 999.5) { return fmt(a / 1e3, 'k'); }
+    if (a >= 100) { return sign + String(Math.round(a)); }
+    if (a >= 10) { return sign + String(Math.round(a * 10) / 10).replace(/\.0$/, ''); }
+    return sign + String(Math.round(a * 100) / 100);
+  }
+
   // ---------------------------------------------------------------------------
   // Value-pill slider art: concentric pills
   // ---------------------------------------------------------------------------
@@ -506,6 +528,13 @@
       root.classList.add('slider--pills');
       if (sideField) { sideField.style.display = 'none'; }        // its input moves into the thumb
       thumbs.forEach(function (t, i) {
+        if (isCompactInput(pillInputs[i])) {          // large range: show 25k, not 25000 (full value while typing)
+          var lab = document.createElement('span');
+          lab.className = 'slider-thumb-label';
+          lab.setAttribute('aria-hidden', 'true');
+          t.classList.add('slider-thumb--compact');
+          t.appendChild(lab);
+        }
         pillInputs[i].classList.add('slider-thumb-input');
         t.classList.add('slider-thumb--pill');
         t.appendChild(pillInputs[i]);
@@ -561,6 +590,14 @@
     var pillWidth = function () {
       if (!pillW) {
         pillInputs.forEach(function (inp) {
+          if (isCompactInput(inp)) {                 // compact labels are at most 4 characters
+            // the widest labels this slider can show: the 3-digit and 1-decimal
+            // forms of each scale up to its max (888, 8.8k, 888k, 8.8M ...)
+            var mx = Math.abs(Number(inp.max)) || 0, mn = Number(inp.min);
+            [mn, mx, 8.88, 88.8, 888, 8800, 888000, 8.8e6, 888e6].filter(function (n) { return n <= Math.max(mx, Math.abs(mn)); })
+              .forEach(function (n) { pillW = Math.max(pillW, textWidth(inp, compactNumber(n))); });
+            return;
+          }
           var st = String(inp.step || '1'), dec = st.indexOf('.') >= 0 ? st.split('.')[1].length : 0;
           [inp.min, inp.max].forEach(function (v) {
             if (v !== '' && Number.isFinite(Number(v))) { pillW = Math.max(pillW, textWidth(inp, Number(v).toFixed(dec))); }
@@ -568,7 +605,9 @@
         });
       }
       if (entry.activePointer === null) {          // (frozen while dragging)
-        pillInputs.forEach(function (inp) { pillW = Math.max(pillW, textWidth(inp, String(inp.value))); });
+        pillInputs.forEach(function (inp) {
+          pillW = Math.max(pillW, textWidth(inp, isCompactInput(inp) ? compactNumber(inp.value) : String(inp.value)));
+        });
       }
       var minW = parseFloat(getComputedStyle(entry.root).getPropertyValue('--slider-pill-width')) || 32;
       return Math.max(minW, Math.ceil(pillW + 12));
@@ -590,6 +629,10 @@
         var pg = pillGeom();
         // dual: the low pill sits left of its value and the high pill right of it;
         // single: one pill, the fill runs from the track's start to it
+        entry.thumbs.forEach(function (t, i) {
+          var lab = t.querySelector('.slider-thumb-label');
+          if (lab) { lab.textContent = compactNumber(pillInputs[i].value); }
+        });
         var lefts = entry.inputs.map(function (inp, i) {
           return pg.g + (i === 1 ? pg.ws[0] : 0) + Math.round(pg.usable * valueToPercent(inp));
         });
