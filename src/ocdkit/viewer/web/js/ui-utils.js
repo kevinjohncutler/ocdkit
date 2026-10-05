@@ -1040,13 +1040,33 @@
   // re-aim). Shared by collapsible headings and dropdown toggles so the
   // glyph stays consistent across the UI. `currentColor` honors the host's
   // text color, so accent overrides keep working.
-  // Open / closed indicator: a knob-sized circle shown as its upper half (upright)
-  // when collapsed, flipping about the circle's center to its lower half when
-  // open. Open state: data-open="true" on it, or on an enclosing .dropdown.
+  // Open / closed indicator: a faint knob-sized circle with three rounded bars
+  // inside it, like a menu icon. The middle bar spans the diameter and the outer
+  // two are chords; every bar's rounded ends are tangent to the circle. Open,
+  // the outer bars slide to the middle and stretch into one line. Open state:
+  // data-open="true" on it, or on an enclosing open .dropdown.
   function makeMoon(opts) {
     var m = document.createElement('span');
     m.className = 'moon-indicator' + (opts && opts.className ? ' ' + opts.className : '');
     m.setAttribute('aria-hidden', 'true');
+    var R = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--slider-knob-radius')) || 8;
+    var t = 0.325 * R, o = 0.6 * R, r = t / 2;           // bar thickness, bar spacing
+    var cap = function (off) {                            // a bar `off` from the center, ends tangent to the circle
+      var a = Math.sqrt(Math.max(0, (R - r) * (R - r) - off * off));
+      return { left: R - a - r, width: 2 * (a + r), top: R + off - r };
+    };
+    var ring = document.createElement('span');
+    ring.className = 'moon-ring';
+    m.appendChild(ring);
+    var mid = cap(0);
+    [-o, 0, o].forEach(function (off) {
+      var c = cap(off), b = document.createElement('span');
+      b.className = 'moon-bar';
+      var px = function (v) { return v.toFixed(3) + 'px'; };
+      b.style.cssText = '--t:' + px(c.top) + ';--l:' + px(c.left) + ';--w:' + px(c.width) + ';--h:' + px(t) +
+        ';--to:' + px(mid.top) + ';--lo:' + px(mid.left) + ';--wo:' + px(mid.width) + ';';
+      m.appendChild(b);
+    });
     return m;
   }
 

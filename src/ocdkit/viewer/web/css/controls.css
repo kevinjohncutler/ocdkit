@@ -2552,11 +2552,10 @@ button:not(:disabled):hover {
 /* the view row keeps the toggle at its top while the projection dropdown's list
    opens in the flow below it (pushing the rows down) */
 .view-dim-row { align-items: flex-start; }
-/* Open / closed indicator (ViewerUI.makeMoon): a two-tone knob. The whole
-   knob-sized circle is always there, faint; its solid half points right when
-   collapsed and swings a quarter turn about the circle's center to the bottom
-   when open. In a heading it takes the heading's color; in a dropdown pill it
-   sits where a slider knob would, in the knob's color. */
+/* Open / closed indicator (ViewerUI.makeMoon): a faint knob-sized circle with
+   three rounded bars tangent to it (geometry set per bar by makeMoon); open, the
+   bars collapse into one line. In a heading it takes the heading's color; in a
+   dropdown pill it sits where a slider knob would, in the knob's color. */
 .moon-indicator {
   position: relative;
   display: inline-block;
@@ -2565,29 +2564,25 @@ button:not(:disabled):hover {
   height: var(--slider-knob-size);
   color: inherit;
 }
-.moon-indicator::after {
-  content: '';
+.moon-indicator .moon-ring {
   position: absolute;
   inset: 0;
   border-radius: 50%;
   background: currentColor;
-  opacity: 0.28;
+  opacity: 0.25;
 }
-.moon-indicator::before {
-  content: '';
+.moon-indicator .moon-bar {
   position: absolute;
-  left: 50%;
-  top: 0;
-  width: 50%;
-  height: 100%;
-  border-radius: 0 var(--slider-knob-radius) var(--slider-knob-radius) 0;
+  top: var(--t);
+  left: var(--l);
+  width: var(--w);
+  height: var(--h);
+  border-radius: 999px;
   background: currentColor;
-  transform-origin: 0 50%;
-  transition: transform 0.22s ease;
-  z-index: 1;
+  transition: top 0.24s ease, left 0.24s ease, width 0.24s ease;
 }
-.moon-indicator[data-open='true']::before,
-.dropdown[data-open='true'] .moon-indicator::before { transform: rotate(90deg); }
+.moon-indicator[data-open='true'] .moon-bar,
+.dropdown[data-open='true'] .moon-indicator .moon-bar { top: var(--to); left: var(--lo); width: var(--wo); }
 .dropdown-toggle-moon {
   position: absolute;
   right: var(--slider-knob-inset);
