@@ -369,9 +369,38 @@ function markAccentLive() {
 // sit on an accent fill (value pills, round slider knobs, an on toggle's knob,
 // the dropdown indicator) are then cutouts showing the panel through the accent,
 // with text on them in the panel's text color. On a dark accent they stay white.
+// The color the panels actually render: their translucent surface over the
+// viewer's background (what their backdrop blur sees). Text and icons on a light
+// accent use it, so they match the see-through knobs, which show the panel itself.
+function panelRenderedColor() {
+  const nums = (c) => (String(c).match(/[\d.]+/g) || []).map(Number);
+  const [sr, sg, sb, sa = 1] = nums(getComputedStyle(document.documentElement).getPropertyValue('--panel-surface'));
+  const viewerEl = document.getElementById('viewer');
+  const [br, bg, bb] = nums(viewerEl ? getComputedStyle(viewerEl).backgroundColor : 'rgb(17, 17, 17)');
+  if (![sr, sg, sb, br, bg, bb].every(Number.isFinite)) return null;
+  const mix = (s, b) => Math.round(sa * s + (1 - sa) * b);
+  return [mix(sr, br), mix(sg, bg), mix(sb, bb)];
+}
+function updateAccentCutout() {
+  if (!rootStyleWrite) return;
+  const c = panelRenderedColor();
+  // dark panels: the panel's rendered gray; light panels keep the dark ink (a light
+  // gray on a bright accent would not read)
+  if (c && (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255 < 0.5) {
+    rootStyleWrite.setProperty('--accent-cutout', `rgb(${c[0]}, ${c[1]}, ${c[2]})`);
+  } else {
+    rootStyleWrite.removeProperty('--accent-cutout');
+  }
+}
+try {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => requestAnimationFrame(updateAccentCutout));
+} catch (_) { /* old browsers */ }
+requestAnimationFrame(updateAccentCutout);   // (also when the saved accent was restored before this ran)
+
 function setAccentKnobColors(ink) {
   const darkInk = !/^#f/i.test(String(ink).trim());
   document.documentElement.classList.toggle('accent-light', darkInk);
+  updateAccentCutout();
   // text and icons on a light accent: the cutout color (the panel's own gray in
   // dark mode, so they match the see-through knobs; the dark ink in light mode)
   if (darkInk && rootStyleWrite) rootStyleWrite.setProperty('--accent-ink', 'var(--accent-cutout, ' + ink + ')');

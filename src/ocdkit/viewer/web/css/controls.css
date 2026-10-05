@@ -2643,11 +2643,11 @@ button:not(:disabled):hover {
 }
 
 /* The cutout color: text and icons on a light accent (app.js points --accent-ink
-   here). Dark mode: the panel's own gray as it renders (measured 45, 46, 47), so
-   they match the see-through knobs; light mode: the usual dark ink. */
+   here). app.js sets it to the panels' rendered gray (their surface over the
+   viewer background) in dark mode; these are the fallbacks before it runs. */
 :root { --accent-cutout: rgba(20, 20, 20, 0.86); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --accent-cutout: rgb(45, 46, 47); } }
-:root[data-theme="dark"] { --accent-cutout: rgb(45, 46, 47); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --accent-cutout: rgb(47, 47, 47); } }
+:root[data-theme="dark"] { --accent-cutout: rgb(47, 47, 47); }
 /* Hover previews the selected look: where a hovered option's background turns to
    the accent, its text / icon takes the accent's ink, as when selected. */
 .segmented-toggle .kernel-option:hover,
