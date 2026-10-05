@@ -2515,16 +2515,28 @@ button:not(:disabled):hover {
 .kernel-option > .seg-icon { position: relative; z-index: 1; width: 20px; height: 20px; display: block; margin: 0 auto; }
 /* brush options: the 2D / 3D brush segments and the snap button share a row */
 .brush-options-row { flex-direction: row; align-items: center; gap: 6px; }
-.brush-options-row .brush-dim-toggle { flex: 0 0 auto; width: 112px; }
+.brush-options-row .brush-dim-toggle { flex: 0 0 calc(50% - 3px); width: auto; }
 .brush-options-row .brush-dim-toggle[hidden] { display: none; }
-.brush-options-row .icon-toggle { flex: 0 0 56px; }
+.brush-options-row .icon-toggle { flex: 1 1 auto; }
 .brush-options-row .icon-toggle > svg { width: 18px; height: 18px; }
 /* row labels keep their width (normalizeLabelWidths sets one width per panel) */
 .slider-inline > .control-heading--lower, .label-style-row > .control-heading--lower { flex-shrink: 0; }
 /* the projection dropdown has no label: it spans the row */
-#projModeRow > .dropdown { flex: 1; width: 100%; max-width: none; min-width: 0; }
+#projModeRow .dropdown { flex: 1; width: 100%; max-width: none; min-width: 0; }
 /* the alpha / invert / HDR row sits under the colormap dropdown (an empty label
    column first): alpha and invert icon-sized, HDR takes the rest */
 .icon-toggle-group { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
 .icon-toggle-group .icon-toggle { flex: 0 0 36px; min-width: 0; }
 .icon-toggle-group #hdrToggleChip { flex: 1 1 auto; }
+/* view row: the 2D / 3D toggle on the left half; the axis buttons (2D) or the
+   projection dropdown (3D) on the right */
+.view-dim-row { flex-direction: row; align-items: center; gap: 6px; }
+.view-dim-row > #viewDimToggle { flex: 0 0 calc(50% - 3px); width: auto; }
+.view-dim-row > .view-mode-row, .view-dim-row > .view-proj { flex: 1 1 0; min-width: 0; }
+.view-dim-row > .view-mode-row > .view-mode-btn { flex: 1; }
+.view-proj { display: flex; }
+.view-proj[hidden] { display: none; }
+/* a wide icon toggle (self dimming): icon and text, spanning the track's extent */
+.icon-toggles[hidden] { display: none; }
+.icon-toggle-group .icon-toggle.icon-toggle--wide { flex: 1 1 auto; gap: 6px; }
+.icon-toggle--wide > .icon-toggle-text { font-weight: 600; letter-spacing: 0.02em; }

@@ -93,26 +93,26 @@
               </label>
             </div>
           </div>
-          <div class="control">
+          <div class="control view-dim-row">
             <div id="viewDimToggle" class="kernel-toggle segmented-toggle proj-mode-toggle" role="group" aria-label="View">
               <button type="button" class="kernel-option" data-view="2d" data-active="true" title="2D slices along one axis, with the slice slider" aria-label="2D slices"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3 15.5 12 19.5 21 15.5"/><path d="M3 11.5 12 15.5 21 11.5"/><path d="M12 3.5 21 7.5 12 11.5 3 7.5Z"/></svg></button>
-              <button type="button" class="kernel-option" data-view="3d" title="3D volume rendering (drag to rotate)" aria-label="3D volume"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M3.5 8.5H14.5V19.5H3.5Z"/><path d="M8.5 4.5H19.5V15.5H8.5" stroke-opacity="0.45" stroke-dasharray="1.6 1.6"/><path d="M3.5 8.5 8.5 4.5M14.5 8.5 19.5 4.5M14.5 19.5 19.5 15.5"/><path d="M8.5 4.5V15.5M3.5 19.5 8.5 15.5" stroke-opacity="0.45" stroke-dasharray="1.6 1.6"/><path d="M19.5 4.5V15.5"/></svg></button>
+              <button type="button" class="kernel-option" data-view="3d" title="3D volume rendering (drag to rotate)" aria-label="3D volume"><svg class="seg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8.5 4.5V15.5H19.5M3.5 19.5 8.5 15.5" stroke-opacity="0.4"/><path d="M3.5 8.5H14.5V19.5H3.5Z M3.5 8.5 8.5 4.5H19.5V15.5L14.5 19.5M14.5 8.5 19.5 4.5"/></svg></button>
             </div>
-          </div>
-          <div class="view-mode-row" id="sliceAxisRow">
-            <button type="button" class="view-mode-btn is-active" data-axis="0">Z</button>
-            <button type="button" class="view-mode-btn" data-axis="1">Y</button>
-            <button type="button" class="view-mode-btn" data-axis="2">X</button>
-          </div>
-          <div class="control slider-inline" id="projModeRow" hidden title="3D projection: how the volume is rendered">
-            <div class="dropdown dropdown--compact" data-dropdown-id="projModeSelect">
-              <select id="projModeSelect" aria-label="3D projection">
-                <option value="0" title="Emission-absorption: a translucent volume that glows with intensity; density sets how much nearer structures hide what is behind them">EA: emission-absorption</option>
-                <option value="1" title="Maximum intensity projection: the brightest voxel along each ray">MIP: maximum intensity</option>
-                <option value="2" title="Mean intensity along each ray">Mean intensity</option>
-                <option value="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP">MIDA</option>
-                <option value="4" title="Attenuated MIP (as in napari): each voxel's light is dimmed by the material between it and the camera, and each pixel shows the brightest light that still arrives. So nearer objects hide what is behind them, and only a clearly brighter object shows through. Values below the display window's low end are empty">AMIP: attenuated MIP</option>
-              </select>
+            <div class="view-mode-row" id="sliceAxisRow">
+              <button type="button" class="view-mode-btn is-active" data-axis="0">Z</button>
+              <button type="button" class="view-mode-btn" data-axis="1">Y</button>
+              <button type="button" class="view-mode-btn" data-axis="2">X</button>
+            </div>
+            <div class="view-proj" id="projModeRow" hidden>
+              <div class="dropdown dropdown--compact" data-dropdown-id="projModeSelect" data-option-tooltips="true">
+                <select id="projModeSelect" aria-label="3D projection">
+                  <option value="0" title="Emission-absorption: a translucent volume that glows with intensity; density sets how much nearer structures hide what is behind them">EA</option>
+                  <option value="1" title="Maximum intensity projection: the brightest voxel along each ray">MIP</option>
+                  <option value="2" title="Mean intensity along each ray">Mean</option>
+                  <option value="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP">MIDA</option>
+                  <option value="4" title="Attenuated MIP (as in napari): each voxel's light is dimmed by the material between it and the camera, and each pixel shows the brightest light that still arrives. So nearer objects hide what is behind them, and only a clearly brighter object shows through. Values below the display window's low end are empty">AMIP</option>
+                </select>
+              </div>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
@@ -189,12 +189,11 @@
               </div>
             </div>
           </div>
-          <div class="control label-style-row" id="amipSelfRow" hidden>
-            <span class="control-heading control-heading--lower" title="Self dimming: each voxel dims its own light by the material on half of its own path, so a ray grazing a voxel's edge shows it brighter than one through its middle (the gradient across each voxel cube). Off: each voxel shows its light as at its front face; only material in front of it dims it">self dimming</span>
-            <label class="toggle toggle-left" title="Self dimming: on = gradient across each voxel cube, off = flat">
-              <input type="checkbox" id="amipSelfToggle" checked />
-              <span class="toggle-switch"></span>
-            </label>
+          <div class="control slider-inline icon-toggles" id="amipSelfRow" hidden>
+            <span class="control-heading control-heading--lower" aria-hidden="true"></span>
+            <div class="icon-toggle-group">
+              <label class="icon-toggle icon-toggle--wide" title="Self dimming: each voxel dims its own light by the material on half of its own path, so a ray grazing a voxel's edge shows it brighter than one through its middle (the gradient across each voxel cube). Off: each voxel shows its light as at its front face; only material in front of it dims it"><input type="checkbox" id="amipSelfToggle" checked aria-label="Self dimming" /><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 20 7.5v9L12 21l-8-4.5v-9Z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/><path d="M12 12 20 7.5v9L12 21Z" fill="currentColor" fill-opacity="0.35" stroke="none"/></svg><span class="icon-toggle-text">self dimming</span></label>
+            </div>
           </div>
           <div class="control label-style-row" id="voxelWindowRow" hidden>
             <span class="control-heading control-heading--lower" title="Window per voxel (EA and MIDA): apply the display window to each voxel before compositing, so values below its low end are empty space and the voxel in front hides what is behind it. Off: the whole range composites and the window acts on the result, so dragging it only changes brightness and color.">per voxel</span>

@@ -970,7 +970,8 @@
         requestAnimationFrame(() => ViewerUI.refreshSlider("eaDensitySlider"));
       }
     }
-    // the projection dropdown
+    // the projection dropdown: short names; the selected mode's explanation is
+    // its tooltip, and each option's in the open list (data-option-tooltips)
     function syncProjButtons() {
       const sel = document.getElementById("projModeSelect");
       if (sel && String(sel.value) !== String(curProj)) {

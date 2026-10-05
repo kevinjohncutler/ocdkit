@@ -999,6 +999,7 @@
       return {
         value: opt.value,
         label: opt.textContent || opt.value,
+        title: opt.title || opt.dataset.tooltip || '',   // (the tooltip system may already have adopted the title)
         disabled: opt.disabled,
       };
     });
@@ -1048,12 +1049,12 @@
       var displayLabel = selectedOption ? selectedOption.textContent : 'Select';
       labelSpan.textContent = displayLabel;
       if (selectedOption) {
-        var fullLabel = selectedOption.dataset.fullPath || selectedOption.dataset.fullLabel || selectedOption.title || selectedOption.textContent;
+        var fullLabel = selectedOption.dataset.fullPath || selectedOption.dataset.fullLabel || selectedOption.title || selectedOption.dataset.tooltip || selectedOption.textContent;
         if (fullLabel) {
           if (entry.tooltipDisabled) {
             button.removeAttribute('title');
             button.removeAttribute('data-tooltip');
-          } else if (entry.id === 'imageNavigator') {
+          } else if (entry.id === 'imageNavigator' || root.dataset.optionTooltips === 'true') {
             button.dataset.tooltip = fullLabel;
             button.removeAttribute('title');
           } else {
@@ -1075,7 +1076,7 @@
       item.className = 'dropdown-option';
       item.dataset.value = opt.value;
       item.setAttribute('role', 'option');
-      if (opt.title && !entry.tooltipDisabled && entry.id === 'imageNavigator') {
+      if (opt.title && !entry.tooltipDisabled && (entry.id === 'imageNavigator' || root.dataset.optionTooltips === 'true')) {
         item.dataset.tooltip = opt.title;
       }
       if (opt.disabled) {
