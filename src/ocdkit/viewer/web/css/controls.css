@@ -15,6 +15,10 @@
   /* Opaque border for elements with colored backgrounds (no blending) */
   --border-opaque: rgba(90, 90, 90, 1);
   --slider-knob-color: #f5f5f5;
+  /* a knob on an accent fill, and text on that knob: the accent's text contrast
+     (set by app.js from --accent-ink; these are the default accent's values) */
+  --accent-knob: #1a1a1a;
+  --accent-knob-ink: #f6f6f6;
   --number-field-width: var(--toggle-width);
   --control-label-width: 44px;
   --toggle-width: 45px;
@@ -185,7 +189,7 @@
   width: var(--slider-knob-size);
   height: var(--slider-knob-size);
   border-radius: var(--slider-knob-rounding);
-  background: var(--slider-knob-color);
+  background: var(--accent-knob);
   box-shadow: none;
   transform: translate3d(-50%, -50%, 0);
   transition: transform 0.12s ease;
@@ -235,7 +239,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #171717;
+  color: var(--accent-knob-ink);
   cursor: grab;
 }
 .slider--pills[data-active='true'] .slider-thumb.slider-thumb--pill,
@@ -268,8 +272,8 @@
 .slider-pill-art .pill-art-track { fill: var(--slider-track-bg); }
 .slider-pill-art .pill-art-outline { fill: none; stroke: var(--slider-track-border); stroke-width: 1; }
 .slider-pill-art .pill-art-fill { fill: var(--accent-color); }
-.slider-pill-art .pill-art-handle { fill: var(--slider-knob-color); }
-.slider-pill-art .pill-art-handle.is-editing { fill: #ffffff; }
+.slider-pill-art .pill-art-handle { fill: var(--accent-knob); }
+.slider-pill-art .pill-art-handle.is-editing { fill-opacity: 0.85; }
 .slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
 /* (native iOS sliders keep the value fields below the track) */
 .clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
@@ -339,7 +343,7 @@
 
 .slider[data-focused='true'] .slider-thumb {
   transform: translate(-50%, -50%) scale(1.12);
-  background: var(--slider-knob-color);
+  background: var(--accent-knob);
 }
 
 .slider[data-focused='true'] .slider-track {
@@ -703,7 +707,7 @@
 
 .toggle input:checked + .toggle-switch::after {
   transform: translate(calc(var(--toggle-width) - (2 * var(--slider-knob-inset)) - var(--slider-knob-size)), -50%);
-  background: var(--slider-knob-color);
+  background: var(--accent-knob);   /* on the accent fill */
 }
 
 .toggle-label {
@@ -2552,8 +2556,8 @@ button:not(:disabled):hover {
 /* the view row keeps the toggle at its top while the projection dropdown's list
    opens in the flow below it (pushing the rows down) */
 .view-dim-row { align-items: flex-start; }
-/* Open / closed indicator (ViewerUI.makeMoon): a faint knob-sized circle with
-   three rounded bars tangent to it (geometry set per bar by makeMoon); open, the
+/* Open / closed indicator (ViewerUI.makeMoon): three rounded bars tangent to a
+   knob-sized circle (geometry set per bar by makeMoon); open, the
    bars collapse into one line. In a heading it takes the heading's color; in a
    dropdown pill it sits where a slider knob would, in the knob's color. */
 .moon-indicator {
@@ -2564,13 +2568,7 @@ button:not(:disabled):hover {
   height: var(--slider-knob-size);
   color: inherit;
 }
-.moon-indicator .moon-ring {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.25;
-}
+.moon-indicator .moon-ring { display: none; }   /* (the faint knob behind the bars, off) */
 .moon-indicator .moon-bar {
   position: absolute;
   top: var(--t);
@@ -2588,6 +2586,8 @@ button:not(:disabled):hover {
   right: var(--slider-knob-inset);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--slider-knob-color);
+  color: var(--accent-ink);   /* the dropdown's text color */
   pointer-events: none;
 }
+/* the hue-offset knob sits on a colormap gradient, not the accent: it stays light */
+.slider--gradient-track .slider-thumb { background: var(--slider-knob-color); }

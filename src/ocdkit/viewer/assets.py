@@ -224,7 +224,12 @@ RESTORE_ACCENT_SCRIPT = """<script>
         var s = document.documentElement.style;
         s.setProperty('--accent-color', a.c);
         if (a.h) s.setProperty('--accent-hover', a.h);
-        if (a.k) s.setProperty('--accent-ink', a.k);
+        if (a.k) {
+          s.setProperty('--accent-ink', a.k);
+          var dk = !/^#f/i.test(String(a.k).trim());   // (as setAccentKnobColors in app.js)
+          s.setProperty('--accent-knob', dk ? '#1a1a1a' : '#f6f6f6');
+          s.setProperty('--accent-knob-ink', dk ? '#f6f6f6' : 'rgba(20, 20, 20, 0.86)');
+        }
       }
     }
   } catch(_){}

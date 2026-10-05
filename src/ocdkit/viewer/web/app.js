@@ -365,6 +365,16 @@ function markAccentLive() {
   }, 140);
 }
 
+// Knobs that sit on an accent fill (slider handles, value pills, an on toggle's
+// knob, the dropdown indicator) take the same contrast as the accent's text, opaque:
+// dark on a light accent, light on a dark one. Text on such a knob takes the other.
+function setAccentKnobColors(ink) {
+  if (!rootStyleWrite) return;
+  const darkInk = !/^#f/i.test(String(ink).trim());
+  rootStyleWrite.setProperty('--accent-knob', darkInk ? '#1a1a1a' : '#f6f6f6');
+  rootStyleWrite.setProperty('--accent-knob-ink', darkInk ? '#f6f6f6' : 'rgba(20, 20, 20, 0.86)');
+}
+
 function updateAccentColorsFromRgb(rgb) {
   if (!rootStyleWrite || !Array.isArray(rgb) || rgb.length < 3) {
     return;
@@ -376,6 +386,7 @@ function updateAccentColorsFromRgb(rgb) {
   rootStyleWrite.setProperty('--accent-color', base);
   rootStyleWrite.setProperty('--accent-hover', hover);
   rootStyleWrite.setProperty('--accent-ink', ink);
+  setAccentKnobColors(ink);
   accentColor = base;
   // Persist accent for instant restore on reload (avoids yellow flash)
   try {
@@ -396,6 +407,7 @@ function resetAccentColors() {
   const parsed = parseCssColor(accentColorDefault);
   if (parsed) {
     rootStyleWrite.setProperty('--accent-ink', readableTextColor(parsed));
+    setAccentKnobColors(readableTextColor(parsed));
   }
   accentColor = accentColorDefault;
   try { localStorage.removeItem('__viewer_accent'); } catch (_) {}
