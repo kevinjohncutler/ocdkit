@@ -2549,3 +2549,22 @@ button:not(:disabled):hover {
 }
 .slider-thumb--compact input.slider-thumb-input:not(:focus) { color: transparent; }
 .slider-thumb--compact:focus-within .slider-thumb-label { display: none; }
+/* the view row keeps the toggle at its top while the projection dropdown's list
+   opens in the flow below it (pushing the rows down) */
+.view-dim-row { align-items: flex-start; }
+/* dropdown arrow: a half moon the size of a slider knob, where a knob would sit
+   at the pill's right end: its lower half when closed, rotating up about the
+   knob's center to its upper half when open */
+.dropdown-toggle-moon {
+  position: absolute;
+  right: var(--slider-knob-inset);
+  top: calc(var(--slider-track-height) / 2);
+  width: var(--slider-knob-size);
+  height: var(--slider-knob-radius);
+  border-radius: 0 0 var(--slider-knob-radius) var(--slider-knob-radius);
+  background: var(--slider-knob-color);
+  transform-origin: 50% 0;
+  transition: transform 0.22s ease;
+  pointer-events: none;
+}
+.dropdown[data-open='true'] .dropdown-toggle-moon { transform: rotate(180deg); }

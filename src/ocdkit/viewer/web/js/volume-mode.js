@@ -890,6 +890,19 @@
       });
     }
 
+    // ── AMIP self dimming: a switch in the view panel's right-click menu (AMIP only) ──
+    {
+      const vpanel = document.getElementById("viewModePanel");
+      if (vpanel) vpanel.addEventListener("contextmenu", (e) => {
+        if (mode !== "3d" || curProj !== 4 || !(window.ViewerUI && ViewerUI.openPanelMenu)) return;
+        ViewerUI.openPanelMenu(e, [{
+          label: "Self dimming",
+          tip: "Each voxel dims its own light by half its own path, so a ray grazing a voxel's edge shows it brighter than one through its middle (a gradient across each voxel cube). Off: each voxel shows as at its front face",
+          checked: curAmipSelf,
+          onChange: (on) => { const t = document.getElementById("amipSelfToggle"); if (t) { t.checked = on; t.dispatchEvent(new Event("change", { bubbles: true })); } },
+        }]);
+      });
+    }
     // ── AMIP self-dimming toggle (AMIP only) ──
     const ssRow = document.getElementById("amipSelfRow");
     const ssToggle = document.getElementById("amipSelfToggle");
@@ -918,7 +931,7 @@
       syncSpinRow();
       if (lvRow) lvRow.hidden = !SHOW_LEVEL_FADE || mode !== "3d";
       if (fzRow) fzRow.hidden = !SHOW_LEVEL_FADE || mode !== "3d";
-      if (ssRow) ssRow.hidden = !(mode === "3d" && curProj === 4);
+      if (ssRow) ssRow.hidden = true;                   // self dimming: in the view panel's right-click menu (AMIP)
       if (bmRow) {
         const showBm = mode === "3d" && curProj === 4;
         const wasHiddenB = bmRow.hidden;

@@ -130,9 +130,11 @@
     const sw = document.getElementById('hdrToggle');
     if (sw) sw.checked = api.enabled;
     // gain + measured headroom only matter while HDR is on
+    // gain + headroom: shown while HDR is on and the gain slider is switched on
+    // in the image panel's right-click menu
     for (const id of ['hdrGainRow', 'hdrHeadroomVal']) {
       const el = document.getElementById(id);
-      if (el) el.style.display = api.enabled ? '' : 'none';
+      if (el) el.style.display = (api.enabled && api.gainVisible) ? '' : 'none';
     }
     if (window.ViewerUI && ViewerUI.normalizeLabelWidths) ViewerUI.normalizeLabelWidths();
     // re-measure the gain slider once visible (measured while hidden it is 0 wide)
@@ -173,6 +175,27 @@
     if (window.__refreshCmapIcon) window.__refreshCmapIcon();   // the colormap icon shows the transparency too
   };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
+  // The gain slider is hidden unless switched on (image panel, right-click).
+  const GAIN_VIS_STORE = 'ocdkit-hdr-gain-visible';
+  try { api.gainVisible = localStorage.getItem(GAIN_VIS_STORE) === '1'; } catch (e) { api.gainVisible = false; }
+  api.setGainVisible = function (on) {
+    api.gainVisible = !!on;
+    try { localStorage.setItem(GAIN_VIS_STORE, api.gainVisible ? '1' : '0'); } catch (e) {}
+    apply();
+  };
+  (function attachGainMenu() {
+    const panel = document.getElementById('intensityPanel');
+    if (!panel) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachGainMenu); return; }
+    panel.addEventListener('contextmenu', function (e) {
+      if (!api.available || !(window.ViewerUI && ViewerUI.openPanelMenu)) return;
+      ViewerUI.openPanelMenu(e, [{
+        label: 'HDR gain slider',
+        tip: 'Show the HDR gain slider (a multiple of the display headroom) while HDR is on',
+        checked: api.gainVisible,
+        onChange: function (on) { api.setGainVisible(on); },
+      }]);
+    });
+  })();
 
   function injectStyle() {
     const css =

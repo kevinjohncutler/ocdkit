@@ -935,6 +935,42 @@
     else { startNormalize(); }
   }
 
+  // A small right-click menu of switches, styled like the histogram's: items are
+  // { label, tip, checked, onChange(checked) }. Returns the menu element.
+  var panelMenuEl = null;
+  function closePanelMenu() { if (panelMenuEl) { panelMenuEl.remove(); panelMenuEl = null; } }
+  function openPanelMenu(evt, items) {
+    evt.preventDefault();
+    evt.stopPropagation();                         // (the panel's own context menu would open on top)
+    closePanelMenu();
+    var m = document.createElement('div');
+    m.className = 'histogram-menu';
+    items.forEach(function (it) {
+      var r = document.createElement('label');
+      r.className = 'histogram-menu-row';
+      if (it.tip) { r.dataset.tooltip = it.tip; }
+      r.innerHTML = '<span></span><span class="toggle toggle-left"><input type="checkbox" /><span class="toggle-switch"></span></span>';
+      r.firstChild.textContent = it.label;
+      var cb = r.querySelector('input');
+      cb.checked = !!it.checked;
+      cb.addEventListener('change', function () { it.onChange(cb.checked); });
+      m.appendChild(r);
+    });
+    document.body.appendChild(m);
+    var w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.min(evt.clientX, window.innerWidth - w - 8) + 'px';
+    m.style.top = Math.min(evt.clientY, window.innerHeight - h - 8) + 'px';
+    panelMenuEl = m;
+    setTimeout(function () {
+      var off = function (e) {
+        if (panelMenuEl && !panelMenuEl.contains(e.target)) { closePanelMenu(); document.removeEventListener('pointerdown', off, true); }
+      };
+      document.addEventListener('pointerdown', off, true);
+    }, 0);
+    return m;
+  }
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closePanelMenu(); } });
+
   function refreshSlider(id) {
     var entry = sliderRegistry.get(id);
     if (entry && typeof entry.apply === 'function') {
@@ -1059,7 +1095,12 @@
     var labelSpan = document.createElement('span');
     labelSpan.className = 'dropdown-label';
     button.appendChild(labelSpan);
-    button.appendChild(makeChevron({ className: 'dropdown-toggle-chevron' }));
+    // a half moon the size of a slider knob, sitting where a knob would: its
+    // lower half when closed, rotating up about the knob's center when open
+    var moon = document.createElement('span');
+    moon.className = 'dropdown-toggle-moon';
+    moon.setAttribute('aria-hidden', 'true');
+    button.appendChild(moon);
     var menu = document.createElement('div');
     menu.className = 'dropdown-menu';
     menu.setAttribute('role', 'listbox');
@@ -1686,6 +1727,7 @@
     registerDropdown: registerDropdown,
     refreshDropdown: refreshDropdown,
     normalizeLabelWidths: scheduleNormalizeLabelWidths,
+    openPanelMenu: openPanelMenu,
     openDropdown: openDropdown,
     closeDropdown: closeDropdown,
     toggleDropdown: toggleDropdown,
