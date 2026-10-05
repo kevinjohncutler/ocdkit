@@ -468,10 +468,18 @@
       console.warn('slider ' + id + ' configured as dual but only one range input found');
       return;
     }
-    // Value pills: a dual slider whose root also holds two number inputs
-    // (class slider-thumb-input) draws them AS its thumbs: each thumb is a pill
-    // showing its value; drag it to slide, click it to type.
+    // Value pills: the slider's number fields become its thumbs, each a pill
+    // showing its value; drag it to slide, click it to type. A dual slider holds
+    // its two (class slider-thumb-input) inside its root; a single slider uses the
+    // number field beside it in its .slider-row, which is then hidden.
     var pillInputs = Array.from(root.querySelectorAll('input.slider-thumb-input'));
+    var sideField = null;
+    if (type !== 'dual' && !pillInputs.length && !root.classList.contains('slider--gradient-track')) {
+      var row = root.parentElement;
+      var nf = row && row.classList.contains('slider-row') ? row.querySelector(':scope > .number-field') : null;
+      var ni = nf ? nf.querySelector('input[type="number"]') : null;
+      if (ni) { sideField = nf; pillInputs = [ni]; }
+    }
     if (isIOSDevice && isSafariWebKit) {
       root.classList.add('slider-native');
       if (!root.querySelector('.slider-native-track')) {
@@ -515,17 +523,22 @@
         || Math.round(e.track.clientHeight / 2);
     };
 
-    var pills = type === 'dual' && pillInputs.length === 2;
+    var pills = pillInputs.length === thumbs.length && (type === 'dual' ? thumbs.length === 2 : thumbs.length === 1);
     var art = null;
     if (pills) {
       root.classList.add('slider--pills');
-      thumbs.forEach(function (t, i) { t.classList.add('slider-thumb--pill'); t.appendChild(pillInputs[i]); });
+      if (sideField) { sideField.style.display = 'none'; }        // its input moves into the thumb
+      thumbs.forEach(function (t, i) {
+        pillInputs[i].classList.add('slider-thumb-input');
+        t.classList.add('slider-thumb--pill');
+        t.appendChild(pillInputs[i]);
+      });
       // track, fill and handles drawn as one SVG, each an exact offset of the next
       var NS = 'http://www.w3.org/2000/svg';
       art = { svg: document.createElementNS(NS, 'svg') };
       art.svg.setAttribute('class', 'slider-pill-art');
       art.svg.setAttribute('aria-hidden', 'true');
-      ['track', 'outline', 'fill', 'h0', 'h1'].forEach(function (k) {
+      ['track', 'outline', 'fill'].concat(thumbs.map(function (_, i) { return 'h' + i; })).forEach(function (k) {
         var p = document.createElementNS(NS, 'path');
         p.setAttribute('class', 'pill-art-' + (k[0] === 'h' ? 'handle' : k));
         art.svg.appendChild(p);
@@ -558,36 +571,47 @@
     // pill's left edge and the high pill's left edge minus w both travel over the
     // same usable length, so the pills meet (never overlap) when lo == hi, and the
     // fill spans both pills like one longer pill.
+    // Each pill is as wide as its value needs (at least --slider-pill-width).
+    var measureCtx = null;
+    var pillWidth = function (i) {
+      var inp = pillInputs[i], cs = getComputedStyle(inp);
+      var minW = parseFloat(getComputedStyle(entry.root).getPropertyValue('--slider-pill-width')) || 32;
+      if (!measureCtx) { measureCtx = document.createElement('canvas').getContext('2d'); }
+      measureCtx.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+      return Math.max(minW, Math.ceil(measureCtx.measureText(String(inp.value)).width + 14));
+    };
     var pillGeom = function () {
-      var w = entry.thumbs[0].offsetWidth || 40;
+      var ws = entry.thumbs.map(function (t, i) { var w = pillWidth(i); t.style.width = w + 'px'; return w; });
       var g = Math.max(0, (entry.track.clientHeight - entry.thumbs[0].offsetHeight) / 2);
-      return { w: w, g: g, usable: Math.max(0, entry.track.clientWidth - 2 * w - 2 * g) };
+      var sum = ws.reduce(function (a, b) { return a + b; }, 0);
+      return { ws: ws, w: ws[0], g: g, usable: Math.max(0, entry.track.clientWidth - sum - 2 * g) };
     };
 
     var apply = function () {
       if (entry.pills) {
-        var lo = entry.inputs[0], hi = entry.inputs[1];
-        if (Number(lo.value) > Number(hi.value)) { var t0 = lo.value; lo.value = hi.value; hi.value = t0; }
+        var dual = entry.type === 'dual';
+        if (dual && Number(entry.inputs[0].value) > Number(entry.inputs[1].value)) {
+          var t0 = entry.inputs[0].value; entry.inputs[0].value = entry.inputs[1].value; entry.inputs[1].value = t0;
+        }
         var pg = pillGeom();
-        var p0 = Math.round(pg.usable * valueToPercent(lo)), p1 = Math.round(pg.usable * valueToPercent(hi));
-        var r = trackRadiusOf(entry);
-        entry.track.style.setProperty('--slider-track-radius', r + 'px');
-        entry.track.style.setProperty('--slider-fill-left', p0 + 'px');
-        entry.track.style.setProperty('--slider-fill-px', (p1 - p0 + 2 * pg.w + 2 * pg.g - 2 * r) + 'px');
-        entry.thumbs[0].style.left = (pg.g + p0) + 'px';
-        entry.thumbs[1].style.left = (pg.g + pg.w + p1) + 'px';
+        // dual: the low pill sits left of its value and the high pill right of it;
+        // single: one pill, the fill runs from the track's start to it
+        var lefts = entry.inputs.map(function (inp, i) {
+          return pg.g + (i === 1 ? pg.ws[0] : 0) + Math.round(pg.usable * valueToPercent(inp));
+        });
+        entry.thumbs.forEach(function (t, i) { t.style.left = lefts[i] + 'px'; });
         if (art) {
-          var W = entry.track.clientWidth, Hh = entry.track.clientHeight, cy = Hh / 2;
-          var hb = entry.thumbs[0].offsetHeight / 2, cc = Math.min(1.1 * hb, pg.w / 2 - 1);
+          var W = entry.track.clientWidth, Hh = entry.track.clientHeight, cy = Hh / 2, gap = pg.g;
+          var hb = entry.thumbs[0].offsetHeight / 2;
+          var cc = Math.min(1.1 * hb, Math.min.apply(null, pg.ws) / 2 - 1);
           var inset = parseFloat(getComputedStyle(entry.root).getPropertyValue('--control-inset')) || 1;   // fill inside the track, as on plain sliders
-          var L0 = pg.g + p0, L1 = pg.g + pg.w + p1, gap = pg.g;          // handle box lefts; gap to the track edge
+          var last = lefts.length - 1;
           art.svg.setAttribute('viewBox', '0 0 ' + W + ' ' + Hh);
           art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
           art.track.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap));
           art.outline.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap - 0.5));
-          art.fill.setAttribute('d', pillPath(L0 + cc, L1 + pg.w - cc, cy, hb, cc, gap - inset));
-          art.h0.setAttribute('d', pillPath(L0 + cc, L0 + pg.w - cc, cy, hb, cc, 0));
-          art.h1.setAttribute('d', pillPath(L1 + cc, L1 + pg.w - cc, cy, hb, cc, 0));
+          art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + cc, lefts[last] + pg.ws[last] - cc, cy, hb, cc, gap - inset));
+          lefts.forEach(function (L, i) { art['h' + i].setAttribute('d', pillPath(L + cc, L + pg.ws[i] - cc, cy, hb, cc, 0)); });
         }
         return;
       }
@@ -690,7 +714,7 @@
     // pills: the pointer's x -> the dragged pill's value, keeping the grab point
     var pillPercent = function (evt, index, grab) {
       var pg = pillGeom(), rect = entry.root.getBoundingClientRect();
-      var left = evt.clientX - rect.left - grab - pg.g - (index === 1 ? pg.w : 0);
+      var left = evt.clientX - rect.left - grab - pg.g - (index === 1 ? pg.ws[0] : 0);
       return pg.usable > 0 ? clamp(left / pg.usable, 0, 1) : 0;
     };
     var onPillDown = function (evt) {
@@ -701,7 +725,7 @@
       var index = hit, grab;
       if (index < 0) {                             // on the track: the nearer pill, centered on the pointer
         var cx = entry.thumbs.map(function (t) { var b = t.getBoundingClientRect(); return Math.abs(evt.clientX - (b.left + b.width / 2)); });
-        index = cx[0] <= cx[1] ? 0 : 1;
+        index = cx.length < 2 || cx[0] <= cx[1] ? 0 : 1;
         grab = entry.thumbs[index].offsetWidth / 2;
       } else {
         grab = evt.clientX - entry.thumbs[index].getBoundingClientRect().left;
