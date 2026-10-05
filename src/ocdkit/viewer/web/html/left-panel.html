@@ -124,7 +124,7 @@
               <button type="button" class="kernel-option" data-proj="1" title="Maximum intensity projection: the brightest voxel along each ray"><span>MIP</span></button>
               <button type="button" class="kernel-option" data-proj="2" title="Mean intensity along each ray"><span>Mean</span></button>
               <button type="button" class="kernel-option" data-proj="3" title="MIDA (maximum intensity difference accumulation): translucent like EA, but a brighter voxel further back still shows through, as in MIP"><span>MIDA</span></button>
-              <button type="button" class="kernel-option" data-proj="4" title="Block: bright structures block the light from behind them, in proportion to their brightness relative to that light, and cumulatively: a thick enough dim region hides even very bright light behind it. Brightness weights brightness against thickness; block depth is how much material it takes. Values below the display window's low end are empty"><span>Block</span></button>
+              <button type="button" class="kernel-option" data-proj="4" title="Scatter (MIP of transmitted light): each voxel's light is scattered out of the beam by the material between it and the camera, and each pixel shows the brightest light that still arrives. So objects in front hide what is behind them, deeper things are seen through more material, and only a very bright source shows through an object of similar size. Values below the display window's low end are empty"><span>Scatter</span></button>
             </div>
           </div>
           <div class="control slider-inline" id="depthCueRow" hidden
@@ -178,26 +178,26 @@
             </div>
           </div>
           <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Brightness: how much a blocker's brightness, relative to the light behind it, matters against its thickness. A voxel blocks at the rate (its brightness / the light behind)^brightness: 0 = only thickness matters (any material blocks), 1 = half as bright blocks at half the rate, 3 = only material nearly as bright blocks noticeably. Faint background barely blocks at 2 and above">
-            <span class="control-heading control-heading--lower">brightness</span>
+               title="Haze: how much less faint material scatters. Each voxel scatters light in proportion to its brightness (on the display window) raised to this power: 1 = in proportion to brightness, 2 = to its square, 4 = only bright material scatters noticeably. Raise it if faint background dims what is behind it">
+            <span class="control-heading control-heading--lower">haze</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="0" max="4" step="0.05" value="2" />
+                <input type="range" id="blockSoftSlider" min="1" max="4" step="0.05" value="2" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="0" max="4" step="0.1" value="2.00" />
+                <input type="number" id="blockSoftInput" min="1" max="4" step="0.1" value="2.00" />
               </div>
             </div>
           </div>
           <div class="control slider-inline" id="blockMinRow" hidden
-               title="Block depth (voxels, 0.5 to 100): how many voxels of material as bright as the light behind it hide 95% of that light. Dimmer material needs more (see brightness). Blocking accumulates, so a thick dim region can hide a bright one behind it. Larger values approach MIP">
-            <span class="control-heading control-heading--lower">block depth</span>
+               title="Scatter depth (voxels, 0.5 to 100): how many voxels of full-brightness material scatter away 95% of the light passing through. Smaller: objects hide what is behind them sooner. Larger: closer to MIP">
+            <span class="control-heading control-heading--lower">scatter depth</span>
             <div class="slider-row">
               <div class="slider" id="blockMinSliderRoot" data-slider-type="single">
-                <input type="range" id="blockMinSlider" min="0" max="1" step="0.001" value="0.6962" />
+                <input type="range" id="blockMinSlider" min="0" max="1" step="0.001" value="0.5233" />
               </div>
               <div class="number-field" data-number-id="blockMinInput">
-                <input type="number" id="blockMinInput" min="0.5" max="100" step="1" value="20" />
+                <input type="number" id="blockMinInput" min="0.5" max="100" step="1" value="8.0" />
               </div>
             </div>
           </div>

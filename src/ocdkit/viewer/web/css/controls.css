@@ -1324,13 +1324,17 @@ button:not(:disabled):hover {
 }
 
 
-/* 3D projection selector (EA / MIP / Mean): text labels in the segmented style.
+/* 3D projection selector (EA / MIP / Mean / MIDA / Scatter): text labels in the
+   segmented style. Five labels of different lengths share one row, so each option
+   is sized by its label instead of an equal share.
    The label is positioned so it paints above the active-option highlight
    (an absolutely positioned ::before), like the icon selectors' content. */
 .proj-mode-toggle .kernel-option {
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  padding: 0 4px;
 }
 
 .proj-mode-toggle .kernel-option > span {

@@ -596,23 +596,6 @@ def _surface_cube(dev, n=20, lo=7, hi=13, value=0.9, background=0.5):
     return Scene(dev, vol, np.zeros(vol.shape, np.uint8))
 
 
-@pytest.mark.parametrize("density", [0.0, 0.3, 1.0])
-def test_block_uniform_block_is_one_flat_surface(dev, density):
-    """A uniform 6^3 block lights up once, at its outer surface: every pixel it
-    covers shows its windowed value exactly (no lines where voxels share a face),
-    whatever the density, and the background below the window is empty."""
-    sc = _surface_cube(dev)
-    inv, *_ = _ortho(0.6, 0.4, 16.0)
-    u = _uniform(inv, (20, 20, 20), 4, density=density, show_lab=0, exposure=0.0, window=(0.6, 1.0))
-    out = sc.compute(u, 4, 1, 0, 128, 128, faces=0.0)[..., 3]
-    mip = sc.compute(_uniform(inv, (20, 20, 20), 1, show_lab=0, window=(0.6, 1.0)), 1, 1, 0, 128, 128)[..., 3]
-    core, empty = mip > 0.7, mip == 0.0
-    expect = (0.9 - 0.6) / 0.4
-    assert core.mean() > 0.05 and empty.mean() > 0.3
-    assert np.abs(out[core] - expect).max() < 2e-3
-    assert out[empty].max() == 0.0
-
-
 def test_block_brick_skipping_changes_nothing(dev):
     rng = np.random.default_rng(5)
     vol = (rng.random((40, 36, 44)) * 0.5).astype(np.float16)
@@ -699,10 +682,11 @@ def test_depth_cue_fades_the_far_object_in_every_mode(dev, mode):
     # EA, mean and MIDA window their RESULT, so they get the full window here; the
     # cue's data box is the voxels above 0.5 either way
     window = (0.6, 1.0) if mode == 4 else (0.0, 1.0)
-    u = _cue(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=window, exposure=0.3),
-             vol, 0.5, 0.6)
-    on = sc.compute(u, mode, 1, 0, 128, 128, cue=1)[..., 3]
-    off = sc.compute(u, mode, 1, 0, 128, 128, cue=0)[..., 3]
+    u = _cue(_uniform(inv, (48, 48, 48), mode, density=0.3, show_lab=0, window=window,
+                      exposure=8.0 if mode == 4 else 0.3), vol, 0.5, 0.6)
+    q = 2.0 if mode == 4 else 0.0                         # (Scatter: haze power)
+    on = sc.compute(u, mode, 1, 0, 128, 128, cue=1, faces=q)[..., 3]
+    off = sc.compute(u, mode, 1, 0, 128, 128, cue=0, faces=q)[..., 3]
     near, far = _cube_masks(off)
     f_on, b_on = on[near].mean(), on[far].mean()
     f_off, b_off = off[near].mean(), off[far].mean()
@@ -721,9 +705,10 @@ def test_depth_cue_brick_skipping_changes_nothing(dev, mode):
     bz, by, bx = [-(-d // BRICK) for d in vol.shape]
     full.bimg = _tex(dev, "r16float", (bx, by, bz), np.ones((bz, by, bx), np.float16).tobytes(), bx * 2)
     inv, *_ = _ortho(0.8, 0.35, 30.0)
-    u = _cue(_uniform(inv, (44, 36, 40), mode, density=0.3, show_lab=0, window=(0.55, 1.0)), vol, 0.55, 0.6)
-    a = sc.compute(u, mode, 1, 0, 128, 128, faces=0.0, cue=1)[..., 3]
-    b = full.compute(u, mode, 1, 0, 128, 128, faces=0.0, cue=1)[..., 3]
+    u = _cue(_uniform(inv, (44, 36, 40), mode, density=0.3, show_lab=0, window=(0.55, 1.0), exposure=8.0), vol, 0.55, 0.6)
+    q = 2.0 if mode == 4 else 0.0                         # (Scatter: haze power)
+    a = sc.compute(u, mode, 1, 0, 128, 128, faces=q, cue=1)[..., 3]
+    b = full.compute(u, mode, 1, 0, 128, 128, faces=q, cue=1)[..., 3]
     assert a.max() > 0.2
     assert np.abs(a - b).max() < 2e-3
 
@@ -751,14 +736,15 @@ def test_depth_cue_keeps_the_near_object_under_a_high_window(dev, mode):
     assert on[far].mean() < 0.8 * off[far].mean()
 
 
-def _block_voxel(C, v, L, p, k):
-    """numpy mirror of blockVoxel in raymarch_compute.wgsl."""
-    if v > C:
-        return v
-    if v <= 0:
-        return C
-    r = v / max(C, 1e-6)
-    return v + (C - v) * np.exp(-k * r ** p * L)
+def _scatter_column(col, depth, q):
+    """numpy mirror of Scatter (MODE 4) along a straight ray through windowed values
+    `col` (front first), one voxel of path each."""
+    k, tau, best = 3.0 / depth, 0.0, 0.0
+    for v in col:
+        d = k * v ** q if v > 0 else 0.0
+        best = max(best, v * np.exp(-(tau + 0.5 * d)))
+        tau += d
+    return best
 
 
 def _slab_scene(dev, thick, n=48, front=0.7, back=0.95, gap=6):
@@ -775,68 +761,69 @@ _A = (float(np.float16(0.7)) - 0.6) / 0.4       # the slab, windowed (0.25)
 _B = (float(np.float16(0.95)) - 0.6) / 0.4      # the cube, windowed (0.875)
 
 
-def test_block_brightness_does_not_stack(dev):
-    """Inside a uniform object the light settles at its value: a 24-voxel-deep
-    block reads exactly its windowed value, like a 2-voxel one."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    outs = []
-    for deep in (2, 24):
-        vol = np.zeros((48, 48, 48), np.float16)
-        vol[10:10 + deep, 18:30, 18:30] = 0.9
-        sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
-        u = _uniform(inv, (48, 48, 48), 4, density=0.5, show_lab=0, window=(0.6, 1.0), exposure=3.0)
-        outs.append(sc.compute(u, 4, 1, 0, 128, 128, faces=0.3)[60:68, 60:68, 3])
-    for o in outs:
-        assert np.abs(o - 0.75).max() < 2e-3
+def _windowed_column(vol, y, x, lo=0.6, hi=1.0):
+    return np.clip((vol[:, y, x].astype(np.float32) - lo) / (hi - lo), 0, 1)
 
 
 @pytest.mark.parametrize("thick", [1, 4, 20])
-@pytest.mark.parametrize("power,depth", [(0.0, 3.0), (1.0, 3.0), (1.5, 20.0), (3.0, 20.0), (1.0, 100.0)])
-def test_block_cumulative_relative_blocking(dev, thick, power, depth):
-    """Back to front: the light from the cube (b) passes a dimmer slab (a) `thick`
-    voxels deep; each voxel blocks at the rate (3 / depth) (a / C)^power and moves C
-    toward a (numpy mirror of the per-voxel rule)."""
+@pytest.mark.parametrize("depth,q", [(2.0, 1.0), (8.0, 2.0), (30.0, 2.0), (8.0, 4.0)])
+def test_scatter_matches_per_voxel_rule(dev, thick, depth, q):
+    """A dim slab in front of a bright cube, straight along z: the pixel is the
+    brightest v e^(-tau) along the ray (numpy mirror on the real voxel column)."""
+    sc = _slab_scene(dev, thick, gap=2)
+    vol = np.zeros((48, 48, 48), np.float16)
+    vol[4:4 + thick, 12:36, 12:36] = 0.7
+    vol[4 + thick + 2:4 + thick + 8, 21:27, 21:27] = 0.95
     inv, *_ = _ortho(0.0, 0.0, 24.0)
     u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=depth)
-    out = _slab_scene(dev, thick, gap=2).compute(u, 4, 1, 0, 128, 128, faces=power)[60:68, 60:68, 3]
-    C = _B
-    for _ in range(thick):
-        C = _block_voxel(C, _A, 1.0, power, 3.0 / depth)
-    assert np.abs(out - C).max() < 3e-3, (out.min(), out.max(), C)
+    out = sc.compute(u, 4, 1, 0, 128, 128, faces=q)[60:68, 60:68, 3]
+    expect = _scatter_column(_windowed_column(vol, 24, 24), depth, q)
+    assert np.abs(out - expect).max() < 3e-3, (out.min(), out.max(), expect)
 
 
-def test_block_thick_dim_region_hides_bright_light(dev):
-    """Blocking accumulates: 30 voxels of material at 29% of the bright light behind
-    it hide most of that light (and show as themselves)."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=10.0)
-    out = _slab_scene(dev, 30, gap=1).compute(u, 4, 1, 0, 128, 128, faces=1.0)[60:68, 60:68, 3]
-    assert out.max() < _A + 0.1 * (_B - _A)
+def test_scatter_dim_front_rod_stays_whole(dev):
+    """The X test: a rod half as bright lies across a brighter one below it. From either
+    side the front rod is whole: at the crossing it reads exactly as it does on its own,
+    because its own scattering hides what lies behind it (numpy mirror)."""
+    n = 48
+    z, y, x = np.mgrid[:n, :n, :n].astype(np.float32)
+    rodA = ((y - 24) ** 2 + (z - 30) ** 2 <= 9) & (x > 6) & (x < 42)          # larger z, half as bright
+    rodB = ((x - 24) ** 2 + (z - 16) ** 2 <= 9) & (y > 6) & (y < 42)          # twice as bright
+    vol = np.zeros((n, n, n), np.float32)
+    vol[rodA], vol[rodB] = 0.5, 1.0
+    sc = Scene(dev, vol.astype(np.float16), np.zeros(vol.shape, np.uint8))
+    for yaw, order, front in ((np.pi, slice(None, None, -1), rodA), (0.0, slice(None), rodB)):  # from +z, from -z
+        inv, *_ = _ortho(yaw, 0.0, 24.0)
+        out = sc.compute(_uniform(inv, (n, n, n), 4, show_lab=0, window=(0.0, 1.0), exposure=4.0), 4, 1, 0, 96, 96, faces=2.0)[..., 3]
+        cross = out[47:49, 47:49].mean()                                     # the middle of the crossing
+        both = _scatter_column(vol[order, 24, 24], 4.0, 2.0)
+        alone = _scatter_column((vol * front)[order, 24, 24], 4.0, 2.0)
+        assert abs(both - alone) < 1e-6                                     # the rod behind adds nothing
+        assert abs(cross - alone) < 0.03, (yaw, cross, alone)
 
 
-@pytest.mark.parametrize("power", [1.5, 3.0])
-def test_block_faint_background_barely_blocks(dev, power):
-    """A 20-voxel slab of faint material at 6% of the light behind it: at the default
-    brightness weight 1.5 it removes about 4% of that light (exactly the per-voxel
-    rule), and at 3 under 1%: the weight sets how much faint background blocks."""
-    inv, *_ = _ortho(0.0, 0.0, 24.0)
-    u = _uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=20.0)
-    out = _slab_scene(dev, 20, gap=2, front=0.62).compute(u, 4, 1, 0, 128, 128, faces=power)[60:68, 60:68, 3]
-    a = (float(np.float16(0.62)) - 0.6) / 0.4
-    C = _B
-    for _ in range(20):
-        C = _block_voxel(C, a, 1.0, power, 3.0 / 20.0)
-    assert np.abs(out - C).max() < 2e-3, (out.min(), C)
-    if power >= 3:
-        assert out.min() > 0.99 * _B
+def test_scatter_faint_background_barely_scatters(dev):
+    """20 voxels of faint material at 5% of the window in front of a bright cube:
+    haze 2 removes about 2% of its light, haze 4 practically none (numpy mirror)."""
+    for q, worst in ((2.0, 0.97), (4.0, 0.999)):
+        vol = np.zeros((48, 48, 48), np.float16)
+        vol[4:24, 12:36, 12:36] = 0.62
+        vol[26:32, 21:27, 21:27] = 0.95
+        sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
+        inv, *_ = _ortho(0.0, 0.0, 24.0)
+        out = sc.compute(_uniform(inv, (48, 48, 48), 4, show_lab=0, window=(0.6, 1.0), exposure=8.0), 4, 1, 0, 128, 128, faces=q)[60:68, 60:68, 3]
+        cube = (float(np.float16(0.95)) - 0.6) / 0.4
+        expect = _scatter_column(_windowed_column(vol, 24, 24), 8.0, q)
+        assert np.abs(out - expect).max() < 3e-3
+        assert out.min() > worst * cube * np.exp(-0.5 * 3 / 8 * cube ** q)
 
 
-def test_block_is_mip_when_block_depth_is_huge(dev):
+def test_scatter_is_mip_when_scatter_depth_is_huge(dev):
     rng = np.random.default_rng(9)
     vol = rng.random((24, 28, 32)).astype(np.float16)
     sc = Scene(dev, vol, np.zeros(vol.shape, np.uint8))
     inv, *_ = _ortho(0.7, 0.3, 24.0)
-    blk = sc.compute(_uniform(inv, (32, 28, 24), 4, show_lab=0, window=(0.3, 0.9), exposure=1e7), 4, 1, 0, 128, 128, faces=1.5)
+    sct = sc.compute(_uniform(inv, (32, 28, 24), 4, show_lab=0, window=(0.3, 0.9), exposure=1e7), 4, 1, 0, 128, 128, faces=2.0)
     mip = sc.compute(_uniform(inv, (32, 28, 24), 1, show_lab=0, window=(0.3, 0.9)), 1, 1, 0, 128, 128)
-    assert np.abs(blk[..., 3] - mip[..., 3]).max() < 2e-3
+    assert np.abs(sct[..., 3] - mip[..., 3]).max() < 2e-3
 

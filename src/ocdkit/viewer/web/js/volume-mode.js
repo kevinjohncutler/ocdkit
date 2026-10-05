@@ -128,7 +128,7 @@
       try {
         const camera = (vgpu && vgpu.getCamera) ? vgpu.getCamera() : camState;
         localStorage.setItem(volStateKey(), JSON.stringify(
-          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, blockPower: curBlockSoft, blockDepth20: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
+          { mode, axis: curAxis, slice, style2d: saved2dMode, style3d: saved3dMode, camera, eaAbsorption: curDensity, midaOpacity: curMidaOpacity, classify: curClassify, eaVoxDensity: curEaVox, midaVoxDensity: curMidaVox, scatterHaze: curBlockSoft, scatterDepth: curBlockDepth, levelFrames: curLevel, fadeZEnds: curFadeZ, depthCue: curDepthCue, proj: curProj, spinAxis: curSpinAxis, facesMix: curFacesMix }));
       } catch (e) {}
     }
     const _vs = loadVolState();
@@ -157,8 +157,8 @@
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
     // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
-    let curBlockSoft = typeof _vs.blockPower === "number" ? Math.min(4, Math.max(0, _vs.blockPower)) : 2;
-    let curBlockDepth = typeof _vs.blockDepth20 === "number" ? Math.min(100, Math.max(0.5, _vs.blockDepth20)) : 20;   // block depth (voxels)
+    let curBlockSoft = typeof _vs.scatterHaze === "number" ? Math.min(4, Math.max(1, _vs.scatterHaze)) : 2;   // scatter: haze power
+    let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(100, Math.max(0.5, _vs.scatterDepth)) : 8;   // scatter depth (voxels)
     // the block depth slider is logarithmic: position p in 0..1 -> 0.5 x 200^p voxels (0.5..100)
     const depthFromPos = (p) => 0.5 * Math.pow(200, Math.max(0, Math.min(1, p)));
     const posFromDepth = (d) => Math.log(Math.max(0.5, Math.min(100, d)) / 0.5) / Math.log(200);
@@ -781,7 +781,7 @@
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(0, Math.min(4, Number.isFinite(Number(t)) ? Number(t) : 2));
+      t = Math.max(1, Math.min(4, Number.isFinite(Number(t)) ? Number(t) : 2));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);
@@ -846,7 +846,7 @@
     const bmNum = document.getElementById("blockMinInput");
     function setBlockDepthUI(v, from) {
       if (from === "range") v = depthFromPos(Number(v));
-      v = Math.max(0.5, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 20));
+      v = Math.max(0.5, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 8));
       curBlockDepth = v;
       if (bmRange && from !== "range") {
         bmRange.value = String(posFromDepth(v));

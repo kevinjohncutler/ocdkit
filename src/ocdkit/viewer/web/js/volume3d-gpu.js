@@ -310,8 +310,8 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockPower = opts.blockPower != null ? Math.min(8, Math.max(0, +opts.blockPower)) : 2;   // block: brightness weight p
-      this._blockDepth = opts.blockDepth > 0 ? Math.min(100, Math.max(0.5, +opts.blockDepth)) : 20;   // block: voxels that block 95%
+      this._blockPower = opts.blockPower != null ? Math.min(4, Math.max(1, +opts.blockPower)) : 2;   // scatter: haze power q
+      this._blockDepth = opts.blockDepth > 0 ? Math.min(100, Math.max(0.5, +opts.blockDepth)) : 8;   // scatter: scatter depth (voxels)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
       // (headroom 1), and the auto-Jz search can land BELOW SDR white, so "HDR
@@ -1288,19 +1288,16 @@
       if (was !== this._classify) this._prewarmComputePipelines();
     }
     isClassify() { return !!this._classify; }
-    /** Block projection (mode 4) block depth, voxels (0.5..100): how many voxels of a
-     *  blocker (a voxel at least X as bright as the light behind it) hide 95% of that
-     *  light; fewer block gradually less. */
+    /** Scatter projection (mode 4) scatter depth, voxels (0.5..100): how many voxels
+     *  of full-brightness material scatter away 95% of the light passing through. */
     setBlockDepth(v) {
-      this._blockDepth = Math.min(100, Math.max(0.5, Number.isFinite(+v) ? +v : 20));
+      this._blockDepth = Math.min(100, Math.max(0.5, Number.isFinite(+v) ? +v : 8));
       this._requestRender();
     }
-    /** Block projection (mode 4) brightness weight p: a dimmer voxel blocks the light
-     *  behind it at the rate (v / C)^p x 3 / block depth, so 0 = only thickness
-     *  matters, 1 = in proportion to its relative brightness, 3 = only material
-     *  nearly as bright as the light behind blocks noticeably. */
+    /** Scatter projection (mode 4) haze power q (1..4): a voxel scatters in proportion
+     *  to its windowed brightness^q, so higher q = faint material (haze, noise) scatters less. */
     setBlockPower(p) {
-      this._blockPower = Math.min(8, Math.max(0, Number.isFinite(+p) ? +p : 2));
+      this._blockPower = Math.min(4, Math.max(1, Number.isFinite(+p) ? +p : 2));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }
