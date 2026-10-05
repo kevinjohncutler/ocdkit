@@ -178,14 +178,14 @@
             </div>
           </div>
           <div class="control slider-inline" id="blockSoftRow" hidden
-               title="Haze: how much less faint material scatters. Each voxel scatters light in proportion to its brightness (on the display window) raised to this power: 1 = in proportion to brightness, 2 = to its square, 4 = only bright material scatters noticeably. Raise it if faint background dims what is behind it">
+               title="Haze (0 to 16, type up to 64): how much less faint material scatters. Each voxel scatters light in proportion to its brightness on the display window raised to this power. 0 = everything above the window's low end scatters alike; 1 = in proportion to brightness; q = material at brightness 0.5^(1/q) of the window scatters half as much as the top (q 2: 0.71, 4: 0.84, 8: 0.92, 16: 0.96), so high values leave only the brightest material scattering. Raise it if faint background dims what is behind it">
             <span class="control-heading control-heading--lower">haze</span>
             <div class="slider-row">
               <div class="slider" id="blockSoftSliderRoot" data-slider-type="single">
-                <input type="range" id="blockSoftSlider" min="1" max="4" step="0.05" value="1" />
+                <input type="range" id="blockSoftSlider" min="0" max="16" step="0.1" value="1" />
               </div>
               <div class="number-field" data-number-id="blockSoftInput">
-                <input type="number" id="blockSoftInput" min="1" max="4" step="0.1" value="1.00" />
+                <input type="number" id="blockSoftInput" min="0" max="64" step="0.1" value="1.00" />
               </div>
             </div>
           </div>

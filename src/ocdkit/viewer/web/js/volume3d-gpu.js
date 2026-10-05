@@ -310,7 +310,7 @@
       this._level = !!opts.levelFrames;                 // frames leveled before display (setLevelFrames)
       this._fadeZ = !!opts.fadeZEnds;                   // z ends faded to background (setFadeZEnds)
       this._depthCue = Math.min(0.99, Math.max(0, +opts.depthCue || 0));   // depth cue strength (setDepthCue)
-      this._blockPower = opts.blockPower != null ? Math.min(4, Math.max(1, +opts.blockPower)) : 1;   // scatter: haze power q
+      this._blockPower = opts.blockPower != null ? Math.min(64, Math.max(0, +opts.blockPower)) : 1;   // scatter: haze power q
       this._blockDepth = opts.blockDepth > 0 ? Math.min(1e6, Math.max(0.5, +opts.blockDepth)) : 100;   // scatter: scatter depth (voxels)
       // Live display EDR headroom (× SDR white) — the SAME source the 2D HDR
       // layer uses. Critical: without a real headroom the lift targets ~203 nits
@@ -1297,7 +1297,7 @@
     /** Scatter projection (mode 4) haze power q (1..4): a voxel scatters in proportion
      *  to its windowed brightness^q, so higher q = faint material (haze, noise) scatters less. */
     setBlockPower(p) {
-      this._blockPower = Math.min(4, Math.max(1, Number.isFinite(+p) ? +p : 1));
+      this._blockPower = Math.min(64, Math.max(0, Number.isFinite(+p) ? +p : 1));
       this._requestRender();
     }
     setAmbient(a) { this.ambient = +a; this._requestRender(); }

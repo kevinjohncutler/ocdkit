@@ -157,7 +157,7 @@
     // (saved under new keys, so everyone starts from the defaults that look best:
     // occlusion 0.3, softness 0.9, block depth 20)
     // block brightness weight p (0 = only thickness matters .. 3 = only near-equal brightness blocks)
-    let curBlockSoft = typeof _vs.scatterHaze === "number" ? Math.min(4, Math.max(1, _vs.scatterHaze)) : 1;   // scatter: haze power
+    let curBlockSoft = typeof _vs.scatterHaze === "number" ? Math.min(64, Math.max(0, _vs.scatterHaze)) : 1;   // scatter: haze power
     let curBlockDepth = typeof _vs.scatterDepth === "number" ? Math.min(1e6, Math.max(0.5, _vs.scatterDepth)) : 100;   // scatter depth (voxels)
     // the scatter depth slider is logarithmic: position p in 0..1 -> 0.5 x 20000^p voxels (0.5..10000);
     // the number field takes larger values (up to 1e6, where Scatter is MIP to within rounding)
@@ -777,12 +777,12 @@
     }
     window.__viewerSetVoxelWindow = setClassify;
 
-    // ── Block brightness weight slider (Block only) ──
+    // ── Scatter haze power slider (Scatter only) ──
     const slRow = document.getElementById("blockSoftRow");
     const slRange = document.getElementById("blockSoftSlider");
     const slNum = document.getElementById("blockSoftInput");
     function setBlockSoft(t, from) {
-      t = Math.max(1, Math.min(4, Number.isFinite(Number(t)) ? Number(t) : 2));
+      t = Math.max(0, Math.min(64, Number.isFinite(Number(t)) ? Number(t) : 1));
       curBlockSoft = t;
       if (slRange && from !== "range") {
         slRange.value = String(t);

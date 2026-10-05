@@ -766,7 +766,7 @@ def _windowed_column(vol, y, x, lo=0.6, hi=1.0):
 
 
 @pytest.mark.parametrize("thick", [1, 4, 20])
-@pytest.mark.parametrize("depth,q", [(2.0, 1.0), (8.0, 2.0), (30.0, 2.0), (8.0, 4.0)])
+@pytest.mark.parametrize("depth,q", [(2.0, 1.0), (8.0, 2.0), (30.0, 2.0), (8.0, 4.0), (8.0, 0.0), (12.0, 16.0)])
 def test_scatter_matches_per_voxel_rule(dev, thick, depth, q):
     """A dim slab in front of a bright cube, straight along z: the pixel is the
     brightest v e^(-tau) along the ray (numpy mirror on the real voxel column)."""

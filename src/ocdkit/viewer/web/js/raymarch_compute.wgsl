@@ -102,8 +102,10 @@ override CUE : bool = false;
 //           of k v'^q L  (half of the voxel's own path counts too)
 // v = the windowed value, L = path length (voxels), k = 3 / D with D = u.win.z
 // the scatter depth (voxels of full-brightness material that scatter away 95%),
-// q = u.win.w the haze power (how much less faint material scatters: 1 = in
-// proportion to brightness, 2 = to its square). So the deeper a voxel, the more
+// q = u.win.w the haze power (how much less faint material scatters: 0 = all
+// material above the window's low end alike, 1 = in proportion to brightness,
+// 2 = to its square; material at brightness 0.5^(1/q) scatters half as much as
+// at the window's top, so a large q leaves only the top of the window scattering). So the deeper a voxel, the more
 // material it is seen through; only a very bright source still shows through an
 // object of similar size and brightness; a dimmer object in front stays whole;
 // rays grazing an edge or a halo cross little material and block a little; and
@@ -345,7 +347,7 @@ fn shade(uv : vec2<f32>) -> vec4<f32> {
     var midaMax = 0.0;
     // scatter: the haze power q, the rate per voxel (scatter depth D: 3 / D),
     // voxels per unit of the ray parameter
-    let scatQ = clamp(u.win.w, 0.0, 8.0);
+    let scatQ = clamp(u.win.w, 0.0, 64.0);
     let scatK = 3.0 / max(u.win.z, 0.05);
     let dvLenB = length(dv0);
     var curB = vec3<f32>(-1.0);
