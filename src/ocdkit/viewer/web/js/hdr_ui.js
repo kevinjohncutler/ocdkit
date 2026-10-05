@@ -61,10 +61,17 @@
       pCanvas.id = 'hdrCmapPreview';
       pCanvas.style.cssText = 'position:absolute; inset:0; z-index:0; pointer-events:none; border-radius:inherit; clip-path: inset(var(--control-inset) round var(--control-inset-radius)); display:none;';
       pHeadroom = HH ? new HH() : null;
+      const disc = toggle.id === 'imageCmapIconPill';
       CI.createColormapRenderer(pCanvas, { hdr: true, headroom: pHeadroom }).then(function (r) {
         pR = r;
-        const W = 256, H = 4, ramp = new Float32Array(W * H);
-        for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) ramp[y * W + x] = x / (W - 1);
+        // the dropdown: a left-to-right ramp; the colormap icon: a disc swept
+        // clockwise from the top, like its CSS conic gradient
+        const W = disc ? 96 : 256, H = disc ? 96 : 4, ramp = new Float32Array(W * H);
+        for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+          ramp[y * W + x] = disc
+            ? ((Math.atan2(x + 0.5 - W / 2, H / 2 - (y + 0.5)) / (2 * Math.PI)) + 1) % 1
+            : x / (W - 1);
+        }
         r.setImage(ramp, W, H); r.setRange(0, 1);
         updatePreview();
       });

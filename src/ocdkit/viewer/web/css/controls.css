@@ -227,12 +227,9 @@
 .slider--pills .slider-thumb.slider-thumb--pill {
   width: var(--slider-pill-width);
   height: var(--slider-pill-height);
-  /* a pill with smooth ends: flat top and bottom, and each end (x/c)^3 + (y/b)^2 = 1
-     (c = 11 of 32 px, b = half the height), whose curvature rises from zero where
-     it leaves the flat edge (a stadium's semicircle jumps there) and stays round
-     at the tip */
-  border-radius: 0;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 20' preserveAspectRatio='none'%3E%3Cpath d='M21.00 0.00L26.68 0.71L28.07 1.43L28.99 2.14L29.67 2.86L30.21 3.57L30.64 4.29L30.99 5.00L31.28 5.71L31.51 6.43L31.69 7.14L31.83 7.86L31.92 8.57L31.98 9.29L32.00 10.00L31.98 10.71L31.92 11.43L31.83 12.14L31.69 12.86L31.51 13.57L31.28 14.29L30.99 15.00L30.64 15.71L30.21 16.43L29.67 17.14L28.99 17.86L28.07 18.57L26.68 19.29L21.00 20.00L11.00 20.00L5.32 19.29L3.93 18.57L3.01 17.86L2.33 17.14L1.79 16.43L1.36 15.71L1.01 15.00L0.72 14.29L0.49 13.57L0.31 12.86L0.17 12.14L0.08 11.43L0.02 10.71L0.00 10.00L0.02 9.29L0.08 8.57L0.17 7.86L0.31 7.14L0.49 6.43L0.72 5.71L1.01 5.00L1.36 4.29L1.79 3.57L2.33 2.86L3.01 2.14L3.93 1.43L5.32 0.71L11.00 0.00Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
+  /* the handle's shape is drawn by the slider's SVG (.slider-pill-art); the
+     thumb itself only holds the value field */
+  background: transparent;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 20' preserveAspectRatio='none'%3E%3Cpath d='M21.00 0.00L26.68 0.71L28.07 1.43L28.99 2.14L29.67 2.86L30.21 3.57L30.64 4.29L30.99 5.00L31.28 5.71L31.51 6.43L31.69 7.14L31.83 7.86L31.92 8.57L31.98 9.29L32.00 10.00L31.98 10.71L31.92 11.43L31.83 12.14L31.69 12.86L31.51 13.57L31.28 14.29L30.99 15.00L30.64 15.71L30.21 16.43L29.67 17.14L28.99 17.86L28.07 18.57L26.68 19.29L21.00 20.00L11.00 20.00L5.32 19.29L3.93 18.57L3.01 17.86L2.33 17.14L1.79 16.43L1.36 15.71L1.01 15.00L0.72 14.29L0.49 13.57L0.31 12.86L0.17 12.14L0.08 11.43L0.02 10.71L0.00 10.00L0.02 9.29L0.08 8.57L0.17 7.86L0.31 7.14L0.49 6.43L0.72 5.71L1.01 5.00L1.36 4.29L1.79 3.57L2.33 2.86L3.01 2.14L3.93 1.43L5.32 0.71L11.00 0.00Z'/%3E%3C/svg%3E") center / 100% 100% no-repeat;
   transform: translate3d(0, -50%, 0);
   display: flex;
@@ -262,7 +259,17 @@
 }
 .slider-thumb--pill input.slider-thumb-input::-webkit-outer-spin-button,
 .slider-thumb--pill input.slider-thumb-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.slider-thumb--pill:focus-within { background: #ffffff; }   /* (a ring would be masked away) */
+/* the SVG draws the track, the fill (1 px outside the handles) and the handles,
+   all from one smooth end curve, so the gaps are constant; the plain track and
+   its ::before fill are hidden */
+.slider--pills .slider-track { background: transparent; box-shadow: none; }
+.slider--pills .slider-track::before { display: none; }
+.slider-pill-art { position: absolute; left: 0; top: 0; z-index: 1; pointer-events: none; overflow: visible; }
+.slider-pill-art .pill-art-track { fill: var(--slider-track-bg); }
+.slider-pill-art .pill-art-outline { fill: none; stroke: var(--slider-track-border); stroke-width: 1; }
+.slider-pill-art .pill-art-fill { fill: var(--accent-color); }
+.slider-pill-art .pill-art-handle { fill: var(--slider-knob-color); }
+.slider-pill-art .pill-art-handle.is-editing { fill: #ffffff; }
 .slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
 /* (native iOS sliders keep the value fields below the track) */
 .clip-values { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
@@ -309,11 +316,11 @@
 .cmap-icon-pill {
   position: relative;
   display: block;
-  width: 36px;
-  height: 18px;
-  border-radius: 9px;
+  width: var(--slider-track-height);
+  height: var(--slider-track-height);
+  border-radius: 50%;
   overflow: hidden;
-  background: var(--cmap-icon-gradient, linear-gradient(to right, #000, #fff));
+  background: var(--cmap-icon-gradient, conic-gradient(#000, #fff));
 }
 /* the outline sits above the HDR canvas hdr_ui.js puts inside the pill */
 .cmap-icon-pill::after {

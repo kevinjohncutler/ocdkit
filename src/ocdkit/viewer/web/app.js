@@ -11152,7 +11152,9 @@ function updateImageCmapPanelUI() {
   const hasGradient = false;
   const iconPill = document.getElementById('imageCmapIconPill');
   if (iconPill && ViewerColormap.generateColormapGradient) {
-    iconPill.style.setProperty('--cmap-icon-gradient', ViewerColormap.generateColormapGradient(imageColormap, 24));
+    // a disc swept by the colormap: low end at the top, clockwise to the high end
+    iconPill.style.setProperty('--cmap-icon-gradient',
+      ViewerColormap.generateColormapGradient(imageColormap, 24).replace('linear-gradient(to right,', 'conic-gradient(from 0deg,'));
     const icon = document.getElementById('imageCmapIcon');
     const entry = IMAGE_COLORMAPS.find((c) => c.value === imageColormap);
     if (icon) icon.title = 'Colormap: ' + (entry ? entry.label : imageColormap);

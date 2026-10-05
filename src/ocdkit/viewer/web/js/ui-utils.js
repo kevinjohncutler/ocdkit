@@ -409,6 +409,45 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Smooth pills (value-pill sliders): one end-cap curve, and exact offsets of it
+  // ---------------------------------------------------------------------------
+
+  // Right end cap of a pill of half-height b: x = c (1 - (y/b)^2)^(1/3), from the
+  // top (y = b) to the bottom (y = -b), offset outward by d. Its curvature rises
+  // from zero where it leaves the flat edge (a semicircle jumps there) and stays
+  // finite at the tip; offsets of a smooth curve stay smooth, so a handle, the
+  // fill around it (d = 1) and the track (d = 2) keep a constant gap everywhere.
+  // Points are relative to where the flat edge ends (x = 0) and the pill's center.
+  var capCache = {};
+  function pillCap(b, c, d) {
+    var key = b + '|' + c + '|' + d;
+    if (capCache[key]) { return capCache[key]; }
+    var pts = [], n = 24;
+    for (var i = 0; i <= n; i += 1) {
+      var phi = Math.PI / 2 - Math.PI * i / n;            // dense near the joins
+      var y = b * Math.sin(phi), u = Math.min(1, (y / b) * (y / b));
+      var x = c * Math.pow(Math.max(0, 1 - u), 1 / 3);
+      var nx, ny;
+      if (u >= 1) { nx = 0; ny = y > 0 ? 1 : -1; }
+      else {
+        var dxdy = c * (1 / 3) * Math.pow(1 - u, -2 / 3) * (-2 * y / (b * b));
+        var len = Math.sqrt(1 + dxdy * dxdy);
+        nx = 1 / len; ny = -dxdy / len;
+      }
+      pts.push([x + d * nx, y + d * ny]);
+    }
+    return (capCache[key] = pts);
+  }
+  // SVG path of a pill whose flat edges run from xa to xb, centered on cy
+  function pillPath(xa, xb, cy, b, c, d) {
+    var cap = pillCap(b, c, d), h = b + d, s = 'M' + xa.toFixed(2) + ' ' + (cy - h).toFixed(2) + 'L' + xb.toFixed(2) + ' ' + (cy - h).toFixed(2);
+    for (var i = 0; i < cap.length; i += 1) { s += 'L' + (xb + cap[i][0]).toFixed(2) + ' ' + (cy - cap[i][1]).toFixed(2); }
+    s += 'L' + xa.toFixed(2) + ' ' + (cy + h).toFixed(2);
+    for (var j = cap.length - 1; j >= 0; j -= 1) { s += 'L' + (xa - cap[j][0]).toFixed(2) + ' ' + (cy - cap[j][1]).toFixed(2); }
+    return s + 'Z';
+  }
+
+  // ---------------------------------------------------------------------------
   // Slider registry
   // ---------------------------------------------------------------------------
 
@@ -476,9 +515,26 @@
     };
 
     var pills = type === 'dual' && pillInputs.length === 2;
+    var art = null;
     if (pills) {
       root.classList.add('slider--pills');
       thumbs.forEach(function (t, i) { t.classList.add('slider-thumb--pill'); t.appendChild(pillInputs[i]); });
+      // track, fill and handles drawn as one SVG, each an exact offset of the next
+      var NS = 'http://www.w3.org/2000/svg';
+      art = { svg: document.createElementNS(NS, 'svg') };
+      art.svg.setAttribute('class', 'slider-pill-art');
+      art.svg.setAttribute('aria-hidden', 'true');
+      ['track', 'outline', 'fill', 'h0', 'h1'].forEach(function (k) {
+        var p = document.createElementNS(NS, 'path');
+        p.setAttribute('class', 'pill-art-' + (k[0] === 'h' ? 'handle' : k));
+        art.svg.appendChild(p);
+        art[k] = p;
+      });
+      root.insertBefore(art.svg, thumbs[0]);
+      pillInputs.forEach(function (inp, i) {
+        inp.addEventListener('focus', function () { art['h' + i].classList.add('is-editing'); });
+        inp.addEventListener('blur', function () { art['h' + i].classList.remove('is-editing'); });
+      });
     }
 
     var entry = {
@@ -519,6 +575,18 @@
         entry.track.style.setProperty('--slider-fill-px', (p1 - p0 + 2 * pg.w + 2 * pg.g - 2 * r) + 'px');
         entry.thumbs[0].style.left = (pg.g + p0) + 'px';
         entry.thumbs[1].style.left = (pg.g + pg.w + p1) + 'px';
+        if (art) {
+          var W = entry.track.clientWidth, Hh = entry.track.clientHeight, cy = Hh / 2;
+          var hb = entry.thumbs[0].offsetHeight / 2, cc = Math.min(11, pg.w / 2 - 1);
+          var L0 = pg.g + p0, L1 = pg.g + pg.w + p1, gap = pg.g;          // handle box lefts; gap to the track edge
+          art.svg.setAttribute('viewBox', '0 0 ' + W + ' ' + Hh);
+          art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
+          art.track.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap));
+          art.outline.setAttribute('d', pillPath(gap + cc, W - gap - cc, cy, hb, cc, gap - 0.5));
+          art.fill.setAttribute('d', pillPath(L0 + cc, L1 + pg.w - cc, cy, hb, cc, gap / 2));
+          art.h0.setAttribute('d', pillPath(L0 + cc, L0 + pg.w - cc, cy, hb, cc, 0));
+          art.h1.setAttribute('d', pillPath(L1 + cc, L1 + pg.w - cc, cy, hb, cc, 0));
+        }
         return;
       }
       if (entry.type === 'dual') {
