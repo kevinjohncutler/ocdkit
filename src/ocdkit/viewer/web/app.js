@@ -372,6 +372,9 @@ function markAccentLive() {
 function setAccentKnobColors(ink) {
   const darkInk = !/^#f/i.test(String(ink).trim());
   document.documentElement.classList.toggle('accent-light', darkInk);
+  // text and icons on a light accent: the cutout color (the panel's own gray in
+  // dark mode, so they match the see-through knobs; the dark ink in light mode)
+  if (darkInk && rootStyleWrite) rootStyleWrite.setProperty('--accent-ink', 'var(--accent-cutout, ' + ink + ')');
 }
 
 function updateAccentColorsFromRgb(rgb) {

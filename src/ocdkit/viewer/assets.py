@@ -227,7 +227,9 @@ RESTORE_ACCENT_SCRIPT = """<script>
         if (a.k) {
           s.setProperty('--accent-ink', a.k);
           // a light accent: knobs on it are cutouts (as setAccentKnobColors in app.js)
-          document.documentElement.classList.toggle('accent-light', !/^#f/i.test(String(a.k).trim()));
+          var light = !/^#f/i.test(String(a.k).trim());
+          document.documentElement.classList.toggle('accent-light', light);
+          if (light) s.setProperty('--accent-ink', 'var(--accent-cutout, ' + a.k + ')');
         }
       }
     }

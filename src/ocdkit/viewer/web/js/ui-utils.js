@@ -644,7 +644,8 @@
           var inset = parseFloat(getComputedStyle(entry.root).getPropertyValue('--control-inset')) || 1;   // fill inside the track, as on plain sliders
           art.svg.setAttribute('viewBox', '0 0 ' + W + ' ' + Hh);
           art.svg.setAttribute('width', W); art.svg.setAttribute('height', Hh);
-          art.track.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap));
+          art.track.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap) +
+            lefts.map(function (L, i) { return pillPath(L + hb, L + pg.ws[i] - hb, cy, hb); }).join(''));   // (holes too: a cutout shows the panel)
           art.outline.setAttribute('d', pillPath(gap + hb, W - gap - hb, cy, hb + gap - 0.5));
           art.fill.setAttribute('d', pillPath((dual ? lefts[0] : gap) + hb, lefts[last] + pg.ws[last] - hb, cy, hb + gap - inset) +
             lefts.map(function (L, i) { return pillPath(L + hb, L + pg.ws[i] - hb, cy, hb); }).join(''));   // (holes: evenodd)

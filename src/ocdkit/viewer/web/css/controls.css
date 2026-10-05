@@ -271,7 +271,7 @@
 .slider-pill-art .pill-art-track { fill: var(--slider-track-bg); }
 .slider-pill-art .pill-art-outline { fill: none; stroke: var(--slider-track-border); stroke-width: 1; }
 .slider-pill-art .pill-art-fill { fill: var(--accent-color); }
-.slider-pill-art .pill-art-fill { fill-rule: evenodd; }   /* the handles are holes in it */
+.slider-pill-art .pill-art-fill, .slider-pill-art .pill-art-track { fill-rule: evenodd; }   /* the handles are holes in them */
 .slider-pill-art .pill-art-handle { fill: var(--slider-knob-color); }
 .slider-pill-art .pill-art-handle.is-editing { fill: #ffffff; }
 .slider-thumb--pill input.slider-thumb-input:focus { cursor: text; }
@@ -2596,14 +2596,22 @@ button:not(:disabled):hover {
 :root.accent-light .slider-pill-art .pill-art-handle { fill: transparent; }
 :root.accent-light .slider-pill-art .pill-art-handle.is-editing { fill: var(--slider-track-bg); }
 :root.accent-light .slider-thumb--pill { color: var(--panel-text-color); }
-/* round knobs (the hue-offset slider): a hole in the fill or gradient at the knob */
-:root.accent-light .slider:not(.slider--pills) .slider-thumb { background: transparent; box-shadow: inset 0 0 0 1.5px var(--slider-track-border); }
+/* round knobs (the hue-offset slider): a hole through the fill or gradient and the track at the knob */
+:root.accent-light .slider:not(.slider--pills) .slider-track {
+  -webkit-mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+          mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+}
+:root.accent-light .slider:not(.slider--pills) .slider-thumb { background: transparent; }
 :root.accent-light .slider:not(.slider--pills) .slider-track::before {
   -webkit-mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
           mask: radial-gradient(circle at var(--thumb-x, -99px) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
 }
-/* an on toggle: a hole in its accent fill where the knob sits */
+/* an on toggle: a hole through its accent fill and its track where the knob sits */
 :root.accent-light .toggle input:checked + .toggle-switch::after { background: transparent; }
+:root.accent-light .toggle input:checked + .toggle-switch {
+  -webkit-mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+          mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
+}
 :root.accent-light .toggle input:checked + .toggle-switch::before {
   -webkit-mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) + var(--control-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
           mask: radial-gradient(circle at calc(100% - var(--slider-knob-inset) + var(--control-inset) - var(--slider-knob-radius)) 50%, transparent calc(var(--slider-knob-radius) - 0.25px), #000 var(--slider-knob-radius));
@@ -2633,3 +2641,16 @@ button:not(:disabled):hover {
   box-shadow: none;
   transform: translate3d(0, -50%, 0);
 }
+
+/* The cutout color: text and icons on a light accent (app.js points --accent-ink
+   here). Dark mode: the panel's own gray as it renders (measured 45, 46, 47), so
+   they match the see-through knobs; light mode: the usual dark ink. */
+:root { --accent-cutout: rgba(20, 20, 20, 0.86); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --accent-cutout: rgb(45, 46, 47); } }
+:root[data-theme="dark"] { --accent-cutout: rgb(45, 46, 47); }
+/* Hover previews the selected look: where a hovered option's background turns to
+   the accent, its text / icon takes the accent's ink, as when selected. */
+.segmented-toggle .kernel-option:hover,
+.icon-toggle:hover { color: var(--accent-ink, #161616); }
+/* the spin-axis button: the accent on hover, like the folder headings' indicator */
+.control-heading.spin-axis-button:hover { background: none; color: var(--accent-color); }
