@@ -1040,6 +1040,16 @@
   // re-aim). Shared by collapsible headings and dropdown toggles so the
   // glyph stays consistent across the UI. `currentColor` honors the host's
   // text color, so accent overrides keep working.
+  // Open / closed indicator: a knob-sized circle shown as its upper half (upright)
+  // when collapsed, flipping about the circle's center to its lower half when
+  // open. Open state: data-open="true" on it, or on an enclosing .dropdown.
+  function makeMoon(opts) {
+    var m = document.createElement('span');
+    m.className = 'moon-indicator' + (opts && opts.className ? ' ' + opts.className : '');
+    m.setAttribute('aria-hidden', 'true');
+    return m;
+  }
+
   function makeChevron(opts) {
     var ns = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(ns, 'svg');
@@ -1095,12 +1105,8 @@
     var labelSpan = document.createElement('span');
     labelSpan.className = 'dropdown-label';
     button.appendChild(labelSpan);
-    // a half moon the size of a slider knob, sitting where a knob would: its
-    // lower half when closed, rotating up about the knob's center when open
-    var moon = document.createElement('span');
-    moon.className = 'dropdown-toggle-moon';
-    moon.setAttribute('aria-hidden', 'true');
-    button.appendChild(moon);
+    // the open / closed indicator: a half moon where a slider knob would sit
+    button.appendChild(makeMoon({ className: 'dropdown-toggle-moon' }));
     var menu = document.createElement('div');
     menu.className = 'dropdown-menu';
     menu.setAttribute('role', 'listbox');
@@ -1728,6 +1734,7 @@
     refreshDropdown: refreshDropdown,
     normalizeLabelWidths: scheduleNormalizeLabelWidths,
     openPanelMenu: openPanelMenu,
+    makeMoon: makeMoon,
     openDropdown: openDropdown,
     closeDropdown: closeDropdown,
     toggleDropdown: toggleDropdown,

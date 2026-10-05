@@ -378,7 +378,8 @@
       '.plugin-collapsible-heading:hover .plugin-collapsible-chevron {' +
       '  color: var(--accent-color);' +
       '  opacity: 1;' +
-      '}';
+      '}' +
+      '.plugin-collapsible-chevron.moon-indicator { opacity: 0.85; }';
     document.head.appendChild(style);
   }
 
@@ -386,6 +387,8 @@
   // plugin headings and dropdown toggles share the same glyph). Adds the
   // `plugin-collapsible-chevron` class for hover/accent styling.
   function makeChevron() {
+    // the half moon (upright when collapsed), like the dropdowns
+    if (global.ViewerUI.makeMoon) return global.ViewerUI.makeMoon({ className: 'plugin-collapsible-chevron' });
     return global.ViewerUI.makeChevron({ className: 'plugin-collapsible-chevron' });
   }
 
@@ -414,8 +417,7 @@
     function refresh() {
       var open = Boolean(values[headerSpec.name]);
       heading.setAttribute('aria-expanded', open ? 'true' : 'false');
-      // Same equilateral triangle in both states — just rotated 90°.
-      chevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+      chevron.dataset.open = open ? 'true' : 'false';
     }
     function toggle() {
       values[headerSpec.name] = !values[headerSpec.name];
@@ -459,7 +461,7 @@
 
     function refresh() {
       heading.setAttribute('aria-expanded', open ? 'true' : 'false');
-      chevron.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+      chevron.dataset.open = open ? 'true' : 'false';
       contentEl.style.display = open ? '' : 'none';
     }
     function toggle() {
