@@ -2577,10 +2577,10 @@ button:not(:disabled):hover {
   height: var(--h);
   border-radius: 999px;
   background: currentColor;
-  transition: top 0.24s ease, left 0.24s ease, width 0.24s ease;
+  transition: top 0.24s ease, left 0.24s ease, width 0.24s ease, height 0.24s ease;
 }
 .moon-indicator[data-open='true'] .moon-bar,
-.dropdown[data-open='true'] .moon-indicator .moon-bar { top: var(--to); left: var(--lo); width: var(--wo); }
+.dropdown[data-open='true'] .moon-indicator .moon-bar { top: var(--to); left: var(--lo); width: var(--wo); height: var(--ho, var(--h)); }
 .dropdown-toggle-moon {
   position: absolute;
   right: var(--slider-knob-inset);

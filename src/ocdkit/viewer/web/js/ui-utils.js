@@ -1062,13 +1062,15 @@
     var ring = document.createElement('span');
     ring.className = 'moon-ring';
     m.appendChild(ring);
-    var mid = cap(0);
+    // open: one line, a little thicker than a bar so its round ends read as round
+    // (a 2 px line's 1 px end radius looks square)
+    var tOpen = t + 1, mid = cap(0);
     [-o, 0, o].forEach(function (off) {
       var c = cap(off), b = document.createElement('span');
       b.className = 'moon-bar';
       var px = function (v) { return v.toFixed(3) + 'px'; };
       b.style.cssText = '--t:' + px(c.top) + ';--l:' + px(c.left) + ';--w:' + px(c.width) + ';--h:' + px(t) +
-        ';--to:' + px(mid.top) + ';--lo:' + px(mid.left) + ';--wo:' + px(mid.width) + ';';
+        ';--to:' + px(R - tOpen / 2) + ';--lo:' + px(mid.left) + ';--wo:' + px(mid.width) + ';--ho:' + px(tOpen) + ';';
       m.appendChild(b);
     });
     // the closed bars as a mask image (for cutout bars, see .accent-light in CSS)
