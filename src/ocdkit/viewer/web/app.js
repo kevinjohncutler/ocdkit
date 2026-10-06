@@ -8072,6 +8072,23 @@ function openHistogramMenu(evt) {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHistogramMenu(); });
 
+// How the histogram shows the colormap (prototype, picked from an options page):
+// 'none', 'bars' (each bin in the color its value maps to), 'strip' (a colorbar
+// along the bottom, aligned to the values), 'curve' (the transfer curve drawn in
+// the colors), 'fill' (the area under the curve in the colors)
+var histColorStyle = 'none';   // (var: updateImageCmapPanelUI may run before this line)
+window.__viewerSetHistStyle = (s) => { histColorStyle = s; renderHistogram(); };
+
+// The color an intensity (0..255) is displayed with: window, invert, gamma, colormap.
+function histDisplayColor(intensity) {
+  let t = windowHigh > windowLow ? (intensity - windowLow) / (windowHigh - windowLow) : (intensity >= windowHigh ? 1 : 0);
+  t = Math.min(Math.max(t, 0), 1);
+  if (imageInverted) t = 1 - t;
+  t = Math.pow(t, currentGamma);
+  const c = (ViewerColormap.getColormapColorAtT && ViewerColormap.getColormapColorAtT(t, imageColormap)) || [255 * t, 255 * t, 255 * t];
+  return `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+}
+
 function renderHistogram() {
   if (!histogramCanvas || !histogramData) {
     return;
@@ -8091,7 +8108,24 @@ function renderHistogram() {
       const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
       const barHeight = Math.max(1, Math.round(value * (height - 4)));
       const x = Math.floor(i * binWidth);
+      if (histColorStyle === 'bars') ctx.fillStyle = histDisplayColor(i);
       ctx.fillRect(x, height - barHeight, Math.ceil(binWidth), barHeight);
+    }
+  }
+  if (histColorStyle === 'fill' && windowHigh > windowLow) {
+    for (let x = 0; x < width; x += 1) {
+      const y = gammaCurveY((x / width) * 255, width, height);
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = histDisplayColor((x / width) * 255);
+      ctx.fillRect(x, y, 1, height - y);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (histColorStyle === 'strip') {
+    const sh = Math.max(4, Math.round(height * 0.09));
+    for (let x = 0; x < width; x += 1) {
+      ctx.fillStyle = histDisplayColor((x / width) * 255);
+      ctx.fillRect(x, height - sh, 1, sh);
     }
   }
   const lowX = (windowLow / 255) * width;
@@ -8107,7 +8141,21 @@ function renderHistogram() {
   ctx.lineTo(highX, height);
   ctx.stroke();
   const gammaCurveColor = panelTextColor || accentColor;
-  if (windowHigh > windowLow) {
+  if (windowHigh > windowLow && histColorStyle === 'curve') {
+    // the curve in the colors it maps to (a gray halo keeps the dark end visible)
+    const startX = Math.max(0, Math.floor(lowX)), endX = Math.min(width, Math.ceil(highX));
+    ctx.lineCap = 'round';
+    for (const pass of [0, 1]) {
+      ctx.lineWidth = pass ? 2 : 3.5;
+      for (let x = startX; x < endX; x += 1) {
+        ctx.strokeStyle = pass ? histDisplayColor((x / width) * 255) : 'rgba(128,128,128,0.6)';
+        ctx.beginPath();
+        ctx.moveTo(x, gammaCurveY((x / width) * 255, width, height));
+        ctx.lineTo(x + 1, gammaCurveY(((x + 1) / width) * 255, width, height));
+        ctx.stroke();
+      }
+    }
+  } else if (windowHigh > windowLow) {
     ctx.strokeStyle = gammaCurveColor;
     ctx.lineWidth = 1.25;
     ctx.beginPath();
@@ -8145,7 +8193,7 @@ function gammaCurveY(intensity, width, height) {
   let t = (clampedIntensity - windowLow) / (windowHigh - windowLow);
   if (imageInverted) t = 1 - t;                  // the curve slopes down when inverted
   t = Math.min(Math.max(t, 0.0001), 0.9999);
-  const mapped = Math.pow(t, 1 / currentGamma);
+  const mapped = Math.pow(t, currentGamma);      // the display transfer (the image shows value^gamma)
   const y = height - (mapped * (height - 4)) - 2;
   return Math.min(height - 2, Math.max(2, y));
 }
@@ -8307,9 +8355,10 @@ function handleHistogramPointerMove(evt) {
       const width = rect.width;
       const clampedValue = Math.min(Math.max(value, windowLow + 0.5), windowHigh - 0.5);
       let t = (clampedValue - windowLow) / (windowHigh - windowLow);
+      if (imageInverted) t = 1 - t;
       t = Math.min(Math.max(t, 0.0001), 0.9999);
       const yRatio = 1 - Math.min(Math.max((evt.clientY - rect.top) / height, 0.0001), 0.9999);
-      let newGamma = Math.log(t) / Math.log(yRatio);
+      let newGamma = Math.log(yRatio) / Math.log(t);   // the curve through (t, y): y = t^gamma
       if (!Number.isFinite(newGamma) || newGamma <= 0) {
         newGamma = currentGamma;
       }
@@ -11215,6 +11264,7 @@ function getLuminance(r, g, b) {
 window.__refreshCmapIcon = () => updateImageCmapPanelUI();   // (hdr_ui.js: the alpha toggle changes the icon)
 function updateImageCmapPanelUI() {
   updateCmapIconCurve();
+  if (histColorStyle && histColorStyle !== 'none' && typeof renderHistogram === 'function') renderHistogram();
   // The colormap shows in the row's icon (a pill filled with it); the dropdown is a
   // plain pill with the colormap's name.
   const hasGradient = false;
