@@ -324,7 +324,10 @@
    mask cutting a smooth band out around the curve (app.js);
    with HDR on, hdr_ui.js draws an HDR canvas inside it (the clip path clips it). */
 .cmap-icon { position: relative; }
-.cmap-icon svg { position: relative; z-index: 1; width: 24px; height: 24px; display: block; }
+/* (as specific as the 20 px icon-label rule, and later: the curve must sit exactly
+   on the 24 px grid and its cutout mask, and 24 units = 24 px keeps its width the
+   histogram curve's) */
+.control-heading.control-heading--icon.cmap-icon svg { position: relative; z-index: 1; width: 24px; height: 24px; display: block; }
 .cmap-icon-grid {
   position: absolute;
   left: calc(50% - 12px);
