@@ -8123,15 +8123,6 @@ function openHistogramMenu(evt) {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHistogramMenu(); });
 
-// The display value (0..1) of an intensity (0..255): window, invert, gamma.
-function histDisplayValue(intensity) {
-  let t = windowHigh > windowLow ? (intensity - windowLow) / (windowHigh - windowLow) : (intensity >= windowHigh ? 1 : 0);
-  t = Math.min(Math.max(t, 0), 1);
-  if (imageInverted) t = 1 - t;
-  return Math.pow(t, currentGamma);
-}
-
-
 // The outline of a stroke of width w along the points (round caps), as an SVG
 // path: the clip path that turns an element into the line.
 function strokeOutlinePath(pts, w) {
@@ -8174,7 +8165,8 @@ function updateHistogramCurve(pts, width, height) {
   el.style.width = EW + 'px';
   el.style.height = (height + 2 * M) + 'px';
   el.style.setProperty('--hist-curve-clip', `path("${strokeOutlinePath(pts.map(([x, y]) => [x + M, y + M]), HIST_CURVE_WIDTH)}")`);
-  const valueAtElementX = (ex) => histDisplayValue(Math.min(Math.max((ex - M) / width, 0), 1) * 255);
+  const F = histCurveFrame(width, height);
+  const valueAtElementX = (ex) => histCurveOut(histCurveT(ex - M, F));
   const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
   const alpha = transparent && window.HdrColormap && HdrColormap.transparentAlpha ? HdrColormap.transparentAlpha(imageColormap) : null;
   const n = 48, stops = [];
@@ -8239,11 +8231,12 @@ function renderHistogram() {
     // the transfer curve: cut its footprint out of the histogram (so the bars never
     // blend into it), then show it as the clipped curve element (vector edges; HDR
     // and alpha follow the image)
-    const n = Math.max(32, Math.ceil((highX - lowX) / 2));
+    const F = histCurveFrame(width, height);
+    const n = Math.max(32, Math.ceil((F.x1 - F.x0) / 2));
     const pts = [];
     for (let k = 0; k <= n; k += 1) {
-      const x = lowX + (highX - lowX) * (k / n);
-      pts.push([x, gammaCurveY((x / width) * 255, width, height)]);
+      const t = k / n;
+      pts.push([F.x0 + (F.x1 - F.x0) * t, F.y0 - histCurveOut(t) * (F.y0 - F.y1)]);
     }
     ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
@@ -8302,18 +8295,31 @@ function histogramValueFromEvent(evt) {
   return (x / rect.width) * 255;
 }
 
+// The transfer curve's frame: its corners inset by the curve's radius from the
+// axes' inner edges (the 1 px baseline and bound lines), so the round caps sit in
+// the corners with the axes tangent to them instead of hanging off. t in [0, 1]
+// runs across the window, output 0 at y0 to 1 at y1.
+function histCurveFrame(width, height) {
+  const r = HIST_CURVE_WIDTH / 2;
+  const lowX = (windowLow / 255) * width, highX = (windowHigh / 255) * width;
+  return { x0: lowX + 0.5 + r, x1: Math.max(lowX + 0.5 + r, highX - 0.5 - r), y0: height - 1 - r, y1: r };
+}
+// The display transfer: value^gamma, reversed when inverted (the image shows this).
+function histCurveOut(t) {
+  t = Math.min(Math.max(t, 0), 1);
+  return Math.pow(imageInverted ? 1 - t : t, currentGamma);
+}
+// The frame's t at canvas x.
+function histCurveT(x, F) {
+  return F.x1 > F.x0 ? Math.min(Math.max((x - F.x0) / (F.x1 - F.x0), 0), 1) : 0;
+}
+// The curve's y at an intensity (0..255), for hit testing at the pointer's x.
 function gammaCurveY(intensity, width, height) {
   if (windowHigh <= windowLow) {
-    return height - 2;
+    return height - 1;
   }
-  const clampedIntensity = Math.min(Math.max(intensity, windowLow), windowHigh);
-  let t = (clampedIntensity - windowLow) / (windowHigh - windowLow);
-  if (imageInverted) t = 1 - t;                  // the curve slopes down when inverted
-  t = Math.min(Math.max(t, 0), 1);
-  const mapped = Math.pow(t, currentGamma);      // the display transfer (the image shows value^gamma)
-  // corner to corner: output 0 on the baseline (its 1 px line's center), 1 at the
-  // top of the bound lines
-  return (height - 0.5) - mapped * (height - 1);
+  const F = histCurveFrame(width, height);
+  return F.y0 - histCurveOut(histCurveT((intensity / 255) * width, F)) * (F.y0 - F.y1);
 }
 
 function updateHistogramCursor(evt) {
@@ -8471,12 +8477,13 @@ function handleHistogramPointerMove(evt) {
       const rect = histogramCanvas.getBoundingClientRect();
       const height = rect.height;
       const width = rect.width;
-      const clampedValue = Math.min(Math.max(value, windowLow + 0.5), windowHigh - 0.5);
-      let t = (clampedValue - windowLow) / (windowHigh - windowLow);
+      // the curve through the pointer, in the curve's inset frame: y = t^gamma
+      const F = histCurveFrame(width, height);
+      let t = histCurveT(evt.clientX - rect.left, F);
       if (imageInverted) t = 1 - t;
       t = Math.min(Math.max(t, 0.0001), 0.9999);
-      const yRatio = 1 - Math.min(Math.max((evt.clientY - rect.top) / height, 0.0001), 0.9999);
-      let newGamma = Math.log(yRatio) / Math.log(t);   // the curve through (t, y): y = t^gamma
+      const yRatio = Math.min(Math.max((F.y0 - (evt.clientY - rect.top)) / (F.y0 - F.y1), 0.0001), 0.9999);
+      let newGamma = Math.log(yRatio) / Math.log(t);
       if (!Number.isFinite(newGamma) || newGamma <= 0) {
         newGamma = currentGamma;
       }
