@@ -7512,9 +7512,25 @@ function syncGammaControls() {
   updateGammaLabel();
 }
 
+// The colormap icon's graph: the display curve, value^gamma, over [0, 1].
+function updateCmapIconCurve() {
+  const curve = document.getElementById('imageCmapIconCurve');
+  const area = document.getElementById('imageCmapIconArea');
+  if (!curve) return;
+  const g = currentGamma > 0 ? currentGamma : 1;
+  const pts = [];
+  for (let i = 0; i <= 16; i += 1) {
+    const t = i / 16;
+    pts.push(`${(5 + 15 * t).toFixed(2)} ${(16 - 12 * Math.pow(t, g)).toFixed(2)}`);
+  }
+  curve.setAttribute('d', 'M' + pts.join(' L'));
+  if (area) area.setAttribute('d', 'M' + pts.join(' L') + ' L20 16 L5 16Z');
+}
+
 function setGamma(gamma, { emit = true } = {}) {
   currentGamma = clampGammaValue(gamma);
   syncGammaControls();
+  updateCmapIconCurve();
   // The HDR layer applies gamma in its shader (it samples the raw image), so it
   // needs the new value too — the native SDR path bakes gamma into the texture.
   if (window.OcdHdr && OcdHdr.setGamma) OcdHdr.setGamma(currentGamma);
@@ -11198,6 +11214,7 @@ function getLuminance(r, g, b) {
  */
 window.__refreshCmapIcon = () => updateImageCmapPanelUI();   // (hdr_ui.js: the alpha toggle changes the icon)
 function updateImageCmapPanelUI() {
+  updateCmapIconCurve();
   // The colormap shows in the row's icon (a pill filled with it); the dropdown is a
   // plain pill with the colormap's name.
   const hasGradient = false;
@@ -11215,7 +11232,7 @@ function updateImageCmapPanelUI() {
       const a = alpha ? alpha[Math.round(t * (alpha.length - 1))] : 1;
       stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${(t * 100).toFixed(1)}%`);
     }
-    iconPill.style.setProperty('--cmap-icon-gradient', `conic-gradient(from 0deg, ${stops.join(', ')})`);
+    iconPill.style.setProperty('--cmap-icon-gradient', `linear-gradient(to right, ${stops.join(', ')})`);
     const icon = document.getElementById('imageCmapIcon');
     const entry = IMAGE_COLORMAPS.find((c) => c.value === imageColormap);
     if (icon) icon.title = 'Colormap: ' + (entry ? entry.label : imageColormap);

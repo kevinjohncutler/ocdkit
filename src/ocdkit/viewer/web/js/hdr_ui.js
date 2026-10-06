@@ -61,7 +61,7 @@
       pCanvas.id = 'hdrCmapPreview';
       pCanvas.style.cssText = 'position:absolute; inset:0; z-index:0; pointer-events:none; border-radius:inherit; clip-path: inset(var(--control-inset) round var(--control-inset-radius)); display:none;';
       pHeadroom = HH ? new HH() : null;
-      const disc = toggle.id === 'imageCmapIconPill';
+      const disc = toggle.classList.contains('cmap-icon-pill');   // (a disc icon; the bar icon takes a ramp)
       CI.createColormapRenderer(pCanvas, { hdr: true, headroom: pHeadroom }).then(function (r) {
         pR = r;
         // the dropdown: a left-to-right ramp; the colormap icon: a disc swept
