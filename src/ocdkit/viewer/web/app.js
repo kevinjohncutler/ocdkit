@@ -7521,47 +7521,27 @@ const HIST_CURVE_WIDTH = 2.75;   // the transfer curve's stroke (CSS px), the co
 // image's does (HdrColormap.transparentAlpha).
 const CMAP_ICON_GRID = [7.5, 12, 16.5];         // grid line positions (both axes)
 const CMAP_ICON_GRID_WIDTH = 1.4;
-const CMAP_ICON_GAP = 1;                        // clear space between the curve and the grid
-// The grid as a clip path of round-capped lines (capsules), each cut where it would
-// come within CMAP_ICON_GAP of the curve (pts: the curve's polyline), so the curve
-// sits in a cutout; pieces too short for their two caps are dropped. (Geometry, not
-// a CSS mask: the clip path also clips the HDR canvas.) Every capsule winds
+const CMAP_ICON_GAP = 0.75;                     // clear space each side of the curve
+// The grid as a clip path of round-capped lines (capsules). Every capsule winds
 // clockwise, so where lines cross they add up under the nonzero rule.
-function cmapIconGridClip(pts) {
-  const r = CMAP_ICON_GRID_WIDTH / 2, R = HIST_CURVE_WIDTH / 2 + CMAP_ICON_GAP + r;
-  const segDist = (x, y) => {                   // distance from (x, y) to the polyline
-    let best = Infinity;
-    for (let k = 0; k + 1 < pts.length; k += 1) {
-      const [ax, ay] = pts[k], [bx, by] = pts[k + 1];
-      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
-      const u = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / L2));
-      best = Math.min(best, Math.hypot(x - ax - u * dx, y - ay - u * dy));
-    }
-    return best;
-  };
+function cmapIconGridClip() {
+  const r = CMAP_ICON_GRID_WIDTH / 2, caps = [];
   const f = (v) => +v.toFixed(3);
-  const caps = [];
-  const vCapsule = (x, a, b) => caps.push(            // a vertical capsule spanning y = a..b
-    `M${f(x - r)} ${f(a + r)}A${r} ${r} 0 0 1 ${f(x + r)} ${f(a + r)}V${f(b - r)}A${r} ${r} 0 0 1 ${f(x - r)} ${f(b - r)}Z`);
-  const hCapsule = (y, a, b) => caps.push(            // a horizontal capsule spanning x = a..b
-    `M${f(a + r)} ${f(y - r)}H${f(b - r)}A${r} ${r} 0 0 1 ${f(b - r)} ${f(y + r)}H${f(a + r)}A${r} ${r} 0 0 1 ${f(a + r)} ${f(y - r)}Z`);
-  // the parts of the line from s = 3 to 21 (at fixed p) that stay clear of the curve
-  const runs = (at) => {
-    const out = [], step = 0.05;
-    let start = null;
-    for (let s = 3; s <= 21 + 1e-9; s += step) {
-      const clear = segDist(...at(s)) >= R;
-      if (clear && start === null) start = s;
-      if (!clear && start !== null) { out.push([start, s - step]); start = null; }
-    }
-    if (start !== null) out.push([start, 21]);
-    return out.filter(([a, b]) => b - a >= 2 * r + 0.4);
-  };
   for (const p of CMAP_ICON_GRID) {
-    for (const [a, b] of runs((s) => [p, s])) vCapsule(p, a, b);
-    for (const [a, b] of runs((s) => [s, p])) hCapsule(p, a, b);
+    caps.push(`M${f(p - r)} ${f(3 + r)}A${r} ${r} 0 0 1 ${f(p + r)} ${f(3 + r)}V${f(21 - r)}A${r} ${r} 0 0 1 ${f(p - r)} ${f(21 - r)}Z`);
+    caps.push(`M${f(3 + r)} ${f(p - r)}H${f(21 - r)}A${r} ${r} 0 0 1 ${f(21 - r)} ${f(p + r)}H${f(3 + r)}A${r} ${r} 0 0 1 ${f(3 + r)} ${f(p - r)}Z`);
   }
   return `path("${caps.join(' ')}")`;
+}
+// The cutout: a mask that is opaque everywhere but a smooth band along the curve
+// (the curve's width plus CMAP_ICON_GAP each side), so the grid stops short of the
+// curve with edges that follow it.
+function cmapIconCutoutMask(d) {
+  const w = HIST_CURVE_WIDTH + 2 * CMAP_ICON_GAP;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><defs><mask id="m">`
+    + `<rect width="24" height="24" fill="white"/><path d="${d}" fill="none" stroke="black" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`
+    + `</mask></defs><rect width="24" height="24" fill="white" mask="url(#m)"/></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }
 function updateCmapIconCurve() {
   const curve = document.getElementById('imageCmapIconCurve');
@@ -7576,10 +7556,12 @@ function updateCmapIconCurve() {
     const t = i / 48;
     pts.push([3 + 18 * t, 21 - 18 * out(t)]);
   }
-  curve.setAttribute('d', 'M' + pts.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(' L'));
+  const d = 'M' + pts.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(' L');
+  curve.setAttribute('d', d);
   curve.setAttribute('stroke-width', String(HIST_CURVE_WIDTH));   // (the icon is 24 px for 24 units: the histogram's width)
   if (!grid) return;
-  grid.style.setProperty('--cmap-icon-clip', cmapIconGridClip(pts));
+  grid.style.setProperty('--cmap-icon-clip', cmapIconGridClip());
+  grid.style.setProperty('--cmap-icon-mask', cmapIconCutoutMask(d));
   if (ViewerColormap.getColormapColorAtT) {
     // output 0 at y = 21 (the grid's bottom), 1 at y = 3: in the 24 px box, 12.5% to 87.5%
     const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);

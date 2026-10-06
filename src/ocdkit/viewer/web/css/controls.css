@@ -320,7 +320,8 @@
 /* colormap icon: the display curve (value^gamma, falling when the image is
    inverted) over a grid colored by the colormap along the output (y) axis: each
    horizontal line is the color of its output value, each vertical line the whole
-   ramp. The grid is a vertical colormap gradient clipped to the lines (app.js);
+   ramp. The grid is a vertical colormap gradient clipped to the lines, with a
+   mask cutting a smooth band out around the curve (app.js);
    with HDR on, hdr_ui.js draws an HDR canvas inside it (the clip path clips it). */
 .cmap-icon { position: relative; }
 .cmap-icon svg { position: relative; z-index: 1; width: 24px; height: 24px; display: block; }
@@ -332,6 +333,8 @@
   height: 24px;
   background: var(--cmap-icon-gradient, linear-gradient(to top, #000, #fff));
   clip-path: var(--cmap-icon-clip, none);
+  -webkit-mask: var(--cmap-icon-mask, none) 0 0 / 24px 24px no-repeat;
+  mask: var(--cmap-icon-mask, none) 0 0 / 24px 24px no-repeat;
 }
 .slider:focus { outline: none; }   /* the pressed thumb already shows focus */
 
