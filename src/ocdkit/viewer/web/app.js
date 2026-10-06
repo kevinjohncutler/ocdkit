@@ -8160,21 +8160,26 @@ function strokeOutlinePath(pts, w) {
 
 // Place the curve element over the canvas, clip it to the stroke and color it:
 // a CSS gradient (with the transparent low end when alpha is on) in SDR, and the
-// display values for hdr_ui.js's HDR canvas.
+// display values for hdr_ui.js's HDR canvas. The element overhangs the canvas by
+// HIST_CURVE_MARGIN on every side, so the stroke's outer half and round caps at
+// the plot's edges are not cut off (nothing paints outside an element's box).
+const HIST_CURVE_MARGIN = 4;
 function updateHistogramCurve(pts, width, height) {
   const el = document.getElementById('histogramCurve');
   if (!el) return;
   if (!pts) { el.style.setProperty('--hist-curve-clip', 'inset(50%)'); return; }
-  el.style.left = histogramCanvas.offsetLeft + 'px';
-  el.style.top = histogramCanvas.offsetTop + 'px';
-  el.style.width = width + 'px';
-  el.style.height = height + 'px';
-  el.style.setProperty('--hist-curve-clip', `path("${strokeOutlinePath(pts, HIST_CURVE_WIDTH)}")`);
+  const M = HIST_CURVE_MARGIN, EW = width + 2 * M;
+  el.style.left = (histogramCanvas.offsetLeft - M) + 'px';
+  el.style.top = (histogramCanvas.offsetTop - M) + 'px';
+  el.style.width = EW + 'px';
+  el.style.height = (height + 2 * M) + 'px';
+  el.style.setProperty('--hist-curve-clip', `path("${strokeOutlinePath(pts.map(([x, y]) => [x + M, y + M]), HIST_CURVE_WIDTH)}")`);
+  const valueAtElementX = (ex) => histDisplayValue(Math.min(Math.max((ex - M) / width, 0), 1) * 255);
   const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
   const alpha = transparent && window.HdrColormap && HdrColormap.transparentAlpha ? HdrColormap.transparentAlpha(imageColormap) : null;
   const n = 48, stops = [];
   for (let k = 0; k <= n; k += 1) {
-    const v = histDisplayValue((k / n) * 255);
+    const ex = (k / n) * EW, v = valueAtElementX(ex);
     const c = (ViewerColormap.getColormapColorAtT && ViewerColormap.getColormapColorAtT(v, imageColormap)) || [255 * v, 255 * v, 255 * v];
     const a = alpha ? alpha[Math.round(v * (alpha.length - 1))] : 1;
     stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${((k / n) * 100).toFixed(2)}%`);
@@ -8182,7 +8187,7 @@ function updateHistogramCurve(pts, width, height) {
   el.style.setProperty('--hist-curve-gradient', `linear-gradient(to right, ${stops.join(', ')})`);
   if (window.OcdHdrUI && OcdHdrUI.setHistogramRamp) {
     const W = 512, ramp = new Float32Array(W);
-    for (let x = 0; x < W; x += 1) ramp[x] = histDisplayValue((x / (W - 1)) * 255);
+    for (let x = 0; x < W; x += 1) ramp[x] = valueAtElementX(((x + 0.5) / W) * EW);
     OcdHdrUI.setHistogramRamp(ramp);
   }
 }
@@ -8304,10 +8309,11 @@ function gammaCurveY(intensity, width, height) {
   const clampedIntensity = Math.min(Math.max(intensity, windowLow), windowHigh);
   let t = (clampedIntensity - windowLow) / (windowHigh - windowLow);
   if (imageInverted) t = 1 - t;                  // the curve slopes down when inverted
-  t = Math.min(Math.max(t, 0.0001), 0.9999);
+  t = Math.min(Math.max(t, 0), 1);
   const mapped = Math.pow(t, currentGamma);      // the display transfer (the image shows value^gamma)
-  const y = height - (mapped * (height - 4)) - 2;
-  return Math.min(height - 2, Math.max(2, y));
+  // corner to corner: output 0 on the baseline (its 1 px line's center), 1 at the
+  // top of the bound lines
+  return (height - 0.5) - mapped * (height - 1);
 }
 
 function updateHistogramCursor(evt) {
