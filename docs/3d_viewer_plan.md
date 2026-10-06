@@ -190,3 +190,18 @@ Reuse colormaps `webgpu-view.js` LINE / THICK_LINE / POINT / SURFACE pipelines.
 **First PR = P0 + P1 (~1 week):** full 2.5D viewing of the spacetime stack with all
 overlays, end-to-end testable on `dnaA_xy1_crop.tif`, no WebGPU dependency, no
 regression risk. P2/P3 build the rotatable volume on top.
+
+## 3D drawing: open problem (2026-10-06)
+
+Painting new labels on the 3D render is disabled for now; the erase brush, fill and
+the picker still work in 3D. What was tried (`VolumeGPU.pickBrush`): each stroke
+point picked along its ray (first label; EA / MIDA where accumulated opacity reaches
+0.5; otherwise the brightest voxel, mean-shift refined), then kept continuous in
+depth (Vaa3D Virtual Finger's CDA1: each next pick within the brush radius of the
+last). Picking depth from a 2D cursor stayed too unpredictable in practice.
+
+Idea to try next (Kevin): cast a ray from the camera through the cursor into the
+volume and let the arrow keys move the brush ALONG that ray (depth), separately
+from moving it ACROSS the screen (orthogonal to the ray) with the mouse; prior art:
+depth-controllable "bead" cursors, Bowman and Hodges' Fishing Reel (1997), the
+mouse wheel as a depth axis, and napari's paint-on-a-plane.

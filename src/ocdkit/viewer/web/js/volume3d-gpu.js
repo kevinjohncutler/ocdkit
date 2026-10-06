@@ -968,7 +968,10 @@
         const h = self._brushHandler;
         if (!h || typeof window.__viewerActiveTool !== "function") return null;
         const t = window.__viewerActiveTool();
-        return (t === "draw" || t === "erase") && h.active(t) ? t : null;
+        // painting new labels in 3D is off for now (placing a stroke's depth from a
+        // 2D cursor was not reliable enough); erasing still brushes, and fill / pick
+        // click as before. (See docs/3d_viewer_plan.md, "3D drawing: open problem".)
+        return t === "erase" && h.active(t) ? t : null;
       };
       const spaceDown = () => !!(window.__viewerSpacePan && window.__viewerSpacePan());
       const brushAt = (e) => {
