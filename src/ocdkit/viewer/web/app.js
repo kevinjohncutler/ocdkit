@@ -8184,11 +8184,10 @@ function updateHistogramCurve(pts, width, height) {
   }
 }
 
-// The histogram's look: the accent fill's opacity, its top edge ('step' along the
-// bars, 'smooth' through the bin centers, 'none') and the edge's width. (A
-// prototype switch while choosing: window.__viewerSetHistBarStyle({...}).)
-var histBarStyle = { fill: 1, edge: 'none', edgeWidth: 1.25 };   // (var: may be read before this line runs)
-window.__viewerSetHistBarStyle = (o) => { Object.assign(histBarStyle, o); renderHistogram(); };
+// The histogram's look: a translucent accent fill under an opaque edge through the
+// bin centers (a step edge doubles up on its vertical runs: uneven widths).
+const HIST_FILL_OPACITY = 0.35;
+const HIST_EDGE_WIDTH = 1.5;
 
 function renderHistogram() {
   if (!histogramCanvas || !histogramData) {
@@ -8213,26 +8212,21 @@ function renderHistogram() {
   ctx.clearRect(0, 0, width, height);
   const maxCount = Math.max(...histogramData);
   if (maxCount > 0) {
-    // the bars as one outline (separate fractional rects leave seams between them):
-    // a fill, then (optionally) an opaque top edge along it
-    const binWidth = width / 256, smooth = histBarStyle.edge === 'smooth';
+    // one outline through the bin centers (separate fractional rects leave seams
+    // between them): a translucent fill, then the opaque edge along its top
+    const binWidth = width / 256;
     const tops = [];
     for (let i = 0; i < 256; i += 1) {
       const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
       tops.push(height - value * (height - 4));
     }
     const edgePath = () => {
-      if (smooth) {
-        ctx.moveTo(0, tops[0]);
-        tops.forEach((y, i) => ctx.lineTo((i + 0.5) * binWidth, y));
-        ctx.lineTo(width, tops[255]);
-      } else {
-        ctx.moveTo(0, tops[0]);
-        tops.forEach((y, i) => { ctx.lineTo(i * binWidth, y); ctx.lineTo((i + 1) * binWidth, y); });
-      }
+      ctx.moveTo(0, tops[0]);
+      tops.forEach((y, i) => ctx.lineTo((i + 0.5) * binWidth, y));
+      ctx.lineTo(width, tops[255]);
     };
     ctx.save();
-    ctx.globalAlpha = histBarStyle.fill;
+    ctx.globalAlpha = HIST_FILL_OPACITY;
     ctx.fillStyle = accentColor;
     ctx.beginPath();
     ctx.moveTo(0, height);
@@ -8241,15 +8235,13 @@ function renderHistogram() {
     ctx.closePath();
     ctx.fill();
     ctx.restore();
-    if (histBarStyle.edge !== 'none') {
-      ctx.strokeStyle = accentColor;
-      ctx.lineWidth = histBarStyle.edgeWidth;
-      ctx.lineJoin = 'round';
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      edgePath();
-      ctx.stroke();
-    }
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = HIST_EDGE_WIDTH;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    edgePath();
+    ctx.stroke();
   }
 
   const lowX = (windowLow / 255) * width;
