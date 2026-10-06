@@ -7521,14 +7521,47 @@ const HIST_CURVE_WIDTH = 2.75;   // the transfer curve's stroke (CSS px), the co
 // image's does (HdrColormap.transparentAlpha).
 const CMAP_ICON_GRID = [7.5, 12, 16.5];         // grid line positions (both axes)
 const CMAP_ICON_GRID_WIDTH = 1.4;
-function cmapIconGridClip() {
-  const r = CMAP_ICON_GRID_WIDTH / 2, rects = [];
-  const rect = (x0, y0, x1, y1) => `M${x0} ${y0}H${x1}V${y1}H${x0}Z`;
+const CMAP_ICON_GAP = 1;                        // clear space between the curve and the grid
+// The grid as a clip path of round-capped lines (capsules), each cut where it would
+// come within CMAP_ICON_GAP of the curve (pts: the curve's polyline), so the curve
+// sits in a cutout; pieces too short for their two caps are dropped. (Geometry, not
+// a CSS mask: the clip path also clips the HDR canvas.) Every capsule winds
+// clockwise, so where lines cross they add up under the nonzero rule.
+function cmapIconGridClip(pts) {
+  const r = CMAP_ICON_GRID_WIDTH / 2, R = HIST_CURVE_WIDTH / 2 + CMAP_ICON_GAP + r;
+  const segDist = (x, y) => {                   // distance from (x, y) to the polyline
+    let best = Infinity;
+    for (let k = 0; k + 1 < pts.length; k += 1) {
+      const [ax, ay] = pts[k], [bx, by] = pts[k + 1];
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+      const u = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / L2));
+      best = Math.min(best, Math.hypot(x - ax - u * dx, y - ay - u * dy));
+    }
+    return best;
+  };
+  const f = (v) => +v.toFixed(3);
+  const caps = [];
+  const vCapsule = (x, a, b) => caps.push(            // a vertical capsule spanning y = a..b
+    `M${f(x - r)} ${f(a + r)}A${r} ${r} 0 0 1 ${f(x + r)} ${f(a + r)}V${f(b - r)}A${r} ${r} 0 0 1 ${f(x - r)} ${f(b - r)}Z`);
+  const hCapsule = (y, a, b) => caps.push(            // a horizontal capsule spanning x = a..b
+    `M${f(a + r)} ${f(y - r)}H${f(b - r)}A${r} ${r} 0 0 1 ${f(b - r)} ${f(y + r)}H${f(a + r)}A${r} ${r} 0 0 1 ${f(a + r)} ${f(y - r)}Z`);
+  // the parts of the line from s = 3 to 21 (at fixed p) that stay clear of the curve
+  const runs = (at) => {
+    const out = [], step = 0.05;
+    let start = null;
+    for (let s = 3; s <= 21 + 1e-9; s += step) {
+      const clear = segDist(...at(s)) >= R;
+      if (clear && start === null) start = s;
+      if (!clear && start !== null) { out.push([start, s - step]); start = null; }
+    }
+    if (start !== null) out.push([start, 21]);
+    return out.filter(([a, b]) => b - a >= 2 * r + 0.4);
+  };
   for (const p of CMAP_ICON_GRID) {
-    rects.push(rect(p - r, 3, p + r, 21));       // vertical
-    rects.push(rect(3, p - r, 21, p + r));       // horizontal
+    for (const [a, b] of runs((s) => [p, s])) vCapsule(p, a, b);
+    for (const [a, b] of runs((s) => [s, p])) hCapsule(p, a, b);
   }
-  return `path("${rects.join(' ')}")`;
+  return `path("${caps.join(' ')}")`;
 }
 function updateCmapIconCurve() {
   const curve = document.getElementById('imageCmapIconCurve');
@@ -7539,14 +7572,14 @@ function updateCmapIconCurve() {
   try { inv = imageInverted; } catch (e) { /* (declared further down: not set yet) */ }
   const out = (t) => Math.pow(inv ? 1 - t : t, g);
   const pts = [];
-  for (let i = 0; i <= 24; i += 1) {
-    const t = i / 24;
-    pts.push(`${(3 + 18 * t).toFixed(2)} ${(21 - 18 * out(t)).toFixed(2)}`);
+  for (let i = 0; i <= 48; i += 1) {
+    const t = i / 48;
+    pts.push([3 + 18 * t, 21 - 18 * out(t)]);
   }
-  curve.setAttribute('d', 'M' + pts.join(' L'));
+  curve.setAttribute('d', 'M' + pts.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(' L'));
   curve.setAttribute('stroke-width', String(HIST_CURVE_WIDTH));   // (the icon is 24 px for 24 units: the histogram's width)
   if (!grid) return;
-  grid.style.setProperty('--cmap-icon-clip', cmapIconGridClip());
+  grid.style.setProperty('--cmap-icon-clip', cmapIconGridClip(pts));
   if (ViewerColormap.getColormapColorAtT) {
     // output 0 at y = 21 (the grid's bottom), 1 at y = 3: in the 24 px box, 12.5% to 87.5%
     const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
