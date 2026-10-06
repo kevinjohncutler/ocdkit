@@ -8255,7 +8255,8 @@ function renderHistogram() {
   updateHistogramCursor();
 }
 
-// Over the curve: the baseline (the x axis) and the window's bound lines.
+// Over the curve: the axes, the bottom axis and the window's bound lines (1 px, one
+// color; empty bins draw nothing, so the axis is the only line along the bottom).
 function renderHistogramTop(width, height, lowX, highX) {
   const top = document.getElementById('histogramTop');
   const ctx = top && top.getContext('2d');
@@ -8269,9 +8270,10 @@ function renderHistogramTop(width, height, lowX, highX) {
   top.style.height = height + 'px';
   ctx.setTransform(bw / width, 0, 0, bh / height, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = accentColor;
+  const axis = panelTextColor || '#ffffff';     // (the panel's text color: shows in both themes)
+  ctx.fillStyle = axis;
   ctx.fillRect(0, height - 1, width, 1);
-  ctx.strokeStyle = '#ffffff';
+  ctx.strokeStyle = axis;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(lowX, 0);
