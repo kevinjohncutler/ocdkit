@@ -8103,7 +8103,6 @@ function histDisplayValue(intensity) {
 }
 
 const HIST_CURVE_WIDTH = 2;      // the transfer curve's stroke (CSS px)
-const HIST_CURVE_GAP = 1.5;      // the histogram is cut away this far around it
 
 // The outline of a stroke of width w along the points (round caps), as an SVG
 // path: the clip path that turns an element into the line.
@@ -8190,7 +8189,7 @@ function renderHistogram() {
     ctx.moveTo(0, height);
     for (let i = 0; i < 256; i += 1) {
       const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
-      const top = height - Math.max(1, value * (height - 4));
+      const top = height - value * (height - 4);
       ctx.lineTo(i * binWidth, top);
       ctx.lineTo((i + 1) * binWidth, top);
     }
@@ -8203,18 +8202,10 @@ function renderHistogram() {
   const highX = (windowHigh / 255) * width;
   ctx.fillStyle = histogramWindowColor;
   ctx.fillRect(lowX, 0, Math.max(highX - lowX, 1), height);
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(lowX, 0);
-  ctx.lineTo(lowX, height);
-  ctx.moveTo(highX, 0);
-  ctx.lineTo(highX, height);
-  ctx.stroke();
   if (windowHigh > windowLow) {
-    // the transfer curve: cut it out of the histogram (a gap around the line, so
-    // the bars never blend into it), then show it as the clipped curve element
-    // (vector edges; HDR and alpha follow the image)
+    // the transfer curve: cut its footprint out of the histogram (so the bars never
+    // blend into it), then show it as the clipped curve element (vector edges; HDR
+    // and alpha follow the image)
     const n = Math.max(32, Math.ceil((highX - lowX) / 2));
     const pts = [];
     for (let k = 0; k <= n; k += 1) {
@@ -8225,7 +8216,7 @@ function renderHistogram() {
     ctx.globalCompositeOperation = 'destination-out';
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = HIST_CURVE_WIDTH + 2 * HIST_CURVE_GAP;
+    ctx.lineWidth = HIST_CURVE_WIDTH;
     ctx.beginPath();
     pts.forEach((p, k) => (k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
     ctx.stroke();
@@ -8234,7 +8225,34 @@ function renderHistogram() {
   } else {
     updateHistogramCurve(null);
   }
+  renderHistogramTop(width, height, lowX, highX);
   updateHistogramCursor();
+}
+
+// Over the curve: the baseline (the x axis) and the window's bound lines.
+function renderHistogramTop(width, height, lowX, highX) {
+  const top = document.getElementById('histogramTop');
+  const ctx = top && top.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.max(1, Math.round(width * dpr)), bh = Math.max(1, Math.round(height * dpr));
+  if (top.width !== bw || top.height !== bh) { top.width = bw; top.height = bh; }
+  top.style.left = histogramCanvas.offsetLeft + 'px';
+  top.style.top = histogramCanvas.offsetTop + 'px';
+  top.style.width = width + 'px';
+  top.style.height = height + 'px';
+  ctx.setTransform(bw / width, 0, 0, bh / height, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = accentColor;
+  ctx.fillRect(0, height - 1, width, 1);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(lowX, 0);
+  ctx.lineTo(lowX, height);
+  ctx.moveTo(highX, 0);
+  ctx.lineTo(highX, height);
+  ctx.stroke();
 }
 // redraw when the panel resizes or the window moves to a display of another density
 if (histogramCanvas && typeof ResizeObserver === 'function') {

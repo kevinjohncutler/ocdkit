@@ -1833,6 +1833,8 @@ button:not(:disabled):hover {
   clip-path: var(--hist-curve-clip, inset(50%));
 }
 .histogram-curve.hdr-live { background: none; }
+/* the baseline and the window's bound lines, drawn over the curve */
+.histogram-top { position: absolute; pointer-events: none; }
 
 .histogram-value-marker {
   position: absolute;
