@@ -8184,6 +8184,12 @@ function updateHistogramCurve(pts, width, height) {
   }
 }
 
+// The histogram's look: the accent fill's opacity, its top edge ('step' along the
+// bars, 'smooth' through the bin centers, 'none') and the edge's width. (A
+// prototype switch while choosing: window.__viewerSetHistBarStyle({...}).)
+var histBarStyle = { fill: 1, edge: 'none', edgeWidth: 1.25 };   // (var: may be read before this line runs)
+window.__viewerSetHistBarStyle = (o) => { Object.assign(histBarStyle, o); renderHistogram(); };
+
 function renderHistogram() {
   if (!histogramCanvas || !histogramData) {
     return;
@@ -8207,20 +8213,43 @@ function renderHistogram() {
   ctx.clearRect(0, 0, width, height);
   const maxCount = Math.max(...histogramData);
   if (maxCount > 0) {
-    // the bars as one outline (separate fractional rects leave seams between them)
-    ctx.fillStyle = accentColor;
-    const binWidth = width / 256;
-    ctx.beginPath();
-    ctx.moveTo(0, height);
+    // the bars as one outline (separate fractional rects leave seams between them):
+    // a fill, then (optionally) an opaque top edge along it
+    const binWidth = width / 256, smooth = histBarStyle.edge === 'smooth';
+    const tops = [];
     for (let i = 0; i < 256; i += 1) {
       const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
-      const top = height - value * (height - 4);
-      ctx.lineTo(i * binWidth, top);
-      ctx.lineTo((i + 1) * binWidth, top);
+      tops.push(height - value * (height - 4));
     }
+    const edgePath = () => {
+      if (smooth) {
+        ctx.moveTo(0, tops[0]);
+        tops.forEach((y, i) => ctx.lineTo((i + 0.5) * binWidth, y));
+        ctx.lineTo(width, tops[255]);
+      } else {
+        ctx.moveTo(0, tops[0]);
+        tops.forEach((y, i) => { ctx.lineTo(i * binWidth, y); ctx.lineTo((i + 1) * binWidth, y); });
+      }
+    };
+    ctx.save();
+    ctx.globalAlpha = histBarStyle.fill;
+    ctx.fillStyle = accentColor;
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    edgePath();
     ctx.lineTo(width, height);
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+    if (histBarStyle.edge !== 'none') {
+      ctx.strokeStyle = accentColor;
+      ctx.lineWidth = histBarStyle.edgeWidth;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      edgePath();
+      ctx.stroke();
+    }
   }
 
   const lowX = (windowLow / 255) * width;
@@ -8270,10 +8299,16 @@ function renderHistogramTop(width, height, lowX, highX) {
   top.style.height = height + 'px';
   ctx.setTransform(bw / width, 0, 0, bh / height, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  const axis = panelTextColor || '#ffffff';     // (the panel's text color: shows in both themes)
-  ctx.fillStyle = axis;
+  // the bottom axis as the row icons render (their color at their label opacity);
+  // the bound lines (the handles) in the text color
+  const iconEl = document.getElementById('imageCmapIcon');
+  const iconStyle = iconEl ? getComputedStyle(iconEl) : null;
+  ctx.save();
+  ctx.globalAlpha = iconStyle ? (parseFloat(iconStyle.opacity) || 1) : 1;
+  ctx.fillStyle = (iconStyle && iconStyle.color) || panelTextColor;
   ctx.fillRect(0, height - 1, width, 1);
-  ctx.strokeStyle = axis;
+  ctx.restore();
+  ctx.strokeStyle = panelTextColor || '#ffffff';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(lowX, 0);
