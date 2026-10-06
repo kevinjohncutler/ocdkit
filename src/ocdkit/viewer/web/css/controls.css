@@ -317,29 +317,20 @@
 .icon-toggle:has(input:checked) > .icon-toggle-text { opacity: 1; }
 .icon-toggle > input[type='checkbox'] { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
 /* colormap icon: a pill filled with the selected colormap (stops set by app.js) */
-/* colormap icon: a gray graph of the display curve (it follows gamma), with the
-   colormap as a bar under its x axis (app.js sets the bar and the curve; with HDR
-   on, hdr_ui.js draws the bar's HDR colormap canvas inside it) */
+/* colormap icon: the display curve (value^gamma, inverted when the image is) on a
+   grid, the area under it filled with the colors each value is shown in. app.js
+   sets the curve, the fill's gradient and its clip path; with HDR on, hdr_ui.js
+   draws an HDR canvas inside the fill (the clip path clips it too). */
 .cmap-icon { position: relative; }
-.cmap-icon svg { width: 24px; height: 24px; display: block; }
-.cmap-icon-bar {
+.cmap-icon svg { position: relative; z-index: 1; width: 24px; height: 24px; display: block; }
+.cmap-icon-fill {
   position: absolute;
-  left: calc(50% - 8.5px);
-  bottom: calc(50% - 10px);   /* (the svg is 24 px, centered: the bar sits 2 px above its bottom) */
-  width: 17px;
-  height: 3.5px;
-  border-radius: 1.75px;
-  overflow: hidden;
+  left: calc(50% - 12px);
+  top: calc(50% - 12px);
+  width: 24px;
+  height: 24px;
   background: var(--cmap-icon-gradient, linear-gradient(to right, #000, #fff));
-}
-.cmap-icon-bar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 0.6px rgba(128, 128, 128, 0.45);
-  z-index: 1;
-  pointer-events: none;
+  clip-path: var(--cmap-icon-clip, none);
 }
 .slider:focus { outline: none; }   /* the pressed thumb already shows focus */
 

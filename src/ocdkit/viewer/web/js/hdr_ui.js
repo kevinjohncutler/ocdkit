@@ -44,6 +44,7 @@
   // Safari forces to SDR under position:relative/absolute). CSS color() clamps,
   // so a canvas is the only real HDR surface. ──
   let pCanvas = null, pR = null, pHeadroom = null;
+  let iconGamma = 1, iconInvert = false;          // the icon's display transfer (app.js)
   let gainSliderEl = null, gainNumEl = null;     // HDR gain slider + number field
   function dropdownToggle() {
     const pill = document.getElementById('imageCmapIconPill');   // the colormap icon, when the panel has one
@@ -61,18 +62,9 @@
       pCanvas.id = 'hdrCmapPreview';
       pCanvas.style.cssText = 'position:absolute; inset:0; z-index:0; pointer-events:none; border-radius:inherit; clip-path: inset(var(--control-inset) round var(--control-inset-radius)); display:none;';
       pHeadroom = HH ? new HH() : null;
-      const disc = toggle.classList.contains('cmap-icon-pill');   // (a disc icon; the bar icon takes a ramp)
       CI.createColormapRenderer(pCanvas, { hdr: true, headroom: pHeadroom }).then(function (r) {
         pR = r;
-        // the dropdown: a left-to-right ramp; the colormap icon: a disc swept
-        // clockwise from the top, like its CSS conic gradient
-        const W = disc ? 96 : 256, H = disc ? 96 : 4, ramp = new Float32Array(W * H);
-        for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
-          ramp[y * W + x] = disc
-            ? ((Math.atan2(x + 0.5 - W / 2, H / 2 - (y + 0.5)) / (2 * Math.PI)) + 1) % 1
-            : x / (W - 1);
-        }
-        r.setImage(ramp, W, H); r.setRange(0, 1);
+        setRamp();
         updatePreview();
       });
     }
@@ -80,6 +72,19 @@
       toggle.appendChild(pCanvas);   // (re)attach after a dropdown re-render
       if (toggle.id === 'imageCmapIconPill') pCanvas.style.clipPath = 'none';   // (the icon pill clips it)
     }
+  }
+  // a left-to-right ramp; for the colormap icon, through its display transfer
+  // (value^gamma, reversed when inverted) like the icon's SDR gradient
+  function setRamp() {
+    if (!pR) return;
+    const icon = !!document.getElementById('imageCmapIconPill');
+    const W = 256, H = 4, ramp = new Float32Array(W * H);
+    for (let x = 0; x < W; x += 1) {
+      let v = x / (W - 1);
+      if (icon) v = Math.pow(iconInvert ? 1 - v : v, iconGamma);
+      for (let y = 0; y < H; y += 1) ramp[y * W + x] = v;
+    }
+    pR.setImage(ramp, W, H); pR.setRange(0, 1);
   }
   function cmapName() {
     const s = document.getElementById('imageCmapSelect'); const n = (s && s.value) || 'viridis';
@@ -175,6 +180,11 @@
     if (window.__refreshCmapIcon) window.__refreshCmapIcon();   // the colormap icon shows the transparency too
   };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
+  api.setIconTransfer = function (g, inv) {
+    if (g === iconGamma && !!inv === iconInvert) return;
+    iconGamma = g; iconInvert = !!inv;
+    if (pR) { setRamp(); updatePreview(); }
+  };
   // The gain slider is hidden unless switched on (image panel, right-click).
   const GAIN_VIS_STORE = 'ocdkit-hdr-gain-visible';
   try { api.gainVisible = localStorage.getItem(GAIN_VIS_STORE) === '1'; } catch (e) { api.gainVisible = false; }
