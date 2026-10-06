@@ -441,6 +441,12 @@
           const j = await r.json();
           srvCanUndo = !!j.canUndo; srvCanRedo = !!j.canRedo;
           hasMask = true; window.__viewerMaskEdited = false;
+        } else {
+          // the stroke was not saved: say so (the refresh below removes it from the view)
+          const msg = r.status === 404 ? "3D paint not saved: restart the viewer server (it predates 3D painting)"
+                                       : "3D paint not saved (HTTP " + r.status + ")";
+          console.warn(msg);
+          fpsEl.textContent = msg;
         }
         await fetchNColorMap();
         await refresh3DLabels();                 // the server's result (or a revert, on failure)

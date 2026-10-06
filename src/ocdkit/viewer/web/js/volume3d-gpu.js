@@ -791,12 +791,21 @@
       this._requestRender();
     }
 
-    /** What the 3D brush paints at canvas pixel (px, py): the first labelled voxel
-     *  when labels are drawn (they are drawn first), else the voxel the projection
-     *  shows (the brightest in the display window; for AMIP the brightest after
-     *  attenuation). Returns { point: [x, y, z] continuous voxel-index coords at
-     *  that voxel's middle along the ray, voxel: [i, j, k] } or null. */
-    pickBrush(px, py) {
+    /** Where the 3D brush lands at canvas pixel (px, py), chosen the way the view
+     *  shows the volume (as in Vaa3D's Virtual Finger, 3D Slicer, Imaris):
+     *    - labels drawn: the first labelled voxel along the ray;
+     *    - EA / MIDA with some density: where the accumulated opacity reaches 0.5
+     *      (the surface you see);
+     *    - otherwise (MIP, mean, AMIP, or no density): the brightest voxel in the
+     *      display window (for AMIP after attenuation), refined by a short
+     *      mean-shift toward the center of that bright blob along the ray.
+     *  opts.prev ([x, y, z]) and opts.window (voxels) keep a stroke continuous
+     *  (Virtual Finger's CDA1): only depths within `window` of the point on this
+     *  ray nearest the previous one count, and if nothing there qualifies the
+     *  stroke continues at that same depth. Returns { point: [x, y, z]
+     *  continuous voxel-index coords, voxel: [i, j, k] } or null. */
+    pickBrush(px, py, opts) {
+      opts = opts || {};
       const ray = this.pickRayWorld(px, py), box = this._box();
       const NX = this.NX, NY = this.NY, NZ = this.NZ, res = [NX, NY, NZ];
       const span = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
@@ -812,37 +821,85 @@
       tn = Math.max(tn, 0);
       if (!(tn < tf)) return null;
       const dv = rd.map((v, a) => { const d = v / span[a] * res[a]; return Math.abs(d) < 1e-9 ? 1e-9 : d; });
+      const dvLen = Math.hypot(dv[0], dv[1], dv[2]);
       const p0 = ro.map((v, a) => (v + rd[a] * tn - box.min[a]) / span[a] * res[a]);
+      const at = (t) => p0.map((v, a) => v + dv[a] * t);
+      const hitAt = (t) => { const p = at(t); return { point: p, voxel: p.map((v, a) => Math.min(res[a] - 1, Math.max(0, Math.floor(v)))) }; };
+      // the samples along the ray: every voxel it crosses, with its parameter range
       const vox = p0.map((v, a) => Math.min(res[a] - 1, Math.max(0, Math.floor(v))));
       const stp = dv.map(Math.sign), tDelta = dv.map((d) => Math.abs(1 / d));
       const tMax = vox.map((v, a) => (v + Math.max(stp[a], 0) - p0[a]) / dv[a]);
       const H = this._halfTable || (this._halfTable = halfTable());
       const vol = this._volF16, lab = this._labHost;
-      const labelsFirst = lab && this.showLabels > 0 && this.labelOpacity > 0;
       const lo = this._win[0], sc = this._win[1];
-      const amip = this.mode === 4, q = this._amipQ, kq = 3 / Math.max(this._amipDepth || 25, 0.05);
-      const dvLen = Math.hypot(dv[0], dv[1], dv[2]), selfDim = this._amipSelf === false ? 0 : 0.5;
-      let best = 0, bestVox = null, bestT0 = 0, bestT1 = 0, tPrev = 0, tau = 0;
+      const S = [];                                    // { t0, t1, s (raw), sw (windowed), lab }
+      let tPrev = 0;
       for (let n = 0; n < NX + NY + NZ + 3; n++) {
         const idx = (vox[2] * NY + vox[1]) * NX + vox[0];
         const tExit = Math.min(tMax[0], tMax[1], tMax[2]);
-        if (labelsFirst && lab[idx] > 0) { bestVox = vox.slice(); bestT0 = tPrev; bestT1 = tExit; best = 1; break; }
-        const sw = Math.min(1, Math.max(0, (H[vol[idx]] - lo) * sc));
-        let v = sw;
-        if (amip && sw > 0 && Number.isFinite(q)) {
-          const dTau = kq * Math.pow(sw, q) * Math.max(tExit - tPrev, 0) * dvLen;
-          v = sw * Math.exp(-(tau + selfDim * dTau));
-          tau += dTau;
-        }
-        if (v > best) { best = v; bestVox = vox.slice(); bestT0 = tPrev; bestT1 = tExit; }
+        const sRaw = H[vol[idx]];
+        S.push({ t0: tPrev, t1: tExit, s: sRaw, sw: Math.min(1, Math.max(0, (sRaw - lo) * sc)), lab: lab ? lab[idx] : 0 });
         tPrev = tExit;
         const a = (tMax[0] < tMax[1] && tMax[0] < tMax[2]) ? 0 : (tMax[1] < tMax[2] ? 1 : 2);
         vox[a] += stp[a]; tMax[a] += tDelta[a];
         if (vox[a] < 0 || vox[a] >= res[a]) break;
       }
-      if (!bestVox || best <= 0.02) return null;
-      const tm = 0.5 * (bestT0 + bestT1);
-      return { point: p0.map((v, a) => v + dv[a] * tm), voxel: bestVox };
+      if (!S.length) return null;
+      // stroke continuity: the depth window around the previous point
+      let tc = null, inWin = () => true;
+      if (opts.prev) {
+        const d = opts.prev.map((v, a) => v - p0[a]);
+        tc = (d[0] * dv[0] + d[1] * dv[1] + d[2] * dv[2]) / (dvLen * dvLen);
+        const w = Math.max(1, +opts.window || 3) / dvLen;
+        inWin = (smp) => Math.abs(0.5 * (smp.t0 + smp.t1) - tc) <= w;
+      }
+      const fallback = () => (tc != null ? hitAt(Math.min(Math.max(tc, 0), tPrev)) : null);
+      // labels drawn: the first labelled voxel
+      if (lab && this.showLabels > 0 && this.labelOpacity > 0) {
+        const f = S.find((smp) => smp.lab > 0 && inWin(smp));
+        if (f) return hitAt(0.5 * (f.t0 + f.t1));
+      }
+      // EA / MIDA with density: where the accumulated opacity reaches 0.5
+      const mode = this.mode;
+      if ((mode === 0 || mode === 3) && this.density > 0) {
+        const dens = this._classify ? Math.pow(2, 6 * this.density) - 1 : this.density;
+        let A = 0;
+        for (const smp of S) {
+          const v = this._classify ? smp.sw : Math.min(1, Math.max(0, smp.s));
+          const L = (smp.t1 - smp.t0);
+          A += (1 - A) * (1 - Math.exp(-dens * v * L));
+          if (A >= 0.5 && inWin(smp)) return hitAt(0.5 * (smp.t0 + smp.t1));
+        }
+      }
+      // brightest in the window (AMIP: after attenuation), then mean-shift along the ray
+      const score = new Float32Array(S.length);
+      if (mode === 4 && Number.isFinite(this._amipQ)) {
+        const q = this._amipQ, k = 3 / Math.max(this._amipDepth || 25, 0.05), selfDim = this._amipSelf === false ? 0 : 0.5;
+        let tau = 0;
+        S.forEach((smp, i) => {
+          const dTau = smp.sw > 0 ? k * Math.pow(smp.sw, q) * (smp.t1 - smp.t0) * dvLen : 0;
+          score[i] = smp.sw * Math.exp(-(tau + selfDim * dTau)); tau += dTau;
+        });
+      } else S.forEach((smp, i) => { score[i] = smp.sw; });
+      let bi = -1;
+      S.forEach((smp, i) => { if (inWin(smp) && (bi < 0 || score[i] > score[bi])) bi = i; });
+      if (bi < 0 || score[bi] <= 0.02) return fallback();
+      let t = 0.5 * (S[bi].t0 + S[bi].t1);
+      const h = Math.max(2, +opts.window || 3) / dvLen, floor = 0.5 * score[bi];
+      for (let it = 0; it < 5; it++) {               // mean-shift toward the blob's center
+        let sw = 0, st = 0;
+        S.forEach((smp, i) => {
+          const tm = 0.5 * (smp.t0 + smp.t1);
+          if (Math.abs(tm - t) > h || !inWin(smp)) return;
+          const wgt = Math.max(score[i] - floor, 0);
+          sw += wgt; st += wgt * tm;
+        });
+        if (sw <= 0) break;
+        const nt = st / sw;
+        if (Math.abs(nt - t) < 0.05) { t = nt; break; }
+        t = nt;
+      }
+      return hitAt(t);
     }
 
     /** Paint a brush ball into the 3D label texture right away (the server's
@@ -915,11 +972,15 @@
       };
       const spaceDown = () => !!(window.__viewerSpacePan && window.__viewerSpacePan());
       const brushAt = (e) => {
-        const r = c.getBoundingClientRect(), hit = self.pickBrush(e.clientX - r.left, e.clientY - r.top);
+        const h = self._brushHandler, radius = h.radius();
+        const r = c.getBoundingClientRect();
+        // while painting, stay near the stroke's last point (a continuous stroke)
+        const prev = painting && painting.lastPoint;
+        const hit = self.pickBrush(e.clientX - r.left, e.clientY - r.top, prev ? { prev, window: Math.max(3, radius) } : null);
         if (!hit) return null;
-        const h = self._brushHandler, snap = h.snap();
-        const center = snap ? hit.voxel.map((v) => v + 0.5) : hit.point;
-        return { center, radius: h.radius() };
+        if (painting) painting.lastPoint = hit.point;
+        const center = h.snap() ? hit.voxel.map((v) => v + 0.5) : hit.point;
+        return { center, radius };
       };
       const previewAt = (e) => {
         if (!brushTool() || spaceDown() || drag) { if (self._brush) self.setBrush(null); return null; }
@@ -931,9 +992,9 @@
       c.addEventListener("pointerdown", (e) => {
         const tool = e.button === 0 && !e.shiftKey && !spaceDown() ? brushTool() : null;
         if (tool) {                                     // paint (space + drag rotates instead)
-          const b = previewAt(e);
           const h = self._brushHandler, value = h.value(tool);
-          painting = { tool, value, centers: [] };
+          painting = { tool, value, centers: [], lastPoint: null };
+          const b = previewAt(e);
           if (b) { painting.centers.push(b.center); self.stampLabels(b.center, b.radius, value); }
           c.setPointerCapture(e.pointerId);
           return;
