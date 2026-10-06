@@ -45,6 +45,27 @@
   // so a canvas is the only real HDR surface. ──
   let pCanvas = null, pR = null, pHeadroom = null;
   let iconGamma = 1, iconInvert = false;          // the icon's display transfer (app.js)
+  // the histogram's transfer curve: an HDR canvas inside the clipped curve element
+  let hCanvas = null, hR = null, hRamp = null;
+  function setHistRamp() {
+    if (!hR || !hRamp) return;
+    const W = hRamp.length, img = new Float32Array(W * 2);
+    img.set(hRamp, 0); img.set(hRamp, W);
+    hR.setImage(img, W, 2); hR.setRange(0, 1);
+  }
+  function ensureHistCurve() {
+    const host = document.getElementById('histogramCurve');
+    if (!CI || !host) return null;
+    if (!hCanvas) {
+      hCanvas = document.createElement('canvas');
+      hCanvas.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none; display:none;';
+      CI.createColormapRenderer(hCanvas, { hdr: true, headroom: HH ? new HH() : null }).then(function (r) {
+        hR = r; setHistRamp(); updatePreview();
+      });
+    }
+    if (hCanvas.parentElement !== host) host.appendChild(hCanvas);
+    return host;
+  }
   let gainSliderEl = null, gainNumEl = null;     // HDR gain slider + number field
   function dropdownToggle() {
     const pill = document.getElementById('imageCmapIconPill');   // the colormap icon, when the panel has one
@@ -99,6 +120,20 @@
     // Show the HDR canvas only while HDR is on; otherwise the toggle's SDR
     // ::before gradient shows through.
     if (pCanvas) pCanvas.style.display = (n && api.available && api.enabled) ? 'block' : 'none';
+    // the histogram curve: HDR canvas while HDR is on, else its CSS gradient
+    const host = ensureHistCurve();
+    if (host) {
+      const live = !!(n && api.available && api.enabled && hR);
+      host.classList.toggle('hdr-live', live);
+      hCanvas.style.display = live ? 'block' : 'none';
+      if (live) {
+        hR.setColormap(n);
+        if (hR.setTransparent) hR.setTransparent(api.transparent);
+        if (hR.setHdr) hR.setHdr(api.enabled);
+        if (hR.setGain) hR.setGain(api.enabled ? api.gain : 1);
+        hR.requestRedraw();
+      }
+    }
     if (!pR || !n) return;
     pR.setColormap(n);
     if (pR.setTransparent) pR.setTransparent(api.transparent);
@@ -180,6 +215,10 @@
     if (window.__refreshCmapIcon) window.__refreshCmapIcon();   // the colormap icon shows the transparency too
   };
   api.refresh = function () { refreshAccentLinear(); updatePreview(); };
+  api.setHistogramRamp = function (ramp) {
+    hRamp = ramp;
+    if (hR) { setHistRamp(); if (api.available && api.enabled) hR.requestRedraw(); }
+  };
   api.setIconTransfer = function (g, inv) {
     if (g === iconGamma && !!inv === iconInvert) return;
     iconGamma = g; iconInvert = !!inv;

@@ -8094,14 +8094,70 @@ function openHistogramMenu(evt) {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeHistogramMenu(); });
 
-// The color an intensity (0..255) is displayed with: window, invert, gamma, colormap.
-function histDisplayColor(intensity) {
+// The display value (0..1) of an intensity (0..255): window, invert, gamma.
+function histDisplayValue(intensity) {
   let t = windowHigh > windowLow ? (intensity - windowLow) / (windowHigh - windowLow) : (intensity >= windowHigh ? 1 : 0);
   t = Math.min(Math.max(t, 0), 1);
   if (imageInverted) t = 1 - t;
-  t = Math.pow(t, currentGamma);
-  const c = (ViewerColormap.getColormapColorAtT && ViewerColormap.getColormapColorAtT(t, imageColormap)) || [255 * t, 255 * t, 255 * t];
-  return `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+  return Math.pow(t, currentGamma);
+}
+
+const HIST_CURVE_WIDTH = 2;      // the transfer curve's stroke (CSS px)
+const HIST_CURVE_GAP = 1.5;      // the histogram is cut away this far around it
+
+// The outline of a stroke of width w along the points (round caps), as an SVG
+// path: the clip path that turns an element into the line.
+function strokeOutlinePath(pts, w) {
+  const r = w / 2, n = pts.length;
+  if (n < 2) return '';
+  const nrm = pts.map((p, k) => {
+    const a = pts[Math.max(0, k - 1)], b = pts[Math.min(n - 1, k + 1)];
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+    return [-dy / L, dx / L];
+  });
+  const f = (x, y) => `${x.toFixed(2)} ${y.toFixed(2)}`;
+  const out = [];
+  for (let k = 0; k < n; k += 1) out.push(f(pts[k][0] + r * nrm[k][0], pts[k][1] + r * nrm[k][1]));
+  const cap = (p, nv, from) => {                     // a half circle from +normal around to -normal
+    const a0 = Math.atan2(nv[1], nv[0]);
+    for (let s = 1; s < 8; s += 1) {
+      const a = a0 + from * Math.PI * (s / 8);
+      out.push(f(p[0] + r * Math.cos(a), p[1] + r * Math.sin(a)));
+    }
+  };
+  cap(pts[n - 1], nrm[n - 1], -1);
+  for (let k = n - 1; k >= 0; k -= 1) out.push(f(pts[k][0] - r * nrm[k][0], pts[k][1] - r * nrm[k][1]));
+  cap(pts[0], [-nrm[0][0], -nrm[0][1]], -1);
+  return 'M' + out.join(' L') + ' Z';
+}
+
+// Place the curve element over the canvas, clip it to the stroke and color it:
+// a CSS gradient (with the transparent low end when alpha is on) in SDR, and the
+// display values for hdr_ui.js's HDR canvas.
+function updateHistogramCurve(pts, width, height) {
+  const el = document.getElementById('histogramCurve');
+  if (!el) return;
+  if (!pts) { el.style.setProperty('--hist-curve-clip', 'inset(50%)'); return; }
+  el.style.left = histogramCanvas.offsetLeft + 'px';
+  el.style.top = histogramCanvas.offsetTop + 'px';
+  el.style.width = width + 'px';
+  el.style.height = height + 'px';
+  el.style.setProperty('--hist-curve-clip', `path("${strokeOutlinePath(pts, HIST_CURVE_WIDTH)}")`);
+  const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
+  const alpha = transparent && window.HdrColormap && HdrColormap.transparentAlpha ? HdrColormap.transparentAlpha(imageColormap) : null;
+  const n = 48, stops = [];
+  for (let k = 0; k <= n; k += 1) {
+    const v = histDisplayValue((k / n) * 255);
+    const c = (ViewerColormap.getColormapColorAtT && ViewerColormap.getColormapColorAtT(v, imageColormap)) || [255 * v, 255 * v, 255 * v];
+    const a = alpha ? alpha[Math.round(v * (alpha.length - 1))] : 1;
+    stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${((k / n) * 100).toFixed(2)}%`);
+  }
+  el.style.setProperty('--hist-curve-gradient', `linear-gradient(to right, ${stops.join(', ')})`);
+  if (window.OcdHdrUI && OcdHdrUI.setHistogramRamp) {
+    const W = 512, ramp = new Float32Array(W);
+    for (let x = 0; x < W; x += 1) ramp[x] = histDisplayValue((x / (W - 1)) * 255);
+    OcdHdrUI.setHistogramRamp(ramp);
+  }
 }
 
 function renderHistogram() {
@@ -8112,19 +8168,35 @@ function renderHistogram() {
   if (!ctx) {
     return;
   }
-  const width = histogramCanvas.width;
-  const height = histogramCanvas.height;
+  // Draw at the display's pixel density in CSS-pixel units (a 220 x 80 buffer
+  // stretched over the panel blurs and stair-steps every line).
+  const rect = histogramCanvas.getBoundingClientRect();
+  const width = rect.width || 220;
+  const height = rect.height || 80;
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.max(1, Math.round(width * dpr)), bh = Math.max(1, Math.round(height * dpr));
+  if (histogramCanvas.width !== bw || histogramCanvas.height !== bh) {
+    histogramCanvas.width = bw;
+    histogramCanvas.height = bh;
+  }
+  ctx.setTransform(bw / width, 0, 0, bh / height, 0, 0);
   ctx.clearRect(0, 0, width, height);
   const maxCount = Math.max(...histogramData);
   if (maxCount > 0) {
+    // the bars as one outline (separate fractional rects leave seams between them)
     ctx.fillStyle = accentColor;
-    const binWidth = Math.max(width / 256, 1);
+    const binWidth = width / 256;
+    ctx.beginPath();
+    ctx.moveTo(0, height);
     for (let i = 0; i < 256; i += 1) {
       const value = histPrefs.log ? Math.log1p(histogramData[i]) / Math.log1p(maxCount) : histogramData[i] / maxCount;
-      const barHeight = Math.max(1, Math.round(value * (height - 4)));
-      const x = Math.floor(i * binWidth);
-      ctx.fillRect(x, height - barHeight, Math.ceil(binWidth), barHeight);
+      const top = height - Math.max(1, value * (height - 4));
+      ctx.lineTo(i * binWidth, top);
+      ctx.lineTo((i + 1) * binWidth, top);
     }
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
   }
 
   const lowX = (windowLow / 255) * width;
@@ -8140,21 +8212,33 @@ function renderHistogram() {
   ctx.lineTo(highX, height);
   ctx.stroke();
   if (windowHigh > windowLow) {
-    // the curve in the colors it maps to (a gray halo keeps the dark end visible)
-    const startX = Math.max(0, Math.floor(lowX)), endX = Math.min(width, Math.ceil(highX));
-    ctx.lineCap = 'round';
-    for (const pass of [0, 1]) {
-      ctx.lineWidth = pass ? 2 : 3.5;
-      for (let x = startX; x < endX; x += 1) {
-        ctx.strokeStyle = pass ? histDisplayColor((x / width) * 255) : 'rgba(128,128,128,0.6)';
-        ctx.beginPath();
-        ctx.moveTo(x, gammaCurveY((x / width) * 255, width, height));
-        ctx.lineTo(x + 1, gammaCurveY(((x + 1) / width) * 255, width, height));
-        ctx.stroke();
-      }
+    // the transfer curve: cut it out of the histogram (a gap around the line, so
+    // the bars never blend into it), then show it as the clipped curve element
+    // (vector edges; HDR and alpha follow the image)
+    const n = Math.max(32, Math.ceil((highX - lowX) / 2));
+    const pts = [];
+    for (let k = 0; k <= n; k += 1) {
+      const x = lowX + (highX - lowX) * (k / n);
+      pts.push([x, gammaCurveY((x / width) * 255, width, height)]);
     }
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = HIST_CURVE_WIDTH + 2 * HIST_CURVE_GAP;
+    ctx.beginPath();
+    pts.forEach((p, k) => (k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
+    ctx.stroke();
+    ctx.restore();
+    updateHistogramCurve(pts, width, height);
+  } else {
+    updateHistogramCurve(null);
   }
   updateHistogramCursor();
+}
+// redraw when the panel resizes or the window moves to a display of another density
+if (histogramCanvas && typeof ResizeObserver === 'function') {
+  new ResizeObserver(() => { try { renderHistogram(); } catch (e) { /* not ready */ } }).observe(histogramCanvas);
 }
 
 function updateHistogramUI() {

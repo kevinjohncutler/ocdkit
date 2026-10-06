@@ -1823,6 +1823,16 @@ button:not(:disabled):hover {
 .histogram-surface {
   position: relative;
 }
+/* the histogram's transfer curve: an element clipped to the stroke's outline
+   (app.js), filled with the colors each intensity is shown in; with HDR on,
+   hdr_ui.js draws an HDR canvas inside it instead of the CSS gradient */
+.histogram-curve {
+  position: absolute;
+  pointer-events: none;
+  background: var(--hist-curve-gradient, transparent);
+  clip-path: var(--hist-curve-clip, inset(50%));
+}
+.histogram-curve.hdr-live { background: none; }
 
 .histogram-value-marker {
   position: absolute;
