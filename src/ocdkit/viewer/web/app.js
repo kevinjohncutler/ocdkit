@@ -7512,13 +7512,27 @@ function syncGammaControls() {
   updateGammaLabel();
 }
 
+const HIST_CURVE_WIDTH = 2.75;   // the transfer curve's stroke (CSS px), the colormap icon's too
+
 // The colormap icon: the display curve over [0, 1] (value^gamma, falling when the
-// image is inverted) on a grid, the area under it filled with the color each value
-// is shown in. With the transparent low end (alpha) on, the fill's opacity follows
-// the colormap's lightness exactly as the image's does (HdrColormap.transparentAlpha).
+// image is inverted) over a grid colored by the colormap along the output axis:
+// a vertical gradient clipped to the grid lines. With the transparent low end
+// (alpha) on, the colors' opacity follows the colormap's lightness exactly as the
+// image's does (HdrColormap.transparentAlpha).
+const CMAP_ICON_GRID = [7.5, 12, 16.5];         // grid line positions (both axes)
+const CMAP_ICON_GRID_WIDTH = 1.4;
+function cmapIconGridClip() {
+  const r = CMAP_ICON_GRID_WIDTH / 2, rects = [];
+  const rect = (x0, y0, x1, y1) => `M${x0} ${y0}H${x1}V${y1}H${x0}Z`;
+  for (const p of CMAP_ICON_GRID) {
+    rects.push(rect(p - r, 3, p + r, 21));       // vertical
+    rects.push(rect(3, p - r, 21, p + r));       // horizontal
+  }
+  return `path("${rects.join(' ')}")`;
+}
 function updateCmapIconCurve() {
   const curve = document.getElementById('imageCmapIconCurve');
-  const fill = document.getElementById('imageCmapIconPill');
+  const grid = document.getElementById('imageCmapIconPill');
   if (!curve) return;
   const g = currentGamma > 0 ? currentGamma : 1;
   let inv = false;
@@ -7529,23 +7543,23 @@ function updateCmapIconCurve() {
     const t = i / 24;
     pts.push(`${(3 + 18 * t).toFixed(2)} ${(21 - 18 * out(t)).toFixed(2)}`);
   }
-  const d = 'M' + pts.join(' L');
-  curve.setAttribute('d', d);
-  if (!fill) return;
-  fill.style.setProperty('--cmap-icon-clip', `path("${d} L21 21 L3 21Z")`);
+  curve.setAttribute('d', 'M' + pts.join(' L'));
+  curve.setAttribute('stroke-width', String(HIST_CURVE_WIDTH));   // (the icon is 24 px for 24 units: the histogram's width)
+  if (!grid) return;
+  grid.style.setProperty('--cmap-icon-clip', cmapIconGridClip());
   if (ViewerColormap.getColormapColorAtT) {
+    // output 0 at y = 21 (the grid's bottom), 1 at y = 3: in the 24 px box, 12.5% to 87.5%
     const transparent = !!(window.OcdHdrUI && OcdHdrUI.transparent);
     const alpha = transparent && window.HdrColormap && HdrColormap.transparentAlpha ? HdrColormap.transparentAlpha(imageColormap) : null;
     const n = 32, stops = [];
     for (let i = 0; i <= n; i += 1) {
-      const t = i / n, v = out(t);
+      const v = i / n;
       const c = ViewerColormap.getColormapColorAtT(v, imageColormap) || [255 * v, 255 * v, 255 * v];
       const a = alpha ? alpha[Math.round(v * (alpha.length - 1))] : 1;
-      stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${(t * 100).toFixed(1)}%`);
+      stops.push(`rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a.toFixed(3)}) ${(12.5 + 75 * v).toFixed(2)}%`);
     }
-    fill.style.setProperty('--cmap-icon-gradient', `linear-gradient(to right, ${stops.join(', ')})`);
+    grid.style.setProperty('--cmap-icon-gradient', `linear-gradient(to top, ${stops.join(', ')})`);
   }
-  if (window.OcdHdrUI && OcdHdrUI.setIconTransfer) OcdHdrUI.setIconTransfer(g, inv);
 }
 
 function setGamma(gamma, { emit = true } = {}) {
@@ -8102,7 +8116,6 @@ function histDisplayValue(intensity) {
   return Math.pow(t, currentGamma);
 }
 
-const HIST_CURVE_WIDTH = 2;      // the transfer curve's stroke (CSS px)
 
 // The outline of a stroke of width w along the points (round caps), as an SVG
 // path: the clip path that turns an element into the line.

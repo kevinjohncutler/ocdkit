@@ -44,7 +44,6 @@
   // Safari forces to SDR under position:relative/absolute). CSS color() clamps,
   // so a canvas is the only real HDR surface. ──
   let pCanvas = null, pR = null, pHeadroom = null;
-  let iconGamma = 1, iconInvert = false;          // the icon's display transfer (app.js)
   // the histogram's transfer curve: an HDR canvas inside the clipped curve element
   let hCanvas = null, hR = null, hRamp = null;
   function setHistRamp() {
@@ -94,16 +93,14 @@
       if (toggle.id === 'imageCmapIconPill') pCanvas.style.clipPath = 'none';   // (the icon pill clips it)
     }
   }
-  // a left-to-right ramp; for the colormap icon, through its display transfer
-  // (value^gamma, reversed when inverted) like the icon's SDR gradient
+  // the dropdown: a left-to-right ramp; the colormap icon: a bottom-to-top ramp
+  // over its grid (output 0 at the grid's bottom, 1 at its top, like its CSS gradient)
   function setRamp() {
     if (!pR) return;
     const icon = !!document.getElementById('imageCmapIconPill');
-    const W = 256, H = 4, ramp = new Float32Array(W * H);
-    for (let x = 0; x < W; x += 1) {
-      let v = x / (W - 1);
-      if (icon) v = Math.pow(iconInvert ? 1 - v : v, iconGamma);
-      for (let y = 0; y < H; y += 1) ramp[y * W + x] = v;
+    const W = icon ? 2 : 256, H = icon ? 96 : 4, ramp = new Float32Array(W * H);
+    for (let y = 0; y < H; y += 1) for (let x = 0; x < W; x += 1) {
+      ramp[y * W + x] = icon ? Math.min(1, Math.max(0, ((1 - (y + 0.5) / H) - 0.125) / 0.75)) : x / (W - 1);
     }
     pR.setImage(ramp, W, H); pR.setRange(0, 1);
   }
@@ -218,11 +215,6 @@
   api.setHistogramRamp = function (ramp) {
     hRamp = ramp;
     if (hR) { setHistRamp(); if (api.available && api.enabled) hR.requestRedraw(); }
-  };
-  api.setIconTransfer = function (g, inv) {
-    if (g === iconGamma && !!inv === iconInvert) return;
-    iconGamma = g; iconInvert = !!inv;
-    if (pR) { setRamp(); updatePreview(); }
   };
   // The gain slider is hidden unless switched on (image panel, right-click).
   const GAIN_VIS_STORE = 'ocdkit-hdr-gain-visible';

@@ -317,19 +317,20 @@
 .icon-toggle:has(input:checked) > .icon-toggle-text { opacity: 1; }
 .icon-toggle > input[type='checkbox'] { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
 /* colormap icon: a pill filled with the selected colormap (stops set by app.js) */
-/* colormap icon: the display curve (value^gamma, inverted when the image is) on a
-   grid, the area under it filled with the colors each value is shown in. app.js
-   sets the curve, the fill's gradient and its clip path; with HDR on, hdr_ui.js
-   draws an HDR canvas inside the fill (the clip path clips it too). */
+/* colormap icon: the display curve (value^gamma, falling when the image is
+   inverted) over a grid colored by the colormap along the output (y) axis: each
+   horizontal line is the color of its output value, each vertical line the whole
+   ramp. The grid is a vertical colormap gradient clipped to the lines (app.js);
+   with HDR on, hdr_ui.js draws an HDR canvas inside it (the clip path clips it). */
 .cmap-icon { position: relative; }
 .cmap-icon svg { position: relative; z-index: 1; width: 24px; height: 24px; display: block; }
-.cmap-icon-fill {
+.cmap-icon-grid {
   position: absolute;
   left: calc(50% - 12px);
   top: calc(50% - 12px);
   width: 24px;
   height: 24px;
-  background: var(--cmap-icon-gradient, linear-gradient(to right, #000, #fff));
+  background: var(--cmap-icon-gradient, linear-gradient(to top, #000, #fff));
   clip-path: var(--cmap-icon-clip, none);
 }
 .slider:focus { outline: none; }   /* the pressed thumb already shows focus */
